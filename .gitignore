@@ -1,0 +1,40 @@
+node_modules/
+.next/
+out/
+dist/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# env / secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# local dev data (database cluster, local object storage)
+.devdb/
+.data/
+apps/web/.data/
+
+# test output
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/e2e/.auth/
+
+# .NET
+bin/
+obj/
+*.user
+.vs/
+apps/capture-agent/artifacts/
+
+# Canon EDSDK is proprietary and must never be committed
+apps/capture-agent/third_party/EDSDK/
+**/EDSDK*.dll
+**/EdsImage*.dll
+
+# database / storage backups (scripts/db-backup.ps1)
+backups/
+apps/web/.next-uidev/
+

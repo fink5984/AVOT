@@ -1,0 +1,13 @@
+{
+  "name": "AVOT Studio — מסופון מחסן",
+  "short_name": "מסופון",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": "/scanner",
+  "scope": "/scanner",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0f10",
+  "theme_color": "#1a1917",
+  "icons": [{ "src": "/scanner-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>AvotCapture.Canon</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AvotCapture.Core\AvotCapture.Core.csproj" />
+  </ItemGroup>
+  <!-- EDSDK.dll / EdsImage.dll are NOT part of this repository (Canon licence).
+       Install them per docs/canon-edsdk.md into third_party/EDSDK/ or set EdsdkPath in settings. -->
+</Project>

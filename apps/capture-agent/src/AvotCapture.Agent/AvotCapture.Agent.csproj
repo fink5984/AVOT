@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>AvotCapture.Agent</RootNamespace>
+    <AssemblyName>AvotCaptureAgent</AssemblyName>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <SelfContained>false</SelfContained>
+    <SatelliteResourceLanguages>he;en</SatelliteResourceLanguages>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\AvotCapture.Core\AvotCapture.Core.csproj" />
+    <ProjectReference Include="..\AvotCapture.Canon\AvotCapture.Canon.csproj" />
+    <ProjectReference Include="..\AvotCapture.Simulator\AvotCapture.Simulator.csproj" />
+  </ItemGroup>
+  <!-- copy a locally installed EDSDK next to the exe (not committed; see docs/canon-edsdk.md) -->
+  <ItemGroup Condition="Exists('..\..\third_party\EDSDK\EDSDK.dll')">
+    <None Include="..\..\third_party\EDSDK\*.dll" Link="EDSDK\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

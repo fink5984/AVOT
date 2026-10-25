@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <Version>0.1.0</Version>
+    <Company>AVOT</Company>
+    <Product>AVOT Capture Agent</Product>
+    <Copyright>AVOT</Copyright>
+    <!-- Canon EDSDK ships 64-bit DLLs for Windows; the agent runs x64 only -->
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier Condition="'$(OutputType)' == 'WinExe'">win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+</Project>

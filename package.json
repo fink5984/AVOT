@@ -1,0 +1,25 @@
+{
+  "name": "avot-studio",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AVOT Studio — מערכת צילום וניהול קטלוגים לבית המכירות אבות",
+  "workspaces": [
+    "packages/*",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=20.18"
+  },
+  "scripts": {
+    "dev": "npm run dev -w apps/web",
+    "build": "npm run build -w apps/web",
+    "start": "npm run start -w apps/web",
+    "lint": "npm run lint -w apps/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e -w apps/web",
+    "db:migrate": "npm run db:migrate -w apps/web",
+    "db:deploy": "npm run db:deploy -w apps/web",
+    "create-admin": "npm run create-admin -w apps/web"
+  }
+}
