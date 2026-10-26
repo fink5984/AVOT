@@ -9,7 +9,7 @@ import { resolveItemTarget } from "@/server/services/inventory";
 const schema = z.object({
   lotId: z.string().uuid(),
   category: z.enum(PHOTO_CATEGORIES),
-  cameraKind: z.enum(["WEBCAM", "CANON", "SIMULATOR", "AGENT_SIMULATOR"]),
+  cameraKind: z.enum(["WEBCAM", "CANON", "DIGICAM", "SIMULATOR", "AGENT_SIMULATOR"]),
   cameraName: z.string().max(200).nullish(),
   deviceId: z.string().uuid().nullish(),
 });

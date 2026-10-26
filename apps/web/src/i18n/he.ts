@@ -105,6 +105,7 @@ export const he = {
   source: {
     WEBCAM: "מצלמת רשת",
     CANON_EDSDK: "Canon EDSDK",
+    DIGICAMCONTROL: "digiCamControl",
     SIMULATOR: "סימולטור",
     IMPORT: "ייבוא",
   },

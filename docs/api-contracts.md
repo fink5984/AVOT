@@ -67,6 +67,16 @@ All responses `Cache-Control: no-store`. CORS: only the paired server origin (`/
 
 Headers for "token + lease": `Authorization: Bearer <controlToken>`, `X-Avot-Lease: <leaseId>`. A lease expires after 30 s without requests; a superseded lease (same user, newer tab) gets `409 TAKEN_OVER`.
 
+## עיבוד תמונות ספר — תוספות (תאימות אחורה מלאה, API v1)
+- `POST /api/captures` — שדה אופציונלי `processing` (`ProcessingSettings`, `packages/shared/src/processing.ts`): ההגדרות שקפאו ברגע הלחיצה. חסר → פרופיל ברירת המחדל של הארגון אם קיים, אחרת ללא עיבוד. `source` חדש: `DIGICAMCONTROL`.
+- Heartbeat: `cameraKind` יכול להיות `DIGICAM`. בקשות `/v1/capture` ו-`/v1/context` ב-Agent מקבלות אובייקט `processing` אופציונלי (≤ 4KB, מועבר לשרת כמו שהוא).
+- `GET/POST /api/camera-profiles`, `PATCH/DELETE /api/camera-profiles/{id}` (photo.capture) — `{ name, settings: { processing, camera }, isDefault? }`; פרופיל ברירת מחדל אחד לארגון (נוצר בשימוש הראשון).
+- `AssetDto.processed` = `{ state: QUEUED|PREVIEW_READY|DONE|NEEDS_REVIEW|FAILED, hasFile, mime, width, height, confidence, warnings[], settings, edits }` (null לתמונה שלא עובדה). `thumbUrl`/`previewUrl` מציגים כבר את המעובד.
+- `GET /api/assets/{id}/processed[?download=1]` — קובץ מעובד ברזולוציה מלאה (photo.download). `GET /api/assets/{id}/original` נשאר המקור ללא שינוי.
+- `POST /api/assets/{id}/process` (photo.organize) — `{ settings?: Partial<ProcessingSettings>, edits?: { crop?: {x,y,w,h}|null, strokes?: [...] }, restore?: true }` → `{ asset }`.
+- `GET /api/assets/{id}/edit-source?rotation=` — עותק עבודה מסובב (≈1400px) לעורך התיקון.
+- ייצוא: `variant: "processed"`, ו-`catalog-jpeg` מבוסס על המעובד כשקיים.
+
 ## Phase 2 routes (selection)
 
 | Method | Path | Permission | Notes |

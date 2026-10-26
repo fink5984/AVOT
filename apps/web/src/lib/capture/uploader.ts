@@ -161,6 +161,7 @@ class Uploader {
           sessionId: entry.sessionId,
           cameraName: entry.cameraName,
           exif: entry.exif,
+          processing: entry.processing,
           files: entry.files.map((f) => ({
             role: f.role,
             originalFilename: f.filename,

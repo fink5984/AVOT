@@ -23,7 +23,8 @@ export const exportRequestSchema = z.object({
   inventoryItemId: z.string().uuid().optional(),
   category: z.enum(PHOTO_CATEGORIES).optional(),
   assetIds: z.array(z.string().uuid()).max(5000).optional(),
-  variant: z.enum(["original", "catalog-jpeg"]).default("original"),
+  /** original = files as shot; processed = the cropped / background-removed image where one exists; catalog-jpeg = resized JPEG (from the processed image where one exists) */
+  variant: z.enum(["original", "processed", "catalog-jpeg"]).default("original"),
   /** long edge in px for catalog-jpeg */
   maxSize: z.number().int().min(400).max(12000).default(3000),
   includeRaw: z.boolean().default(true),
@@ -98,6 +99,7 @@ interface ExportRow {
   width: number | null;
   height: number | null;
   files: { role: string; storageKey: string; extension: string; sha256: string; sizeBytes: bigint; mimeType: string }[];
+  processed: { key: string; ext: string } | null;
 }
 
 interface BookContext {
@@ -195,6 +197,7 @@ async function collect(orgId: string, p: ExportRequest): Promise<ExportRow[]> {
           width: a.width,
           height: a.height,
           files: a.files,
+          processed: a.processedKey ? { key: a.processedKey, ext: a.processedKey.split(".").pop() ?? "jpg" } : null,
         }),
       );
     }
@@ -257,11 +260,16 @@ export async function runExportJob(job: Job): Promise<void> {
       const entryFiles: string[] = [];
       for (const f of r.files) {
         if (f.role === "RAW" && !p.includeRaw) continue;
-        if (p.variant === "catalog-jpeg") {
+        if (p.variant === "processed" && f.role === "PRIMARY" && r.processed) {
+          const name = `${dir}/${stem}.${r.processed.ext}`;
+          await appendAndWait(await store.getStream(r.processed.key), name, r.capturedAt);
+          entryFiles.push(name);
+        } else if (p.variant === "catalog-jpeg") {
           if (f.role !== "PRIMARY") continue;
-          const buf = await store.getBuffer(f.storageKey);
+          const buf = await store.getBuffer(r.processed ? r.processed.key : f.storageKey);
           const jpeg = await sharp(buf)
             .rotate()
+            .flatten({ background: "#ffffff" })
             .resize({ width: p.maxSize, height: p.maxSize, fit: "inside", withoutEnlargement: true })
             .keepIccProfile()
             .jpeg({ quality: 90, mozjpeg: true })

@@ -137,6 +137,7 @@ enum PhotoCategory {
 enum CaptureSource {
   WEBCAM
   CANON_EDSDK
+  DIGICAMCONTROL
   SIMULATOR
   IMPORT
 }
@@ -160,6 +161,19 @@ enum ProcessingStatus {
   FAILED
 }
 
+/// Green-screen processing (rotation, background removal, crop) of a photo's PRIMARY original.
+enum ImageProcessingState {
+  /// not requested (older shots, processing disabled)
+  NONE
+  QUEUED
+  /// fast preview exists, full-resolution pass pending
+  PREVIEW_READY
+  DONE
+  /// detection was not trusted — only rotated, a person should check
+  NEEDS_REVIEW
+  FAILED
+}
+
 enum CaptureSessionStatus {
   ACTIVE
   ENDED
@@ -169,6 +183,7 @@ enum CaptureSessionStatus {
 enum JobType {
   EXPORT_ZIP
   PROCESS_ASSET
+  PROCESS_FINAL
   PURGE_TRASH
 }
 
@@ -204,6 +219,7 @@ model Organization {
   invites        Invite[]
   pairingCodes   PairingCode[]
   captureSession CaptureSession[]
+  cameraProfiles CameraProfile[]
 }
 
 model User {
@@ -599,6 +615,15 @@ model PhotoAsset {
   thumbKey       String?
   previewKey     String?
   processingStatus ProcessingStatus @default(PENDING)
+  /// green-screen processing: state, the settings snapshot taken at capture time (+ manual edits) and the outcome
+  imageState     ImageProcessingState @default(NONE)
+  processing     Json?
+  processingResult Json?
+  /// full-resolution processed image (rotated, background removed, cropped); the original stays untouched
+  processedKey   String?
+  processedMime  String?
+  processedWidth Int?
+  processedHeight Int?
   /// automatic quality hints — advisory only, never used to delete or approve
   quality        Json?
   needsReshoot   Boolean       @default(false)
@@ -674,6 +699,24 @@ model CaptureSession {
 
   @@index([organizationId, startedAt])
   @@index([userId, status])
+}
+
+/// A named capture profile: camera control values + green-screen processing settings.
+/// At most one default per organization (partial unique index in the migration).
+model CameraProfile {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  name           String
+  isDefault      Boolean  @default(false)
+  /// { processing: ProcessingSettings, camera: { [controlId]: value } }
+  settings       Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
 }
 
 /// A paired capture station (Windows Capture Agent).

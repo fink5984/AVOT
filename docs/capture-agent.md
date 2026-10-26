@@ -40,6 +40,10 @@ AvotCaptureAgent.exe --pair <serverUrl> <code> [name]
 
 הצילום נחסם כשהנפח הפנוי בכונן האחסון יורד מתחת ל-2GB; אזהרה מתחת ל-20GB (מוצגת במסך הצילום ובמסך העמדות).
 
+## מצבי מצלמה ועיבוד
+- `CameraMode`: `AUTO` (ברירת מחדל: Canon EDSDK אם מותקן, אחרת digiCamControl) | `DIGICAM` | `CANON` | `SIMULATOR` — בתפריט המגש או `--camera`. פרטים ב-[digicamcontrol.md](digicamcontrol.md). הגדרות: `DigiCamUrl`, `DigiCamExePath`, `DigiCamAutoLaunch`, `DigiCamTransfer`.
+- הגדרות פרופיל הצילום (סיבוב, הסרת רקע, חיתוך …) באות מהדפדפן עם כל בקשת צילום (`processing`), נשמרות ב-`captures.db` עם הצילום ונשלחות לשרת ברישום — ה-Agent אינו מעבד תמונות. העיבוד בשרת: [green-screen-processing.md](green-screen-processing.md).
+
 ## עדכונים וגרסאות
 - גרסת Agent וגרסת API נשלחות בכל heartbeat ומוצגות במסך העמדות. השרת מסרב לצימוד מגרסת API שונה.
 - עדכון: הרצת קובץ התקנה חדש מעל הקיים (אותו AppId) — הנתונים, התור והתמונות נשמרים. ההתקנה סוגרת את התוכנה הרצה ומציעה להפעיל אותה בסיום; צילומים שבתור ממשיכים להעלות אחרי ההפעלה.

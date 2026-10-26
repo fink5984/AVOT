@@ -28,14 +28,27 @@ public enum CaptureStage
     NEEDS_ATTENTION,
 }
 
-/// <summary>The association frozen when the shutter is pressed: lot, catalog, category.</summary>
+/// <summary>The association frozen when the shutter is pressed: lot, catalog, category and the processing settings of the active profile.</summary>
 public sealed record CaptureContext(
     string LotId,
     string CatalogId,
     string Category,
     int LotNumber,
     string CatalogNumber,
-    string? SessionId);
+    string? SessionId,
+    /// <summary>JSON of the green-screen processing settings (opaque to the agent; validated by the server).</summary>
+    string? ProcessingJson = null);
+
+/// <summary>Maps a camera provider kind to the capture source value of the server contract.</summary>
+public static class CaptureSources
+{
+    public static string For(string? cameraKind) => cameraKind switch
+    {
+        "SIMULATOR" => "SIMULATOR",
+        "DIGICAM" => "DIGICAMCONTROL",
+        _ => "CANON_EDSDK",
+    };
+}
 
 public sealed record CaptureRequest(
     string CaptureId,
@@ -97,7 +110,7 @@ public sealed record Readout(string Label, string Value);
 
 public sealed class CameraStatus
 {
-    public string Kind { get; init; } = "NONE"; // CANON | SIMULATOR | NONE
+    public string Kind { get; init; } = "NONE"; // CANON | DIGICAM | SIMULATOR | NONE
     public string? Model { get; init; }
     public bool Connected { get; init; }
     public bool Busy { get; init; }

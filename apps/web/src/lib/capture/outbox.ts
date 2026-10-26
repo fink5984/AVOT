@@ -1,6 +1,6 @@
 "use client";
 
-import type { CaptureSource, FileRole, PhotoCategory } from "@avot/shared";
+import type { CaptureSource, FileRole, PhotoCategory, ProcessingSettings } from "@avot/shared";
 
 /**
  * Durable browser-side outbox for captures made in the browser (webcam,
@@ -38,6 +38,8 @@ export interface OutboxEntry {
   sessionId?: string;
   capturedAt: string;
   exif?: Record<string, unknown>;
+  /** processing settings frozen when the shutter was pressed */
+  processing?: ProcessingSettings;
   files: OutboxFile[];
   stage: OutboxStage;
   attempts: number;

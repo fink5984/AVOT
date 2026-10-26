@@ -317,7 +317,14 @@ public sealed class LocalApi : IAsyncDisposable
         var category = S("category");
         if (!Guid.TryParse(lotId, out _) || !Guid.TryParse(catalogId, out _) || !Categories.IsValid(category)) return null;
         if (!b.TryGetProperty("lotNumber", out var ln) || !ln.TryGetInt32(out var lotNumber)) return null;
-        return new CaptureContext(lotId!, catalogId!, category!, lotNumber, S("catalogNumber") ?? "", S("sessionId"));
+        // processing settings of the active profile are frozen with the shot and forwarded to the server unchanged
+        string? processing = null;
+        if (b.TryGetProperty("processing", out var pr) && pr.ValueKind == JsonValueKind.Object)
+        {
+            var raw = pr.GetRawText();
+            if (raw.Length <= 4096) processing = raw;
+        }
+        return new CaptureContext(lotId!, catalogId!, category!, lotNumber, S("catalogNumber") ?? "", S("sessionId"), processing);
     }
 
     private static IResult Error(int status, string code, string message) =>

@@ -13,7 +13,7 @@ import { cn } from "@/lib/cn";
 export type CameraChoice =
   | { kind: "WEBCAM"; id: string; label: string }
   | { kind: "SIMULATOR"; id: "simulator"; label: string }
-  | { kind: "CANON" | "AGENT_SIMULATOR"; id: string; label: string; agentUrl: string; cameraKind: "CANON" | "SIMULATOR" | "NONE" };
+  | { kind: "CANON" | "DIGICAM" | "AGENT_SIMULATOR"; id: string; label: string; agentUrl: string; cameraKind: "CANON" | "DIGICAM" | "SIMULATOR" | "NONE" };
 
 interface StationDto {
   id: string;
@@ -110,11 +110,11 @@ export function CameraPicker({
             <Option
               active={current?.id === station.id}
               icon={agent.camera.kind === "SIMULATOR" ? <FlaskConical /> : <Camera />}
-              title={agent.camera.kind === "SIMULATOR" ? `סימולטור Capture Agent — ${station.name}` : `${agent.camera.model ?? "מצלמת Canon"} — ${station.name}`}
+              title={agent.camera.kind === "SIMULATOR" ? `סימולטור Capture Agent — ${station.name}` : `${agent.camera.model ?? (agent.camera.kind === "DIGICAM" ? "מצלמת Canon (digiCamControl)" : "מצלמת Canon")} — ${station.name}`}
               sub={agent.camera.connected ? "מחוברת ב-USB" : agent.camera.kind === "NONE" ? "לא זוהתה מצלמה — חברו את המצלמה והדליקו אותה" : "המצלמה מנותקת"}
               onClick={() =>
                 onPick({
-                  kind: agent.camera.kind === "SIMULATOR" ? "AGENT_SIMULATOR" : "CANON",
+                  kind: agent.camera.kind === "SIMULATOR" ? "AGENT_SIMULATOR" : agent.camera.kind === "DIGICAM" ? "DIGICAM" : "CANON",
                   id: station.id,
                   label: station.name,
                   agentUrl,

@@ -82,6 +82,8 @@ dotnet test                       # xUnit — תיאום צילום, שמירה,
 
 - [Phase 2 — מלאי, בתי מכירות, מחסן, מיגרציה](docs/phase2-inventory.md)
 - [מסופון מחסן](docs/warehouse-scanner.md)
+- [digiCamControl כספק מצלמה (ללא EDSDK שלנו)](docs/digicamcontrol.md)
+- [עיבוד תמונת ספר: סיבוב, הסרת רקע ירוק, חיתוך](docs/green-screen-processing.md)
 - [ארכיטקטורה ומודל אמינות](docs/architecture.md)
 - [חוזי API — שרת ו-Capture Agent](docs/api-contracts.md)
 - [פריסה ל-Railway + Cloudflare R2](docs/deployment-railway.md)

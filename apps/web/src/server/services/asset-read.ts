@@ -14,7 +14,7 @@ import { storage } from "../storage";
 export async function serveAsset(
   orgId: string,
   assetId: string,
-  kind: "thumb" | "preview" | "original",
+  kind: "thumb" | "preview" | "original" | "processed",
   opts: { role?: "PRIMARY" | "RAW"; download?: boolean } = {},
 ): Promise<Response> {
   // deleted (recycle-bin) photos stay viewable so they can be inspected before restoring
@@ -33,6 +33,10 @@ export async function serveAsset(
   } else if (kind === "preview") {
     key = asset.previewKey;
     contentType = "image/jpeg";
+  } else if (kind === "processed") {
+    key = asset.processedKey;
+    contentType = asset.processedMime ?? "image/jpeg";
+    if (key) filename = `${asset.item.inventoryNumber}-${CATEGORY_SLUG[asset.category]}-${padLotNumber(asset.sequence)}.${key.split(".").pop()}`;
   } else {
     const file = asset.files.find((f) => f.role === (opts.role ?? "PRIMARY") && f.uploadStatus === "VERIFIED");
     if (file) {
@@ -56,7 +60,7 @@ export async function serveAsset(
   const stream = await store.getStream(key);
   const headers: Record<string, string> = {
     "content-type": contentType,
-    "cache-control": kind === "original" ? "private, no-store" : "private, max-age=3600",
+    "cache-control": kind === "original" || kind === "processed" ? "private, no-store" : "private, max-age=3600",
   };
   if (filename) headers["content-disposition"] = contentDisposition(filename, !opts.download);
   return new Response(Readable.toWeb(stream as Readable) as ReadableStream, { headers });

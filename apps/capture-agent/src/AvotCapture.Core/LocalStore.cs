@@ -40,6 +40,17 @@ public sealed class LocalStore : IDisposable
               PRIMARY KEY (capture_id, role)
             );
             """);
+        // databases created by earlier agent versions get the new column in place
+        if (!HasColumn("captures", "processing_json")) Exec("ALTER TABLE captures ADD COLUMN processing_json TEXT;");
+    }
+
+    private bool HasColumn(string table, string column)
+    {
+        using var cmd = _db.CreateCommand();
+        cmd.CommandText = $"PRAGMA table_info({table})";
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) if (string.Equals(r.GetString(1), column, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     private void Exec(string sql)
@@ -59,9 +70,10 @@ public sealed class LocalStore : IDisposable
             using var cmd = _db.CreateCommand();
             cmd.CommandText = """
                 INSERT INTO captures (capture_id, lot_id, catalog_id, category, lot_number, catalog_number, session_id,
-                  user_id, user_name, control_token, external, source, camera_name, stage, attempts, next_attempt_at, created_at)
-                VALUES ($id, $lot, $cat, $category, $lotNo, $catNo, $session, $user, $userName, $token, $ext, $source, $camera, $stage, 0, $next, $created)
+                  user_id, user_name, control_token, external, source, camera_name, stage, attempts, next_attempt_at, created_at, processing_json)
+                VALUES ($id, $lot, $cat, $category, $lotNo, $catNo, $session, $user, $userName, $token, $ext, $source, $camera, $stage, 0, $next, $created, $processing)
                 """;
+            cmd.Parameters.AddWithValue("$processing", (object?)r.Context.ProcessingJson ?? DBNull.Value);
             cmd.Parameters.AddWithValue("$id", r.CaptureId);
             cmd.Parameters.AddWithValue("$lot", r.Context.LotId);
             cmd.Parameters.AddWithValue("$cat", r.Context.CatalogId);
@@ -223,7 +235,7 @@ public sealed class LocalStore : IDisposable
                     var rec = new CaptureRecord
                     {
                         CaptureId = S("capture_id"),
-                        Context = new CaptureContext(S("lot_id"), S("catalog_id"), S("category"), r.GetInt32(r.GetOrdinal("lot_number")), S("catalog_number"), S("session_id")),
+                        Context = new CaptureContext(S("lot_id"), S("catalog_id"), S("category"), r.GetInt32(r.GetOrdinal("lot_number")), S("catalog_number"), S("session_id"), S("processing_json")),
                         UserId = S("user_id"),
                         UserName = S("user_name"),
                         ControlToken = S("control_token"),

@@ -13,6 +13,8 @@ public sealed class TrayApp : IDisposable
     private readonly ToolStripMenuItem _queue = new() { Enabled = false };
     private readonly ToolStripMenuItem _server = new() { Enabled = false };
     private readonly ToolStripMenuItem _autostart = new("הפעלה אוטומטית עם Windows") { CheckOnClick = true };
+    private readonly ToolStripMenuItem _modeAuto = new("אוטומטי (Canon אם מותקן, אחרת digiCamControl)");
+    private readonly ToolStripMenuItem _modeDigi = new("digiCamControl");
     private readonly ToolStripMenuItem _modeCanon = new("Canon EDSDK");
     private readonly ToolStripMenuItem _modeSim = new("סימולטור (בדיקות בלבד)");
     private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 2000 };
@@ -29,7 +31,9 @@ public sealed class TrayApp : IDisposable
         menu.Items.Add("פתיחת תיקיית הצילומים", null, (_, _) => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_host.Settings.StorageRoot}\"") { UseShellExecute = true }));
         menu.Items.Add("צימוד לשרת…", null, (_, _) => ShowPairing());
         var mode = new ToolStripMenuItem("מצב מצלמה");
-        mode.DropDownItems.AddRange([_modeCanon, _modeSim]);
+        mode.DropDownItems.AddRange([_modeAuto, _modeDigi, _modeCanon, _modeSim]);
+        _modeAuto.Click += async (_, _) => await _host.SwitchCameraModeAsync("AUTO");
+        _modeDigi.Click += async (_, _) => await _host.SwitchCameraModeAsync("DIGICAM");
         _modeCanon.Click += async (_, _) => await _host.SwitchCameraModeAsync("CANON");
         _modeSim.Click += async (_, _) =>
         {
@@ -67,6 +71,8 @@ public sealed class TrayApp : IDisposable
         _camera.Text = s is { Connected: true } ? $"מצלמה: {s.Model}" : $"מצלמה: {_host.CameraError ?? "לא מחוברת"}";
         _queue.Text = failed > 0 ? $"ממתינות להעלאה: {pending} · דורשות טיפול: {failed}" : $"ממתינות להעלאה: {pending}";
         _server.Text = !_host.Settings.IsPaired ? "לא מצומד לשרת" : _host.ServerError ?? $"מצומד: {_host.Settings.DeviceName}";
+        _modeAuto.Checked = _host.Settings.CameraMode == "AUTO";
+        _modeDigi.Checked = _host.Settings.CameraMode == "DIGICAM";
         _modeCanon.Checked = _host.Settings.CameraMode == "CANON";
         _modeSim.Checked = _host.Settings.CameraMode == "SIMULATOR";
         var tone = !_host.Settings.IsPaired || _host.ServerError is not null || failed > 0 ? Color.FromArgb(155, 59, 46)

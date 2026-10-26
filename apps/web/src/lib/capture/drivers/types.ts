@@ -1,6 +1,6 @@
-import type { CaptureStage, FileRole, PhotoCategory } from "@avot/shared";
+import type { CaptureStage, FileRole, PhotoCategory, ProcessingSettings } from "@avot/shared";
 
-export type CameraKind = "WEBCAM" | "SIMULATOR" | "CANON" | "AGENT_SIMULATOR";
+export type CameraKind = "WEBCAM" | "SIMULATOR" | "CANON" | "DIGICAM" | "AGENT_SIMULATOR";
 
 export type ConnectionState = "idle" | "connecting" | "ready" | "busy" | "disconnected" | "error";
 
@@ -43,6 +43,8 @@ export interface CaptureContext {
   lotNumber: number;
   catalogNumber: string;
   sessionId?: string;
+  /** processing settings of the active profile, frozen with the shot */
+  processing?: ProcessingSettings;
 }
 
 export interface CapturedFile {

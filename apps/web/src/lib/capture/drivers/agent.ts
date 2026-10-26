@@ -13,7 +13,7 @@ export interface AgentHello {
   deviceId: string | null;
   deviceName: string | null;
   serverOrigin: string | null;
-  camera: { kind: "CANON" | "SIMULATOR" | "NONE"; model: string | null; connected: boolean };
+  camera: { kind: "CANON" | "DIGICAM" | "SIMULATOR" | "NONE"; model: string | null; connected: boolean };
 }
 
 /** Probes the local Capture Agent. Returns null when it is not installed/running. */
@@ -33,7 +33,7 @@ export async function probeAgent(baseUrl = DEFAULT_AGENT_URL): Promise<AgentHell
 
 interface AgentStatus {
   camera: {
-    kind: "CANON" | "SIMULATOR" | "NONE";
+    kind: "CANON" | "DIGICAM" | "SIMULATOR" | "NONE";
     model: string | null;
     connected: boolean;
     busy: boolean;
@@ -71,7 +71,7 @@ interface AgentEvent {
  * them to the cloud itself. The browser only shows live view and status.
  */
 export class AgentDriver extends Emitter implements CameraDriver {
-  readonly kind: "CANON" | "AGENT_SIMULATOR";
+  readonly kind: "CANON" | "DIGICAM" | "AGENT_SIMULATOR";
   readonly storage = "agent" as const;
   private lease: string | null = null;
   private token: string | null = null;
@@ -85,11 +85,11 @@ export class AgentDriver extends Emitter implements CameraDriver {
     readonly baseUrl: string,
     readonly deviceId: string,
     readonly label: string,
-    cameraKind: "CANON" | "SIMULATOR" | "NONE",
+    cameraKind: "CANON" | "DIGICAM" | "SIMULATOR" | "NONE",
     private readonly getToken: () => Promise<string>,
   ) {
     super();
-    this.kind = cameraKind === "SIMULATOR" ? "AGENT_SIMULATOR" : "CANON";
+    this.kind = cameraKind === "SIMULATOR" ? "AGENT_SIMULATOR" : cameraKind === "DIGICAM" ? "DIGICAM" : "CANON";
   }
 
   private headers(json = false): HeadersInit {

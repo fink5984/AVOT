@@ -20,8 +20,9 @@ import {
   RefreshCw,
   RotateCw,
   ScanLine,
+  SlidersHorizontal,
 } from "lucide-react";
-import { PHOTO_CATEGORIES, type CaptureStage, type PhotoCategory } from "@avot/shared";
+import { PHOTO_CATEGORIES, type BgSample, type CaptureStage, type PhotoCategory } from "@avot/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/field";
@@ -35,15 +36,20 @@ import { cn } from "@/lib/cn";
 import { outbox, sha256Hex, storageHealth, type OutboxEntry, type StorageHealth } from "@/lib/capture/outbox";
 import { uploader } from "@/lib/capture/uploader";
 import { DEFAULT_PREFS, isTypingTarget, keyLabel, mergePrefs, playShutter, savePrefs, type CapturePrefs } from "@/lib/capture/prefs";
+import { useCaptureProfile } from "@/lib/capture/profile";
 import type { CameraControl, CameraDriver, CameraInfo, CaptureContext, ConnectionState } from "@/lib/capture/drivers/types";
 import { WebcamDriver } from "@/lib/capture/drivers/webcam";
 import { SimulatorDriver } from "@/lib/capture/drivers/simulator";
-import { AgentDriver } from "@/lib/capture/drivers/agent";
+import { AgentDriver, probeAgent } from "@/lib/capture/drivers/agent";
 import type { AssetDto } from "@/server/services/asset-dto";
 import type { CaptureLotContext } from "@/server/services/capture-context";
 import { CameraPicker, type CameraChoice } from "./camera-picker";
 import { Filmstrip, type StripItem } from "./filmstrip";
 import { LiveView } from "./live-view";
+import { LiveSegmentation, type LiveSegStatus } from "./live-segmentation";
+import { CameraSettingsDialog } from "./camera-settings-dialog";
+import { PhotoEditorDialog, warningLabel } from "./photo-editor";
+import { ControlRow } from "./control-row";
 import { ScanOpenDialog } from "./scan-open-dialog";
 
 interface LocalShot {
@@ -69,14 +75,25 @@ const SERVER_STAGE: Record<AssetDto["uploadStatus"], CaptureStage> = {
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: "לא מחובר",
   connecting: "מתחבר…",
-  ready: "מוכן לצילום",
-  busy: "המצלמה עסוקה",
+  ready: "מחוברת · מוכנה לצילום",
+  busy: "מצלמת…",
   disconnected: "מנותק",
   error: "שגיאה",
 };
 
-const KIND_LABEL = { WEBCAM: "מצלמת רשת", SIMULATOR: "סימולטור", CANON: "Canon EDSDK", AGENT_SIMULATOR: "סימולטור Agent" } as const;
+const KIND_LABEL = { WEBCAM: "מצלמת רשת", SIMULATOR: "סימולטור", CANON: "Canon EDSDK", DIGICAM: "digiCamControl", AGENT_SIMULATOR: "סימולטור Agent" } as const;
 
+const PROCESSED_STATE: Record<string, string> = {
+  QUEUED: "בתור לעיבוד",
+  PREVIEW_READY: "תצוגה מהירה — הגרסה המלאה בדרך",
+  DONE: "מעובדת",
+  NEEDS_REVIEW: "דורשת בדיקה — לא נחתכה אוטומטית",
+  FAILED: "העיבוד נכשל — המקור שמור",
+};
+
+function processedLabel(p: NonNullable<AssetDto["processed"]>): string {
+  return `${PROCESSED_STATE[p.state] ?? p.state}${p.confidence !== null ? ` · ביטחון ${Math.round(p.confidence * 100)}%` : ""}`;
+}
 export function CaptureStudio({
   user,
   initialContext,
@@ -111,6 +128,14 @@ export function CaptureStudio({
     });
   }, []);
 
+  // ── camera profile: processing settings + camera values, persisted and restored ──
+  const profile = useCaptureProfile(prefs.activeProfileId, (id) => setPrefs({ activeProfileId: id }));
+  const processing = profile.settings.processing;
+  const processingRef = useRef(processing);
+  processingRef.current = processing;
+  const patchRef = useRef(profile.patchProcessing);
+  patchRef.current = profile.patchProcessing;
+
   // ── camera ─────────────────────────────────────────────────────
   const driverRef = useRef<CameraDriver | null>(null);
   const [choice, setChoice] = useState<CameraChoice | null>(null);
@@ -135,7 +160,8 @@ export function CaptureStudio({
 
   // ── view ───────────────────────────────────────────────────────
   const [zoom, setZoom] = useState(1);
-  const [rotation, setRotation] = useState(0);
+  // rotation belongs to the profile: it turns the live view and the saved (processed) pixels alike
+  const rotation = processing.rotation;
   const [peaking, setPeaking] = useState(false);
   const [hidePanels, setHidePanels] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
@@ -143,6 +169,11 @@ export function CaptureStudio({
   const [advanceOpen, setAdvanceOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const [completing, setCompleting] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
+  const [liveStatus, setLiveStatus] = useState<LiveSegStatus | null>(null);
+  const [editAsset, setEditAsset] = useState<AssetDto | null>(null);
+  const rotateView = useCallback(() => patchRef.current({ rotation: ((processingRef.current.rotation + 90) % 360) as 0 | 90 | 180 | 270 }), []);
 
   const updateShot = useCallback((captureId: string, patch: Partial<LocalShot> & { lotId?: string; category?: PhotoCategory }) => {
     setShots((m) => {
@@ -285,6 +316,7 @@ export function CaptureStudio({
           category: categoryRef.current,
           lotNumber: cur.lot.lotNumber,
           catalogNumber: cur.catalog.number,
+          processing: processingRef.current,
         });
         const s = await api<{ session: { id: string } }>("/api/capture-sessions", {
           method: "POST",
@@ -293,7 +325,7 @@ export function CaptureStudio({
             category: categoryRef.current,
             cameraKind: c.kind,
             cameraName: driver.info().name,
-            deviceId: c.kind === "CANON" || c.kind === "AGENT_SIMULATOR" ? c.id : null,
+            deviceId: c.kind === "CANON" || c.kind === "DIGICAM" || c.kind === "AGENT_SIMULATOR" ? c.id : null,
           },
         }).catch(() => null);
         setSessionId(s?.session.id ?? null);
@@ -317,7 +349,20 @@ export function CaptureStudio({
     const last = p.lastCamera;
     if (last?.kind === "WEBCAM") void connectChoice({ kind: "WEBCAM", id: last.id, label: last.label ?? "מצלמת רשת" });
     else if (last?.kind === "SIMULATOR" && simulatorAllowed) void connectChoice({ kind: "SIMULATOR", id: "simulator", label: "סימולטור" });
-    else setPickerOpen(true);
+    else if (last && (last.kind === "CANON" || last.kind === "DIGICAM" || last.kind === "AGENT_SIMULATOR")) {
+      // the station's camera is reconnected without asking again; the picker opens only when the agent is not there
+      void probeAgent(p.agentUrl).then((hello) => {
+        if (hello?.paired && hello.deviceId === last.id && hello.camera.kind !== "NONE") {
+          void connectChoice({
+            kind: hello.camera.kind === "SIMULATOR" ? "AGENT_SIMULATOR" : hello.camera.kind === "DIGICAM" ? "DIGICAM" : "CANON",
+            id: last.id,
+            label: last.label ?? hello.deviceName ?? "עמדת צילום",
+            agentUrl: p.agentUrl,
+            cameraKind: hello.camera.kind,
+          });
+        } else setPickerOpen(true);
+      });
+    } else setPickerOpen(true);
   }, [connectChoice, serverPrefs, simulatorAllowed]);
 
   // webcam came back after unplug → reconnect automatically
@@ -345,7 +390,7 @@ export function CaptureStudio({
     if (sessionRef.current) void api(`/api/capture-sessions/${sessionRef.current}`, { method: "PATCH", json: { activeCategory: cat, lotId } }).catch(() => undefined);
     const c = ctxRef.current;
     void driverRef.current
-      ?.setActiveContext?.({ lotId, catalogId: c.catalog.id, category: cat, lotNumber: c.lot.lotNumber, catalogNumber: c.catalog.number })
+      ?.setActiveContext?.({ lotId, catalogId: c.catalog.id, category: cat, lotNumber: c.lot.lotNumber, catalogNumber: c.catalog.number, processing: processingRef.current })
       .catch(() => undefined);
   }, []);
 
@@ -412,6 +457,7 @@ export function CaptureStudio({
       lotNumber: c.lot.lotNumber,
       catalogNumber: c.catalog.number,
       sessionId: sessionRef.current ?? undefined,
+      processing: processingRef.current,
     };
     if (replaceRef.current) {
       pendingReplace.current.set(frozen.captureId, replaceRef.current);
@@ -439,6 +485,7 @@ export function CaptureStudio({
         sessionId: frozen.sessionId,
         capturedAt: new Date(now).toISOString(),
         exif: shot.exif,
+        processing: frozen.processing,
         files,
         stage: "SAVED_LOCAL",
         attempts: 0,
@@ -486,7 +533,7 @@ export function CaptureStudio({
       else if (e.code === "KeyH") setHidePanels((h) => !h);
       else if (e.code === "KeyF") void root.current?.requestFullscreen?.();
       else if (e.code === "KeyZ") setZoom((z) => (z >= 4 ? 1 : z * 2));
-      else if (e.code === "KeyR") setRotation((r) => (r + 90) % 360);
+      else if (e.code === "KeyR") rotateView();
     };
     const onUp = (e: KeyboardEvent) => {
       if (handledSpace.current && (e.code === "Space" || e.code === prefsRef.current.captureKey)) {
@@ -500,7 +547,7 @@ export function CaptureStudio({
       window.removeEventListener("keydown", onDown, true);
       window.removeEventListener("keyup", onUp, true);
     };
-  }, [trigger, setCategory, switchLot, setPrefs, viewerIndex]);
+  }, [trigger, setCategory, switchLot, setPrefs, viewerIndex, rotateView]);
 
   // ── filmstrip model ────────────────────────────────────────────
   const allItems = useMemo<StripItem[]>(() => {
@@ -516,6 +563,7 @@ export function CaptureStudio({
         src: a.thumbUrl,
         rotation: a.rotation,
         isPrimary: a.isPrimary,
+        processing: a.processed && a.processed.state !== "NONE" ? { state: a.processed.state, warnings: a.processed.warnings.map(warningLabel) } : null,
         createdAt: new Date(a.capturedAt).getTime(),
       });
     }
@@ -554,6 +602,45 @@ export function CaptureStudio({
 
   const stripItems = prefs.filmstripScope === "all" ? allItems : allItems.filter((i) => i.category === category);
   const pendingHere = allItems.filter((i) => i.stage !== "VERIFIED" && i.stage !== "FAILED").length;
+  const processingCount = ctx.assets.filter((a) => a.processed?.state === "QUEUED" || a.processed?.state === "PREVIEW_READY").length;
+
+  // the full-resolution pass finishes in the background — pick up the final image without a reload
+  useEffect(() => {
+    if (processingCount === 0) return;
+    const id = setInterval(refreshAssets, 2500);
+    return () => clearInterval(id);
+  }, [processingCount, refreshAssets]);
+
+  // the active profile's camera values are restored once per connection (only what this camera reports)
+  const restoredFor = useRef<CameraDriver | null>(null);
+  useEffect(() => {
+    const d = driverRef.current;
+    if (!d || conn.state !== "ready" || !profile.ready || restoredFor.current === d) return;
+    restoredFor.current = d;
+    if (d.kind === "AGENT_SIMULATOR" || d.kind === "SIMULATOR") return;
+    for (const c of d.controls()) {
+      const v = profile.settings.camera[c.id];
+      if (v === undefined || c.readOnly || c.type === "action") continue;
+      if (c.type === "select" && !c.options?.some((o) => o.value === String(v))) continue;
+      if (String(c.value) === String(v)) continue;
+      d.setControl(c.id, v).catch(() => undefined);
+    }
+  }, [conn.state, controls, profile.ready, profile.settings.camera]);
+
+  const saveCameraValues = () => {
+    const values: Record<string, string | number | boolean> = {};
+    for (const c of controls) if (c.type !== "action" && !c.readOnly && c.value !== undefined && c.value !== null) values[c.id] = c.value;
+    profile.setCameraValues(values);
+    toast.success("הגדרות המצלמה נשמרו בפרופיל");
+  };
+
+  // hardware-shutter shots use the profile that is active now
+  useEffect(() => {
+    const c = ctxRef.current;
+    void driverRef.current
+      ?.setActiveContext?.({ lotId: c.lot.id, catalogId: c.catalog.id, category: categoryRef.current, lotNumber: c.lot.lotNumber, catalogNumber: c.catalog.number, processing })
+      .catch(() => undefined);
+  }, [processing]);
 
   // ── filmstrip actions ──────────────────────────────────────────
   async function deleteAsset(it: StripItem) {
@@ -642,13 +729,13 @@ export function CaptureStudio({
       originalSrc: asset ? `/api/assets/${asset.id}/original` : it.src,
       downloadHref: asset ? `/api/assets/${asset.id}/original?download=1` : null,
       rotation: it.rotation,
-      details: d?.details ?? [{ label: "מצב", value: t.uploadStage[it.stage] }],
-      warnings: d?.warnings,
+      details: [...(d?.details ?? [{ label: "מצב", value: t.uploadStage[it.stage] }]), ...(asset?.processed ? [{ label: "עיבוד", value: processedLabel(asset.processed) }] : [])],
+      warnings: [...(d?.warnings ?? []), ...(asset?.processed?.warnings.map(warningLabel) ?? [])],
     };
   });
 
   const ready = conn.state === "ready";
-  const isAgent = choice?.kind === "CANON" || choice?.kind === "AGENT_SIMULATOR";
+  const isAgent = choice?.kind === "CANON" || choice?.kind === "DIGICAM" || choice?.kind === "AGENT_SIMULATOR";
   const agentQueue = isAgent ? (driverRef.current as AgentDriver | null)?.queueStatus?.() : null;
   const diskCritical = isAgent ? agentQueue?.disk.level === "critical" : health.level === "critical";
 
@@ -687,6 +774,9 @@ export function CaptureStudio({
           <StudioIcon onClick={() => setScanOpen(true)} title="פתיחת ספר בסריקת ברקוד">
             <ScanLine />
           </StudioIcon>
+          <StudioIcon onClick={() => setSettingsOpen(true)} title="הגדרות מצלמה ועיבוד">
+            <SlidersHorizontal />
+          </StudioIcon>
           <button
             onClick={() => setPickerOpen(true)}
             className="flex h-9 items-center gap-2 rounded-full bg-studio-2 px-3 text-[12.5px] ring-1 ring-studio-rule transition-colors hover:bg-studio-3"
@@ -700,7 +790,7 @@ export function CaptureStudio({
               aria-hidden
             />
             <span className="max-w-48 truncate font-medium">{info?.name ?? choice?.label ?? "בחירת מצלמה"}</span>
-            <span className="hidden text-studio-muted md:inline">{STATE_LABEL[conn.state]}</span>
+            <span className="hidden text-studio-muted md:inline">{conn.state === "ready" && processingCount > 0 ? "מחוברת · מעבדת תמונות" : STATE_LABEL[conn.state]}</span>
             {info?.resolution && (
               <span className="num hidden text-studio-muted lg:inline">
                 {info.resolution.width}×{info.resolution.height}
@@ -827,6 +917,9 @@ export function CaptureStudio({
                 <Button size="sm" variant="studio" icon={<Camera />} onClick={() => setPickerOpen(true)}>
                   החלפת מצלמה
                 </Button>
+                <Button size="sm" variant="studio" icon={<SlidersHorizontal />} onClick={() => setSettingsOpen(true)}>
+                  הגדרות מצלמה
+                </Button>
               </div>
               {choice?.kind === "CANON" && <p className="mt-2 text-[11.5px] leading-snug text-studio-muted">זום עדשת הקיט וגובה המצלמה משתנים ידנית במצלמה ובעמוד הצילום.</p>}
             </section>
@@ -885,6 +978,20 @@ export function CaptureStudio({
                 toast.warning("הדגשת פוקוס אינה זמינה במצלמה זו");
               }}
               flashKey={flashKey}
+              layer={
+                <LiveSegmentation
+                  preview={ready || conn.state === "busy" ? preview : null}
+                  settings={processing}
+                  mode={calibrating ? "frame" : processing.liveMode}
+                  calibrating={calibrating}
+                  onCalibrate={(sample: BgSample) => {
+                    patchRef.current({ bgSample: sample });
+                    setCalibrating(false);
+                    toast.success("צבע הרקע כויל ונשמר בפרופיל");
+                  }}
+                  onStatus={setLiveStatus}
+                />
+              }
             >
               {!ready && conn.state !== "busy" && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center">
@@ -901,6 +1008,9 @@ export function CaptureStudio({
                     )}
                     <Button className="bg-studio-text text-studio hover:bg-white" onClick={() => setPickerOpen(true)}>
                       בחירת מצלמה
+                    </Button>
+                    <Button variant="studio" icon={<SlidersHorizontal />} onClick={() => setSettingsOpen(true)}>
+                      הגדרות מצלמה
                     </Button>
                   </div>
                 </div>
@@ -921,10 +1031,21 @@ export function CaptureStudio({
                   {peaking ? <Eye /> : <EyeOff />}
                   <span>פוקוס</span>
                 </ToolButton>
-                <ToolButton active={rotation !== 0} onClick={() => setRotation((r) => (r + 90) % 360)} title="סיבוב התצוגה (R)">
+                <ToolButton active={rotation !== 0} onClick={rotateView} title="סיבוב (R) — חל על התצוגה ועל הקבצים המעובדים, נשמר בפרופיל">
                   <RotateCw />
                   {rotation !== 0 && <span className="num">{rotation}°</span>}
                 </ToolButton>
+                <span className="mx-1 h-5 w-px bg-white/15" aria-hidden />
+                {(["processed", "frame", "full"] as const).map((m) => (
+                  <ToolButton
+                    key={m}
+                    active={processing.liveMode === m}
+                    onClick={() => profile.patchProcessing({ liveMode: m })}
+                    title={m === "processed" ? "תצוגה מעובדת: הרקע מוסתר והספר חתוך (הערכה בלבד)" : m === "frame" ? "מסגרת גבולות הספר על התצוגה המלאה" : "תצוגה מלאה של המצלמה"}
+                  >
+                    <span>{m === "processed" ? "מעובדת" : m === "frame" ? "מסגרת" : "מלאה"}</span>
+                  </ToolButton>
+                ))}
                 <span className="mx-1 h-5 w-px bg-white/15" aria-hidden />
                 {[1, 2, 4].map((z) => (
                   <ToolButton key={z} active={zoom === z} onClick={() => setZoom(z)} title="הגדלה לבדיקת פוקוס (Z)">
@@ -932,6 +1053,26 @@ export function CaptureStudio({
                   </ToolButton>
                 ))}
               </div>
+            </div>
+
+            {/* live estimate notices */}
+            <div className="pointer-events-none absolute inset-x-0 top-16 flex flex-col items-center gap-1.5 px-3" aria-live="polite">
+              {calibrating && (
+                <div className="pointer-events-auto flex items-center gap-2 rounded-full bg-[#e8b04b] px-3.5 py-1.5 text-[13px] font-medium text-black">
+                  לחצו על הרקע הירוק בתצוגה החיה לכיול
+                  <button type="button" className="rounded-full bg-black/15 px-2 py-0.5 text-[12px] hover:bg-black/25" onClick={() => setCalibrating(false)}>
+                    ביטול
+                  </button>
+                </div>
+              )}
+              {!calibrating && ready && liveStatus?.degraded && processing.liveMode !== "full" && (
+                <div className="rounded-full bg-black/60 px-3 py-1 text-[12px] text-studio-muted ring-1 ring-white/10">העיבוד החי איטי במחשב זה — מוצגת מסגרת חיתוך בלבד. העיבוד המלא מתבצע אחרי הצילום.</div>
+              )}
+              {!calibrating && ready && processing.liveMode !== "full" && liveStatus?.confidence !== null && liveStatus && liveStatus.confidence < processing.minConfidence && (
+                <div className="rounded-full bg-[#4a3a1a]/90 px-3 py-1 text-[12px] text-[#f2d79e] ring-1 ring-white/10" data-testid="live-low-confidence">
+                  זיהוי הספר לא בטוח{liveStatus.warnings.length ? ` — ${liveStatus.warnings.map(warningLabel).join(", ")}` : ""}. בדקו הארה/רקע או התאימו את הרגישות בהגדרות.
+                </div>
+              )}
             </div>
 
             {/* category + shutter */}
@@ -961,6 +1102,11 @@ export function CaptureStudio({
                       <span className="size-1.5 animate-pulse rounded-full bg-[#e8b04b]" aria-hidden />
                       <span className="num">{pendingHere}</span> בתהליך שמירה
                     </>
+                  ) : processingCount > 0 ? (
+                    <>
+                      <span className="size-1.5 animate-pulse rounded-full bg-[#7fb2e8]" aria-hidden />
+                      מעבד <span className="num">{processingCount}</span> תמונות
+                    </>
                   ) : (
                     <>
                       <Check className="size-3.5 text-[#3ecf8e]" />
@@ -986,6 +1132,7 @@ export function CaptureStudio({
               }}
               onPrimary={setPrimary}
               onRetryUpload={(it) => void uploader.retryNow(it.captureId)}
+              onEdit={(it) => setEditAsset(ctx.assets.find((a) => a.id === it.assetId) ?? null)}
               canOrganize={user.canOrganize}
               canDelete={user.canDelete}
               showCategory={prefs.filmstripScope === "all"}
@@ -1004,6 +1151,31 @@ export function CaptureStudio({
       />
 
       <ScanOpenDialog open={scanOpen} onClose={() => setScanOpen(false)} onOpen={(id) => switchLot(id)} />
+
+      <CameraSettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        connected={conn.state === "ready" || conn.state === "busy"}
+        info={info}
+        controls={controls}
+        onControl={(id, v) => driverRef.current?.setControl(id, v).catch((e) => toast.error(errorMessage(e)))}
+        settings={processing}
+        onPatch={profile.patchProcessing}
+        profiles={profile.profiles}
+        activeId={profile.active?.id}
+        saving={profile.saving}
+        onSelectProfile={profile.select}
+        onMakeDefault={() => void profile.makeDefault().then(() => toast.success("הפרופיל הוגדר כברירת מחדל")).catch((e) => toast.error(errorMessage(e)))}
+        onCreateProfile={(name) => void profile.create(name).catch((e) => toast.error(errorMessage(e)))}
+        onDeleteProfile={(id) => void profile.remove(id).catch((e) => toast.error(errorMessage(e)))}
+        onSaveCameraValues={saveCameraValues}
+        onCalibrate={() => {
+          setSettingsOpen(false);
+          setCalibrating(true);
+        }}
+      />
+
+      <PhotoEditorDialog asset={editAsset} onClose={() => setEditAsset(null)} onSaved={() => refreshAssets()} />
 
       <Dialog open={advanceOpen} onClose={() => setAdvanceOpen(false)} title={ctx.target === "item" ? `סיום צילום ${ctx.item.inventoryNumber}` : `סיום פריט ${ctx.lot.lotNumber}`} width="sm">
         <div className="space-y-3 text-[13.5px]">
@@ -1070,74 +1242,5 @@ function ToolButton({ active, onClick, title, children }: { active: boolean; onC
     >
       {children}
     </button>
-  );
-}
-
-function ControlRow({ control: c, onChange }: { control: CameraControl; onChange: (v: number | string | boolean) => void }) {
-  const [local, setLocal] = useState(c.value);
-  useEffect(() => setLocal(c.value), [c.value]);
-  if (c.type === "action") {
-    return (
-      <Button size="sm" variant="studio" onClick={() => onChange(true)} className="w-full">
-        {c.label}
-      </Button>
-    );
-  }
-  if (c.type === "toggle") {
-    return (
-      <Switch
-        tone="studio"
-        label={<span className="text-studio-muted">{c.label}</span>}
-        checked={!!local}
-        disabled={c.readOnly}
-        onChange={(e) => {
-          setLocal(e.target.checked);
-          onChange(e.target.checked);
-        }}
-        aria-label={c.label}
-      />
-    );
-  }
-  return (
-    <div>
-      <div className="mb-1.5 flex justify-between gap-2">
-        <span className="text-studio-muted">{c.label}</span>
-        {c.type === "range" && <span className="num">{c.display ?? (typeof local === "number" ? Number(local.toFixed(2)) : "—")}</span>}
-      </div>
-      {c.type === "range" && (
-        <input
-          type="range"
-          min={c.min}
-          max={c.max}
-          step={c.step}
-          value={typeof local === "number" ? local : c.min}
-          disabled={c.readOnly}
-          onChange={(e) => setLocal(Number(e.target.value))}
-          onPointerUp={(e) => onChange(Number((e.target as HTMLInputElement).value))}
-          onKeyUp={(e) => onChange(Number((e.target as HTMLInputElement).value))}
-          className="w-full accent-[#ededea]"
-          dir="ltr"
-          aria-label={c.label}
-        />
-      )}
-      {c.type === "select" && (
-        <select
-          value={String(local ?? "")}
-          disabled={c.readOnly}
-          onChange={(e) => {
-            setLocal(e.target.value);
-            onChange(e.target.value);
-          }}
-          className="h-9 w-full rounded-md border border-studio-rule bg-studio-3 px-2 text-[13px] text-studio-text"
-          aria-label={c.label}
-        >
-          {c.options?.map((o) => (
-            <option key={o.value} value={o.value}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-      )}
-    </div>
   );
 }

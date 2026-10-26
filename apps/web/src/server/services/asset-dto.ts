@@ -1,5 +1,22 @@
-import type { PhotoCategory } from "@avot/shared";
+import type { PhotoCategory, ProcessingSettings, ManualEdits } from "@avot/shared";
 import type { QualityReport } from "./derivatives";
+import { parseProcessing } from "./derivatives";
+
+export type ImageState = "NONE" | "QUEUED" | "PREVIEW_READY" | "DONE" | "NEEDS_REVIEW" | "FAILED";
+
+/** Green-screen processing of the photo. The thumbnail / preview URLs already show the processed image. */
+export interface ProcessedDto {
+  state: ImageState;
+  /** full-resolution processed file exists (`/api/assets/:id/processed`) */
+  hasFile: boolean;
+  mime: string | null;
+  width: number | null;
+  height: number | null;
+  confidence: number | null;
+  warnings: string[];
+  settings: ProcessingSettings | null;
+  edits: ManualEdits | null;
+}
 
 export interface AssetDto {
   id: string;
@@ -31,6 +48,8 @@ export interface AssetDto {
   reshootNote: string | null;
   deletedAt: string | null;
   createdBy: { id: string; name: string } | null;
+  /** green-screen processing state; null for photos that were never processed */
+  processed: ProcessedDto | null;
   /** worst-case across the shot's files: VERIFIED only when every original is verified */
   uploadStatus: "PENDING" | "UPLOADING" | "VERIFIED" | "FAILED";
   files: { id: string; role: string; mimeType: string; extension: string; sizeBytes: number; uploadStatus: string; sha256: string; originalFilename: string }[];
@@ -57,6 +76,13 @@ type AssetRow = {
   cameraName: string | null;
   thumbKey: string | null;
   processingStatus: string;
+  imageState?: string;
+  processing?: unknown;
+  processingResult?: unknown;
+  processedKey?: string | null;
+  processedMime?: string | null;
+  processedWidth?: number | null;
+  processedHeight?: number | null;
   quality: unknown;
   needsReshoot: boolean;
   reshootNote: string | null;
@@ -72,6 +98,11 @@ export function toAssetDto(a: AssetRow): AssetDto {
     (worst, f) => (RANK[f.uploadStatus as keyof typeof RANK] < RANK[worst] ? (f.uploadStatus as keyof typeof RANK) : worst),
     "VERIFIED",
   );
+  const state = (a.imageState ?? "NONE") as ImageState;
+  const result = (a.processingResult ?? null) as { confidence?: number; warnings?: string[]; at?: number } | null;
+  const proc = parseProcessing(a.processing);
+  // the version marker makes browsers refetch the preview when the processed image changes
+  const v = `?v=${state}${result?.at ?? ""}`;
   return {
     id: a.id,
     inventoryItemId: a.inventoryItemId,
@@ -92,14 +123,28 @@ export function toAssetDto(a: AssetRow): AssetDto {
     source: a.source,
     cameraName: a.cameraName,
     hasThumb: !!a.thumbKey,
-    thumbUrl: a.thumbKey ? `/api/assets/${a.id}/thumb` : null,
-    previewUrl: a.thumbKey ? `/api/assets/${a.id}/preview` : null,
+    thumbUrl: a.thumbKey ? `/api/assets/${a.id}/thumb${v}` : null,
+    previewUrl: a.thumbKey ? `/api/assets/${a.id}/preview${v}` : null,
     processingStatus: a.processingStatus,
     quality: (a.quality as QualityReport | null) ?? null,
     needsReshoot: a.needsReshoot,
     reshootNote: a.reshootNote,
     deletedAt: a.deletedAt?.toISOString() ?? null,
     createdBy: a.createdBy,
+    processed:
+      state === "NONE"
+        ? null
+        : {
+            state,
+            hasFile: !!a.processedKey,
+            mime: a.processedMime ?? null,
+            width: a.processedWidth ?? null,
+            height: a.processedHeight ?? null,
+            confidence: result?.confidence ?? null,
+            warnings: result?.warnings ?? [],
+            settings: proc?.settings ?? null,
+            edits: proc?.edits ?? null,
+          },
     uploadStatus: a.files.length ? status : "PENDING",
     files: a.files.map((f) => ({ ...f, sizeBytes: Number(f.sizeBytes) })),
   };

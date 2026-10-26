@@ -17,6 +17,8 @@ export interface CapturePrefs {
   agentUrl: string;
   lastCamera: { kind: CameraKind; id: string; label?: string } | null;
   filmstripScope: "category" | "all";
+  /** selected camera profile (null = the organization's default) */
+  activeProfileId: string | null;
 }
 
 export const DEFAULT_PREFS: CapturePrefs = {
@@ -32,6 +34,7 @@ export const DEFAULT_PREFS: CapturePrefs = {
   agentUrl: "http://127.0.0.1:47800",
   lastCamera: null,
   filmstripScope: "category",
+  activeProfileId: null,
 };
 
 const LS_KEY = "avot.capturePrefs";

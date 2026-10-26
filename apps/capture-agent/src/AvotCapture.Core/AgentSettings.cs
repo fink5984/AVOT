@@ -21,9 +21,16 @@ public sealed class AgentSettings
     public string? DeviceSecretProtected { get; set; }
     public string StorageRoot { get; set; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "AVOT Studio");
     public int Port { get; set; } = 47800;
-    /// <summary>CANON or SIMULATOR. The simulator must be chosen explicitly at the station.</summary>
-    public string CameraMode { get; set; } = "CANON";
+    /// <summary>AUTO (Canon EDSDK when installed, else digiCamControl) | CANON | DIGICAM | SIMULATOR. The simulator must be chosen explicitly at the station.</summary>
+    public string CameraMode { get; set; } = "AUTO";
     public string? EdsdkPath { get; set; }
+    /// <summary>digiCamControl web server (loopback only).</summary>
+    public string DigiCamUrl { get; set; } = "http://127.0.0.1:5513";
+    /// <summary>Full path of CameraControl.exe; null = autodetect the default install folders.</summary>
+    public string? DigiCamExePath { get; set; }
+    public bool DigiCamAutoLaunch { get; set; } = true;
+    /// <summary>Save_to_PC_only | Save_to_camera_only | Save_to_PC_and_camera (keeps a copy on the card too)</summary>
+    public string DigiCamTransfer { get; set; } = "Save_to_PC_only";
     public bool AutoStart { get; set; } = true;
     /// <summary>0 = keep verified originals forever.</summary>
     public int LocalRetentionDays { get; set; }

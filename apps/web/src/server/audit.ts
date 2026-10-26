@@ -20,7 +20,8 @@ export interface AuditEntry {
     | "location"
     | "pick"
     | "count"
-    | "scan";
+    | "scan"
+    | "camera_profile";
   entityId?: string | null;
   lotId?: string | null;
   /** the physical book this entry belongs to — drives the book's full history */

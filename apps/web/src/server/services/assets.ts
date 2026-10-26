@@ -50,6 +50,13 @@ export const assetSelect = {
   cameraName: true,
   thumbKey: true,
   processingStatus: true,
+  imageState: true,
+  processing: true,
+  processingResult: true,
+  processedKey: true,
+  processedMime: true,
+  processedWidth: true,
+  processedHeight: true,
   quality: true,
   needsReshoot: true,
   reshootNote: true,
@@ -314,6 +321,7 @@ export async function purgeExpiredTrash(orgId: string, retentionDays: number) {
       for (const f of a.files) await store.delete(f.storageKey);
       if (a.thumbKey) await store.delete(a.thumbKey);
       if (a.previewKey) await store.delete(a.previewKey);
+      if (a.processedKey) await store.delete(a.processedKey);
       await db.photoAsset.delete({ where: { id: a.id } });
       await db.auditLog.create({
         data: {

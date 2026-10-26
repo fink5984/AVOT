@@ -31,5 +31,7 @@ export const keys = {
     `orgs/${orgId}/originals/${assetId}/${role.toLowerCase()}.${ext}`,
   thumb: (orgId: string, assetId: string) => `orgs/${orgId}/derived/${assetId}/thumb.webp`,
   preview: (orgId: string, assetId: string) => `orgs/${orgId}/derived/${assetId}/preview.jpg`,
+  /** full-resolution processed image (rotated / background removed / cropped); never overwrites the original */
+  processed: (orgId: string, assetId: string, ext: string) => `orgs/${orgId}/processed/${assetId}/book.${ext}`,
   export: (orgId: string, jobId: string) => `orgs/${orgId}/exports/${jobId}.zip`,
 };

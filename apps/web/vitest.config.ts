@@ -12,6 +12,8 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     environment: "node",
+    // the imaging tests render and process multi-megapixel synthetic photographs
+    testTimeout: 120_000,
     env: {
       APP_SECRET: "unit-test-secret-unit-test-secret-0000",
       DATABASE_URL: "postgresql://unused:unused@127.0.0.1:1/unused",

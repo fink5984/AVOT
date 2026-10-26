@@ -1,13 +1,14 @@
 namespace AvotCapture.Core;
 
 /// <summary>
-/// Hardware abstraction. Implemented by the Canon EDSDK adapter and the
-/// simulator; the coordinator, storage, sync and local API never depend on a
-/// specific camera.
+/// Camera provider interface. Implemented by the Canon EDSDK adapter, the
+/// digiCamControl adapter and the simulator; the coordinator, storage, sync and
+/// local API never depend on a specific provider, so the implementation behind
+/// the capture screen can be swapped without touching the UI.
 /// </summary>
 public interface ICameraDevice : IAsyncDisposable
 {
-    string Kind { get; } // CANON | SIMULATOR
+    string Kind { get; } // CANON | DIGICAM | SIMULATOR
 
     /// <summary>Opens the session. Throws <see cref="CameraException"/> with a user-facing Hebrew message.</summary>
     Task ConnectAsync(CancellationToken ct);

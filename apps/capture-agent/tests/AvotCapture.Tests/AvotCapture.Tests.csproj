@@ -11,5 +11,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\AvotCapture.Core\AvotCapture.Core.csproj" />
     <ProjectReference Include="..\..\src\AvotCapture.Simulator\AvotCapture.Simulator.csproj" />
+    <ProjectReference Include="..\..\src\AvotCapture.DigiCam\AvotCapture.DigiCam.csproj" />
   </ItemGroup>
 </Project>

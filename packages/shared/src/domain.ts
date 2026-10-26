@@ -30,7 +30,7 @@ export type LotStatus = (typeof LOT_STATUSES)[number];
 export const CATALOG_STATUSES = ["DRAFT", "ACTIVE", "ARCHIVED"] as const;
 export type CatalogStatus = (typeof CATALOG_STATUSES)[number];
 
-export const CAPTURE_SOURCES = ["WEBCAM", "CANON_EDSDK", "SIMULATOR", "IMPORT"] as const;
+export const CAPTURE_SOURCES = ["WEBCAM", "CANON_EDSDK", "DIGICAMCONTROL", "SIMULATOR", "IMPORT"] as const;
 export type CaptureSource = (typeof CAPTURE_SOURCES)[number];
 
 export const FILE_ROLES = ["PRIMARY", "RAW"] as const;

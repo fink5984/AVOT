@@ -1,5 +1,6 @@
 using AvotCapture.Canon;
 using AvotCapture.Core;
+using AvotCapture.DigiCam;
 using AvotCapture.Simulator;
 using Microsoft.Extensions.Logging;
 
@@ -97,19 +98,31 @@ public sealed class AgentHost : IAsyncDisposable
 
     private void CreateCamera()
     {
-        if (Settings.CameraMode == "SIMULATOR")
+        switch (Settings.CameraMode)
         {
-            Camera = new SimulatorCamera(Coordinator.NewStagingPath) { RawPlusJpeg = Settings.RawPlusJpegSimulation };
+            case "SIMULATOR":
+                Camera = new SimulatorCamera(Coordinator.NewStagingPath) { RawPlusJpeg = Settings.RawPlusJpegSimulation };
+                break;
+            case "DIGICAM":
+                Camera = NewDigiCam();
+                break;
+            default: // CANON or AUTO
+                if (CanonCamera.IsAvailable(Settings.EdsdkPath, out var err))
+                {
+                    Camera = new CanonCamera(_logs.CreateLogger("Canon"), Coordinator.NewStagingPath);
+                }
+                else if (Settings.CameraMode == "AUTO")
+                {
+                    Camera = NewDigiCam();
+                }
+                else
+                {
+                    CameraError = err;
+                    return;
+                }
+                break;
         }
-        else
-        {
-            if (!CanonCamera.IsAvailable(Settings.EdsdkPath, out var err))
-            {
-                CameraError = err;
-                return;
-            }
-            Camera = new CanonCamera(_logs.CreateLogger("Canon"), Coordinator.NewStagingPath);
-        }
+        if (Camera is null) return;
         Camera.Disconnected += reason =>
         {
             CameraError = reason;
@@ -118,6 +131,29 @@ public sealed class AgentHost : IAsyncDisposable
         };
         Camera.StatusChanged += () => Feed.Publish(seq => new AgentEvent(seq, "camera"));
         Coordinator.AttachCamera(Camera);
+    }
+
+    private ICameraDevice? NewDigiCam()
+    {
+        try
+        {
+            return new DigiCamControlCamera(
+                new DigiCamOptions
+                {
+                    BaseUrl = Settings.DigiCamUrl,
+                    SessionFolder = Path.Combine(Settings.StorageRoot, ".digicam-session"),
+                    ExePath = Settings.DigiCamExePath,
+                    AutoLaunch = Settings.DigiCamAutoLaunch,
+                    TransferMode = Settings.DigiCamTransfer,
+                },
+                _logs.CreateLogger("DigiCam"),
+                Coordinator.NewStagingPath);
+        }
+        catch (CameraException ex)
+        {
+            CameraError = ex.Message;
+            return null;
+        }
     }
 
     public async Task SwitchCameraModeAsync(string mode)

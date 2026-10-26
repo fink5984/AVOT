@@ -19,4 +19,7 @@
   <ItemGroup Condition="Exists('..\..\third_party\EDSDK\EDSDK.dll')">
     <None Include="..\..\third_party\EDSDK\*.dll" Link="EDSDK\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AvotCapture.DigiCam\AvotCapture.DigiCam.csproj" />
+  </ItemGroup>
 </Project>

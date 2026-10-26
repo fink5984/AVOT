@@ -81,6 +81,21 @@ public sealed class ServerClient : IDisposable
         return await Read<JsonElement>(res, ct);
     }
 
+    /// <summary>Settings snapshot frozen with the shot; the server validates it. Unreadable JSON is dropped (server default applies).</summary>
+    internal static JsonElement? ParseProcessing(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == JsonValueKind.Object ? doc.RootElement.Clone() : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     public async Task<RegisterResponse> RegisterAsync(CaptureRecord rec, CancellationToken ct)
     {
         var body = new
@@ -93,6 +108,7 @@ public sealed class ServerClient : IDisposable
             sessionId = rec.Context.SessionId,
             cameraName = rec.CameraName,
             controlToken = rec.ControlToken,
+            processing = ParseProcessing(rec.Context.ProcessingJson),
             exif = new { external = rec.External, agent = true },
             files = rec.Files.Select(f => new
             {

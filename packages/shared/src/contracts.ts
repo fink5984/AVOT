@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CAPTURE_SOURCES, FILE_ROLES, PHOTO_CATEGORIES, SCAN_MODES } from "./domain";
+import { processingSettingsSchema } from "./processing";
 
 /**
  * Wire contracts shared by the web server, the browser capture screen and
@@ -44,6 +45,11 @@ export const registerCaptureSchema = z.object({
   files: z.array(captureFileSchema).min(1).max(2),
   /** Agent uploads: the browser-issued control token, proves which user pressed capture. */
   controlToken: z.string().max(2000).optional(),
+  /**
+   * Green-screen processing settings frozen when the shutter was pressed (rotation,
+   * background removal, crop …). Absent → the organization's default profile applies.
+   */
+  processing: processingSettingsSchema.optional(),
 }).refine((v) => v.inventoryItemId || v.lotId, { message: "inventoryItemId or lotId is required", path: ["inventoryItemId"] });
 export type RegisterCaptureInput = z.infer<typeof registerCaptureSchema>;
 
@@ -83,7 +89,7 @@ export const pairDeviceSchema = z.object({
 export const heartbeatSchema = z.object({
   agentVersion: z.string().max(50),
   apiVersion: z.number().int(),
-  cameraKind: z.enum(["CANON", "SIMULATOR", "NONE"]),
+  cameraKind: z.enum(["CANON", "DIGICAM", "SIMULATOR", "NONE"]),
   cameraModel: z.string().max(200).nullable(),
   cameraConnected: z.boolean(),
   storagePath: z.string().max(500),
@@ -119,6 +125,8 @@ export const agentCaptureRequestSchema = z.object({
   lotNumber: z.number().int(),
   catalogNumber: z.string().max(50),
   sessionId: z.string().uuid().optional(),
+  /** processing settings of the active profile, frozen with the shot */
+  processing: processingSettingsSchema.optional(),
 });
 export type AgentCaptureRequest = z.infer<typeof agentCaptureRequestSchema>;
 

@@ -17,6 +17,7 @@ public sealed class FakeServer : HttpMessageHandler
     public bool DropResponseAfterUpload { get; set; }
     public int Registers;
     public int Uploads;
+    public string? LastRegisterBody;
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage req, CancellationToken ct)
     {
@@ -29,7 +30,8 @@ public sealed class FakeServer : HttpMessageHandler
         if (path == "/api/captures" && req.Method == HttpMethod.Post)
         {
             Registers++;
-            using var doc = JsonDocument.Parse(await req.Content!.ReadAsStringAsync(ct));
+            LastRegisterBody = await req.Content!.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(LastRegisterBody);
             var captureId = doc.RootElement.GetProperty("captureId").GetString()!;
             var assetId = CaptureToAsset.TryGetValue(captureId, out var a) ? a : CaptureToAsset[captureId] = Guid.NewGuid().ToString();
             var files = doc.RootElement.GetProperty("files").EnumerateArray().Select(f =>

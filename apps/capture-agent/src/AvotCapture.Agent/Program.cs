@@ -10,7 +10,7 @@ namespace AvotCapture.Agent;
 ///   --data &lt;dir&gt;                 settings + local DB + logs folder (default %LOCALAPPDATA%\AvotCapture)
 ///   --storage &lt;dir&gt;              photo storage root (persisted in settings)
 ///   --port &lt;n&gt;                   local API port (default 47800, persisted)
-///   --camera CANON|SIMULATOR    camera mode (persisted)
+///   --camera AUTO|CANON|DIGICAM|SIMULATOR   camera mode (persisted; AUTO = Canon EDSDK if installed, else digiCamControl)
 ///   --pair &lt;serverUrl&gt; &lt;code&gt; [name]   pair with AVOT Studio and exit
 /// </summary>
 internal static class Program
@@ -29,7 +29,7 @@ internal static class Program
         var settings = AgentSettings.Load();
         if (Arg(args, "--storage") is { } storage) settings.StorageRoot = Path.GetFullPath(storage);
         if (Arg(args, "--port") is { } port) settings.Port = int.Parse(port);
-        if (Arg(args, "--camera") is { } cam) settings.CameraMode = cam.ToUpperInvariant() == "SIMULATOR" ? "SIMULATOR" : "CANON";
+        if (Arg(args, "--camera") is { } cam) settings.CameraMode = cam.ToUpperInvariant() is "SIMULATOR" or "DIGICAM" or "AUTO" ? cam.ToUpperInvariant() : "CANON";
         settings.Save();
 
         var pairIdx = Array.IndexOf(args, "--pair");

@@ -14,6 +14,8 @@ import { lockItem, recountItem } from "./lot-counters";
 import { resolveItemTarget } from "./inventory";
 import { changeStatus } from "./item-status";
 import { processAssetDerivatives } from "./derivatives";
+import { defaultProcessing } from "./camera-profiles";
+import type { PhotoProcessing } from "@avot/shared";
 
 const EXT_BY_MIME: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -44,6 +46,17 @@ async function resolveCreator(principal: Principal, input: RegisterCaptureInput)
     select: { id: true },
   });
   return user?.id ?? null;
+}
+
+/**
+ * Processing settings are frozen with the shot (what the profile said when the shutter was
+ * pressed). Callers that send none get the organization's default profile; imports and
+ * organizations without any profile are never processed.
+ */
+async function resolveProcessing(orgId: string, input: RegisterCaptureInput): Promise<PhotoProcessing | null> {
+  if (input.source === "IMPORT") return null;
+  const settings = input.processing ?? (await defaultProcessing(orgId));
+  return settings ? { settings } : null;
 }
 
 function toResponse(asset: {
@@ -101,6 +114,7 @@ export async function registerCapture(principal: Principal, input: RegisterCaptu
   }
 
   const primary = input.files.find((f) => f.role === "PRIMARY");
+  const processing = await resolveProcessing(orgId, input);
 
   try {
     return await db.$transaction(async (tx) => {
@@ -127,6 +141,7 @@ export async function registerCapture(principal: Principal, input: RegisterCaptu
           height: primary?.height ?? null,
           exif: (input.exif ?? undefined) as object | undefined,
           createdById,
+          ...(processing ? { processing: processing as object, imageState: "QUEUED" as const } : {}),
         },
       });
       const files = [];
@@ -247,8 +262,12 @@ export async function uploadFileContent(principal: Principal, fileId: string, bo
 
   const pending = await db.photoFile.count({ where: { assetId: file.assetId, uploadStatus: { not: "VERIFIED" } } });
   if (pending === 0) {
-    // derivatives are best-effort here; the job worker retries anything left PENDING
-    await processAssetDerivatives(file.assetId).catch((err) => log.warn("derivatives failed inline", { assetId: file.assetId, err }));
+    // derivatives are best-effort here; the job worker retries anything left PENDING.
+    // The green-screen preview takes a second or two: it runs beside the response so a burst of
+    // uploads is not slowed down (the UI shows "processing" until it lands; a lost run is re-queued by maintenance).
+    const run = () => processAssetDerivatives(file.assetId).catch((err) => log.warn("derivatives failed inline", { assetId: file.assetId, err }));
+    if (file.asset.processing) void run();
+    else await run();
   }
 
   return { fileId: file.id, assetId: file.assetId, uploadStatus: "VERIFIED", sha256: result.sha256, sizeBytes: result.sizeBytes };

@@ -25,7 +25,7 @@ export type ExportScope =
  */
 export function ExportDialog({ open, onClose, request, title }: { open: boolean; onClose: () => void; request: ExportScope; title: string }) {
   const toast = useToast();
-  const [variant, setVariant] = useState<"original" | "catalog-jpeg">("original");
+  const [variant, setVariant] = useState<"original" | "processed" | "catalog-jpeg">("original");
   const [maxSize, setMaxSize] = useState(3000);
   const [includeRaw, setIncludeRaw] = useState(true);
   const [readable, setReadable] = useState(false);
@@ -73,6 +73,7 @@ export function ExportDialog({ open, onClose, request, title }: { open: boolean;
             {(
               [
                 ["original", "קבצי מקור", "באיכות מלאה, כפי שצולמו."],
+                ["processed", "תמונות מעובדות", "חתוכות וללא רקע ירוק, ברזולוציה מלאה (במקור כשאין עיבוד)."],
                 ["catalog-jpeg", "JPEG לקטלוג", "מוקטן לצלע ארוכה מוגדרת, איכות 90."],
               ] as const
             ).map(([v, title, sub]) => (
@@ -93,7 +94,7 @@ export function ExportDialog({ open, onClose, request, title }: { open: boolean;
               {(p) => <Input {...p} type="number" min={400} max={12000} step={100} value={maxSize} onChange={(e) => setMaxSize(Number(e.target.value))} className="num w-32 text-start" />}
             </Field>
           )}
-          {variant === "original" && <Checkbox label="לכלול קובצי RAW (אם צולמו)" checked={includeRaw} onChange={(e) => setIncludeRaw(e.target.checked)} />}
+          {variant !== "catalog-jpeg" && <Checkbox label="לכלול קובצי RAW (אם צולמו)" checked={includeRaw} onChange={(e) => setIncludeRaw(e.target.checked)} />}
           <Checkbox label="שמות תיקיות קריאים (מספר + שם הספר)" checked={readable} onChange={(e) => setReadable(e.target.checked)} />
           <div className="flex gap-2 pt-2">
             <Button variant="primary" loading={busy} onClick={start} icon={<Download />}>

@@ -25,6 +25,7 @@ export function LiveView({
   peaking,
   onPeakingUnavailable,
   flashKey,
+  layer,
   children,
 }: {
   preview: Preview | null;
@@ -35,6 +36,8 @@ export function LiveView({
   peaking: boolean;
   onPeakingUnavailable: () => void;
   flashKey: number;
+  /** drawn inside the rotated / zoomed layer, aligned with the picture (e.g. the processed estimate) */
+  layer?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -197,6 +200,7 @@ export function LiveView({
           >
             <div ref={mountSlot} className="h-full w-full" />
             <canvas ref={peakCanvas} className="pointer-events-none absolute inset-0 h-full w-full" style={{ display: peaking ? "block" : "none" }} aria-hidden />
+            {layer}
           </div>
           <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
             {grid === "thirds" &&
