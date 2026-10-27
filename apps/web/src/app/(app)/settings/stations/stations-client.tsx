@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Link2, MonitorSmartphone } from "lucide-react";
+import { Link2, MonitorSmartphone, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
@@ -102,6 +102,17 @@ export function StationsAdmin({ devices, users, serverUrl }: { devices: Station[
     }
   }
 
+  async function remove(d: Station) {
+    if (!window.confirm(`למחוק לצמיתות את העמדה "${d.name}"? הפעולה בלתי הפיכה — העמדה תוסר מהרשימה. היסטוריית הצילומים נשמרת.`)) return;
+    try {
+      await api(`/api/devices/${d.id}?purge=1`, { method: "DELETE" });
+      toast.success("העמדה נמחקה");
+      router.refresh();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  }
+
   return (
     <>
       <div className="flex flex-wrap items-center gap-3">
@@ -195,6 +206,7 @@ export function StationsAdmin({ devices, users, serverUrl }: { devices: Station[
                             ביטול
                           </Button>
                         )}
+                        <Button size="sm" variant="ghost" icon={<Trash2 />} onClick={() => remove(d)} title="מחיקת העמדה לצמיתות" aria-label="מחיקת העמדה" />
                       </div>
                     </td>
                   </tr>

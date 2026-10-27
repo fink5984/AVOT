@@ -325,8 +325,13 @@ export function CaptureStudio({
         setPreview(driver.previewElement());
         setInfo(driver.info());
         setControls(driver.controls());
-        // the camera may still be in focus-magnification from a previous session — start from the full view
-        if (c.kind === "DIGICAM") void driver.setControl?.("focus:LiveView_Zoom_All", true).catch(() => undefined);
+        // the camera may still be in focus-magnification from a previous session — start from the full view.
+        // live view starts a moment after connect, so re-send once it is up to reliably clear a stuck zoom box.
+        if (c.kind === "DIGICAM") {
+          const resetZoom = () => driverRef.current === driver && void driver.setControl?.("focus:LiveView_Zoom_All", true).catch(() => undefined);
+          resetZoom();
+          setTimeout(resetZoom, 1200);
+        }
         setPrefs({ lastCamera: { kind: c.kind, id: c.id, label: c.label } });
         const cur = ctxRef.current;
         await driver.setActiveContext?.({
@@ -369,9 +374,11 @@ export function CaptureStudio({
     if (last?.kind === "WEBCAM") void connectChoice({ kind: "WEBCAM", id: last.id, label: last.label ?? "מצלמת רשת" });
     else if (last?.kind === "SIMULATOR" && simulatorAllowed) void connectChoice({ kind: "SIMULATOR", id: "simulator", label: "סימולטור" });
     else if (last && (last.kind === "CANON" || last.kind === "DIGICAM" || last.kind === "AGENT_SIMULATOR")) {
-      // the station's camera is reconnected without asking again; the picker opens only when the agent is not there
+      // the station is reconnected without asking again; we connect even when the camera is currently off —
+      // the agent keeps the session and live view starts on its own once the camera is turned on. The picker
+      // opens only when the agent itself is not running on this machine.
       void probeAgent(p.agentUrl).then((hello) => {
-        if (hello?.paired && hello.deviceId === last.id && hello.camera.kind !== "NONE") {
+        if (hello?.paired && hello.deviceId === last.id) {
           void connectChoice({
             kind: hello.camera.kind === "SIMULATOR" ? "AGENT_SIMULATOR" : hello.camera.kind === "DIGICAM" ? "DIGICAM" : "CANON",
             id: last.id,

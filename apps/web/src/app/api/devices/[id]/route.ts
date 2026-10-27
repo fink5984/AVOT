@@ -1,6 +1,6 @@
 import { authenticateUser } from "@/server/auth/principal";
 import { json, parseJson, route } from "@/server/http";
-import { deviceUpdateSchema, revokeDevice, updateDevice } from "@/server/services/devices";
+import { deleteDevice, deviceUpdateSchema, revokeDevice, updateDevice } from "@/server/services/devices";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -11,10 +11,11 @@ export const PATCH = route<Ctx>(async (req, { params }) => {
   return json({ device: { id: d.id, name: d.name, assignedUserId: d.assignedUserId } });
 });
 
-/** Revokes the station: its token stops working immediately. */
+/** Revokes the station (its token stops working immediately) or, with ?purge=1, removes it entirely. */
 export const DELETE = route<Ctx>(async (req, { params }) => {
   const admin = await authenticateUser(req, "device.manage");
   const { id } = await params;
-  await revokeDevice(admin, id);
+  if (new URL(req.url).searchParams.get("purge") === "1") await deleteDevice(admin, id);
+  else await revokeDevice(admin, id);
   return json({ ok: true });
 });

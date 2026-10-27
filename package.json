@@ -1,7 +1,7 @@
 {
   "name": "avot-studio",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AVOT Studio — מערכת צילום וניהול קטלוגים לבית המכירות אבות",
   "workspaces": [
     "packages/*",

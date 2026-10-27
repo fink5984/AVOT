@@ -23,6 +23,7 @@ export function ShelfLabelButton({ ids }: { ids: string[] }) {
 interface Tree {
   id: string;
   name: string;
+  code: string;
   zones: { id: string; code: string; name: string; shelves: { id: string; code: string }[] }[];
 }
 
@@ -30,8 +31,9 @@ interface Tree {
 export function WarehouseEditor({ warehouses }: { warehouses: Tree[] }) {
   const router = useRouter();
   const toast = useToast();
-  const wh = warehouses[0];
-  const zones = warehouses.flatMap((w) => w.zones);
+  const [whId, setWhId] = useState(warehouses[0]?.id ?? "");
+  const wh = warehouses.find((w) => w.id === whId) ?? warehouses[0];
+  const zones = wh?.zones ?? [];
   const [zoneId, setZoneId] = useState(zones[0]?.id ?? "");
   const shelves = zones.find((z) => z.id === zoneId)?.shelves ?? [];
   const [shelfId, setShelfId] = useState(shelves[0]?.id ?? "");
@@ -55,6 +57,56 @@ export function WarehouseEditor({ warehouses }: { warehouses: Tree[] }) {
   return (
     <Panel title="מבנה המחסן">
       <div className="space-y-5 px-5 py-4">
+        <form
+          className="flex items-end gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            const f = new FormData(e.currentTarget);
+            const form = e.currentTarget;
+            void run("warehouse", async () => {
+              const r = await api<{ warehouse: { id: string; code: string } }>("/api/warehouse", { method: "POST", json: { code: f.get("code"), name: f.get("name") } });
+              setWhId(r.warehouse.id);
+              form.reset();
+              return `נוצר מחסן ${r.warehouse.code}`;
+            });
+          }}
+        >
+          <Field label="מחסן חדש — קוד">
+            {(p) => <Input {...p} name="code" required maxLength={8} dir="ltr" className="w-24 font-mono uppercase" placeholder="MAIN" />}
+          </Field>
+          <Field label="שם" className="flex-1">
+            {(p) => <Input {...p} name="name" required maxLength={100} placeholder="מחסן ראשי" />}
+          </Field>
+          <Button type="submit" icon={<Plus />} loading={busy === "warehouse"} aria-label="הוספת מחסן" />
+        </form>
+
+        {warehouses.length > 1 && (
+          <Field label="מחסן פעיל">
+            {(p) => (
+              <Select
+                {...p}
+                value={whId}
+                onChange={(e) => {
+                  setWhId(e.target.value);
+                  const w = warehouses.find((x) => x.id === e.target.value);
+                  setZoneId(w?.zones[0]?.id ?? "");
+                  setShelfId(w?.zones[0]?.shelves[0]?.id ?? "");
+                }}
+              >
+                {warehouses.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name} ({w.code})
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        )}
+
+        {warehouses.length === 0 ? (
+          <p className="text-[13px] text-muted">צרו מחסן ראשון כדי להוסיף אזורים, מדפים ותאים.</p>
+        ) : (
+        <>
         <form
           className="flex items-end gap-2"
           onSubmit={(e) => {
@@ -171,6 +223,8 @@ export function WarehouseEditor({ warehouses }: { warehouses: Tree[] }) {
               יצירת מיקומים
             </Button>
           </form>
+        )}
+        </>
         )}
       </div>
     </Panel>

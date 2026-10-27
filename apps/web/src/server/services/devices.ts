@@ -130,5 +130,16 @@ export async function revokeDevice(user: UserPrincipal, id: string) {
   await audit(user, { action: "device.revoked", entityType: "device", entityId: id, data: { name: device.name } });
 }
 
+/** Permanently removes a station. Its capture sessions keep their history (device reference is nulled). */
+export async function deleteDevice(user: UserPrincipal, id: string) {
+  const device = await db.device.findFirst({ where: { id, organizationId: user.organizationId } });
+  if (!device) throw notFound("עמדת הצילום");
+  await db.$transaction(async (tx) => {
+    await tx.pairingCode.deleteMany({ where: { deviceId: id, organizationId: user.organizationId } });
+    await tx.device.delete({ where: { id } });
+  });
+  await audit(user, { action: "device.deleted", entityType: "device", entityId: id, data: { name: device.name } });
+}
+
 export const ONLINE_WINDOW_MS = 90 * 1000;
 export const isOnline = (lastSeenAt: Date | null) => !!lastSeenAt && Date.now() - lastSeenAt.getTime() < ONLINE_WINDOW_MS;

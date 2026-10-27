@@ -127,7 +127,7 @@ export default async function WarehousePage() {
           </section>
 
           <aside className="space-y-4">
-            {manage && <WarehouseEditor warehouses={tree.map((w) => ({ id: w.id, name: w.name, zones: w.zones.map((z) => ({ id: z.id, code: z.code, name: z.name, shelves: z.shelves.map((s) => ({ id: s.id, code: s.code })) })) }))} />}
+            {manage && <WarehouseEditor warehouses={tree.map((w) => ({ id: w.id, name: w.name, code: w.code, zones: w.zones.map((z) => ({ id: z.id, code: z.code, name: z.name, shelves: z.shelves.map((s) => ({ id: s.id, code: s.code })) })) }))} />}
             <Panel title="ספירות מלאי">
               {counts.length === 0 ? (
                 <p className="px-5 py-4 text-[13px] text-muted">ספירה מתחילים מהמסופון (מצב ספירת מלאי).</p>

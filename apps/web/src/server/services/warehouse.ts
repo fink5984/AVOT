@@ -26,7 +26,11 @@ export async function defaultWarehouse(orgId: string, tx: Tx = db) {
 export const warehouseSchema = z.object({ code: code("קוד מחסן", 8), name: z.string().trim().min(1).max(100), notes: z.string().trim().max(1000).nullish() });
 
 export async function createWarehouse(user: UserPrincipal, input: z.infer<typeof warehouseSchema>) {
-  const w = await db.warehouse.create({ data: { organizationId: user.organizationId, code: input.code, name: input.name, notes: input.notes ?? null } });
+  const clash = await db.warehouse.findUnique({ where: { organizationId_code: { organizationId: user.organizationId, code: input.code } } });
+  if (clash) throw new AppError("CONFLICT", `מחסן ${input.code} כבר קיים`);
+  // the first warehouse in the organization becomes the default (its code is omitted from location barcodes)
+  const first = (await db.warehouse.count({ where: { organizationId: user.organizationId } })) === 0;
+  const w = await db.warehouse.create({ data: { organizationId: user.organizationId, code: input.code, name: input.name, notes: input.notes ?? null, isDefault: first } });
   await audit(user, { action: "warehouse.created", entityType: "warehouse", entityId: w.id, data: { code: w.code, name: w.name } });
   return w;
 }
