@@ -37,17 +37,24 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   await resetCapturePrefs(page);
   await ensureShelf(page);
 
-  // 1. receive a book into inventory through the form
+  // 1. receive a book into inventory with the one-line row: type the name, Enter — no form, no dialog
   await page.goto("/inventory?new=1");
-  const form = page.getByRole("dialog", { name: "ספר חדש למלאי" });
-  await expect(form).toBeVisible();
-  await form.getByLabel("שם הספר").fill(`ספר UI ${RUN}`);
-  await form.getByLabel("מחבר").fill("מחבר UI");
-  await page.getByRole("button", { name: "קליטה למלאי" }).click();
-  await expect(page).toHaveURL(/\/inventory\/[0-9a-f-]{36}$/);
-  const inventoryNumber = (await page.locator("header .font-mono").first().textContent())!.trim();
+  const add = page.getByLabel("הוספת ספר חדש למלאי");
+  await expect(add).toBeFocused();
+  await add.fill(`ספר UI ${RUN}`);
+  await add.press("Enter");
+  await expect(add).toHaveValue(""); // cleared at once, focus stays for the next book
+  await expect(add).toBeFocused();
+  const row = page.locator("tbody tr", { hasText: `ספר UI ${RUN}` });
+  await expect(row).toHaveCount(1, { timeout: 15_000 });
+  const inventoryNumber = (await row.locator(".font-mono").first().textContent())!.trim();
   expect(inventoryNumber).toMatch(/^ITM-\d{6}$/);
-  const itemId = page.url().split("/inventory/")[1]!;
+  const itemId = (await row.getByRole("link", { name: `ספר UI ${RUN}` }).getAttribute("href"))!.split("/inventory/")[1]!;
+  // a double Enter on the same text never makes two books
+  await add.fill(`כפול ${RUN}`);
+  await add.press("Enter");
+  await add.press("Enter");
+  await expect(page.locator("tbody tr", { hasText: `כפול ${RUN}` })).toHaveCount(1, { timeout: 15_000 });
 
   // 2. book label: Code 128 SVG + antique-binding warning
   await page.goto(`/labels/books?ids=${itemId}`);
@@ -76,9 +83,12 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   await page.goto("/scanner");
   const input = page.getByLabel("קלט סורק");
   await expect(input).toBeFocused();
-  await page.getByRole("button", { name: "אחסון", exact: true }).click();
+  // the phone home screen speaks plain Hebrew: pick the activity, then follow "סרוק מדף" → "סרוק ספר"
+  await page.getByRole("button", { name: /הכנסת ספר למחסן/ }).click();
+  await expect(page.getByTestId("step")).toContainText("סרוק מדף");
   await wedge(page, "LOC-A-03-02");
   await expect(page.getByTestId("active-location")).toContainText("LOC-A-03-02");
+  await expect(page.getByTestId("step")).toContainText("סרוק ספר");
   await wedge(page, inventoryNumber);
   const result = page.getByTestId("scan-result");
   await expect(result).toHaveAttribute("data-kind", "ok");
@@ -88,12 +98,15 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
 
   // 5. offline: a shelf change + book scan are queued on the device, never shown as saved
   await context.setOffline(true);
-  await page.getByRole("button", { name: "העברה", exact: true }).click();
+  await page.getByRole("button", { name: "חזרה לפעולות" }).click();
+  await page.getByRole("button", { name: /העברת ספר בין מדפים/ }).click();
+  await expect(page.getByTestId("step")).toContainText("מדף היעד");
   await wedge(page, "LOC-A-03-03");
   await expect(page.getByTestId("active-location")).toContainText("LOC-A-03-03"); // known shelf, from the device cache
   await wedge(page, inventoryNumber);
   await expect(result).toHaveAttribute("data-kind", "queued");
   await expect(result).toContainText("ממתין לסנכרון");
+  await expect(page.getByRole("button", { name: /ממתינות לסנכרון/ })).toBeVisible();
   await expect(page.getByTestId("scan-log").locator('li[data-status="pending"]')).toHaveCount(2);
   let item = (await (await page.request.get(`/api/inventory/${itemId}`)).json()).item;
   void item; // page.request bypasses the offline emulation; the server still has the old place:
@@ -107,7 +120,8 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
 
   // 6. command barcode switches the mode; find shows the book
   await wedge(page, "CMD-FIND");
-  await expect(page.getByRole("button", { name: "איתור", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByTestId("step")).toContainText("סרוק ספר");
+  await expect(page.locator("header")).toContainText("איתור ספר");
   await wedge(page, inventoryNumber);
   await expect(result).toContainText("LOC-A-03-03");
 
