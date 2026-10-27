@@ -117,7 +117,7 @@ begin
   StoragePage := CreateInputDirPage(PairPage.ID, 'תיקיית התמונות', 'היכן נשמרות תמונות המקור לפני ההעלאה לענן',
     'כל צילום נשמר כאן באופן עמיד לפני שהוא מועלה. מומלץ דיסק עם לפחות 20GB פנויים.', False, '');
   StoragePage.Add('');
-  StoragePage.Values[0] := ExpandConstant('{userpics}\AVOT Studio');
+  StoragePage.Values[0] := ExpandConstant('{%USERPROFILE}\Pictures\AVOT Studio');
 
   ResultPage := CreateOutputMsgMemoPage(wpInstalling, 'בדיקת התקנה', 'מצב העמדה אחרי ההתקנה', 'הבדיקות הבאות בוצעו:', '');
 end;
