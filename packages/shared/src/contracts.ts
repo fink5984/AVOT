@@ -149,6 +149,12 @@ export const scanOpSchema = z.object({
   /** true when the op was queued offline and is being synced late */
   deferred: z.boolean().optional(),
   deviceLabel: z.string().max(100).optional(),
+  /**
+   * What "taking a book out" means (only with mode PICK). Absent = pick for a sold-book order.
+   *  TEMP_OUT  the book leaves its shelf for a while (viewing, photography…) and must be shelved again
+   *  FINAL_OUT the book leaves for good: sold and shipped (needs a pick/ship task)
+   */
+  intent: z.enum(["TEMP_OUT", "FINAL_OUT"]).optional(),
 });
 export type ScanOpInput = z.infer<typeof scanOpSchema>;
 

@@ -19,7 +19,7 @@ import {
 } from "@/server/services/warehouse";
 import { hasDb, makeOrg, pairAgent } from "./helpers";
 
-const op = (mode: "STORE" | "TRANSFER" | "FIND" | "COUNT", code: string, extra: Record<string, unknown> = {}) => ({
+const op = (mode: "STORE" | "TRANSFER" | "FIND" | "COUNT" | "PICK", code: string, extra: Record<string, unknown> = {}) => ({
   opId: randomUUID(),
   mode,
   code,
@@ -171,6 +171,43 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
       const r = await processScan(ctx.warehouse, op("COUNT", item.barcode, { contextLocationId: s.activeLocation!.id, countSessionId: session.id }));
       expect(r.warning).toBe(true);
       expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).currentLocationId).toBe(shelfA.id);
+    });
+
+    it("taking a book out: temporary removal leaves it 'awaiting storage' and shelving it again works; final removal ships a sold book only", async () => {
+      const { item } = await createItem(ctx.editor, { title: "יוצא ונכנס" });
+      await manualMove(ctx.admin, item.id, { locationId: shelfA.id });
+
+      const out = await processScan(ctx.warehouse, op("PICK", item.barcode, { intent: "TEMP_OUT" }));
+      expect(out.result).toBe("OK");
+      let row = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+      expect(row.currentLocationId).toBeNull();
+      expect(row.physicalStatus).toBe("AWAITING_STORAGE");
+      const again = await processScan(ctx.warehouse, op("PICK", item.barcode, { intent: "TEMP_OUT" }));
+      expect(again.result).toBe("NOOP");
+      const s = await processScan(ctx.warehouse, op("STORE", shelfB.code));
+      const back = await processScan(ctx.warehouse, op("STORE", item.barcode, { contextLocationId: s.activeLocation!.id }));
+      expect(back.result).toBe("OK");
+      row = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+      expect(row).toMatchObject({ currentLocationId: shelfB.id, physicalStatus: "IN_STORAGE" });
+
+      // final removal: refused without a shipping task, works with one, and is final
+      const noTask = await processScan(ctx.warehouse, op("PICK", item.barcode, { intent: "FINAL_OUT" }));
+      expect(noTask.result).toBe("ERROR");
+      expect(noTask.message).toMatch(/משלוח/);
+      await db.pickTask.create({ data: { organizationId: ctx.org.id, inventoryItemId: item.id, reason: "נמכר", status: "OPEN", sourceLocationId: shelfB.id } });
+      const fin = await processScan(ctx.warehouse, op("PICK", item.barcode, { intent: "FINAL_OUT" }));
+      expect(fin.result).toBe("OK");
+      row = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+      expect(row).toMatchObject({ currentLocationId: null, physicalStatus: "SHIPPED" });
+      const task = await db.pickTask.findFirstOrThrow({ where: { inventoryItemId: item.id } });
+      expect(task.status).toBe("SHIPPED");
+      expect(task.pickedAt && task.packedAt && task.shippedAt).toBeTruthy();
+      const twice = await processScan(ctx.warehouse, op("PICK", item.barcode, { intent: "FINAL_OUT" }));
+      expect(twice.result).toBe("NOOP");
+      // a shipped book can never be put back on a shelf by a scan
+      const s2 = await processScan(ctx.warehouse, op("STORE", shelfA.code));
+      const re = await processScan(ctx.warehouse, op("STORE", item.barcode, { contextLocationId: s2.activeLocation!.id }));
+      expect(re.result).toBe("ERROR");
     });
 
     it("permissions: only warehouse operators scan to store; viewers and photographers cannot", async () => {

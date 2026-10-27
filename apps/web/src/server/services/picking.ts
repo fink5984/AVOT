@@ -88,6 +88,28 @@ export async function pickItemTx(tx: Tx, principal: Principal, itemId: string, o
   return { kind: "picked" as const, task: updated };
 }
 
+/**
+ * Handheld "final removal": the book leaves for good. An open task is picked first (taken off its shelf),
+ * then the task is closed as shipped — pick, pack and ship are still recorded as the three facts they are.
+ */
+export async function shipItemTx(tx: Tx, principal: Principal, itemId: string, opts: { opId?: string | null; occurredAt?: Date } = {}) {
+  const task = await tx.pickTask.findFirst({ where: { inventoryItemId: itemId, status: { in: [...OPEN] } } });
+  if (!task) {
+    const done = await tx.pickTask.findFirst({ where: { inventoryItemId: itemId, status: "SHIPPED" } });
+    return done ? { kind: "already" as const } : { kind: "none" as const };
+  }
+  const when = opts.occurredAt ?? new Date();
+  const by = principal.kind === "user" ? principal.userId : null;
+  if (task.status === "OPEN") await pickItemTx(tx, principal, itemId, opts);
+  await tx.pickTask.update({
+    where: { id: task.id },
+    data: { status: "SHIPPED", pickedAt: task.pickedAt ?? when, pickedById: task.pickedById ?? by, packedAt: task.packedAt ?? when, packedById: task.packedById ?? by, shippedAt: when, shippedById: by },
+  });
+  await changeStatus(tx, principal, itemId, "PHYSICAL", "SHIPPED", { refType: "pick", refId: task.id, reason: "הוצאה סופית" });
+  await audit(principal, { action: "pick.shipped", entityType: "pick", entityId: task.id, inventoryItemId: itemId }, tx);
+  return { kind: "shipped" as const, task };
+}
+
 export async function countOpenPicks(orgId: string, tx: Tx = db) {
   return tx.pickTask.count({ where: { organizationId: orgId, status: "OPEN" } });
 }
