@@ -9,7 +9,8 @@
 ```
 apps/
   web/             Next.js 15 + TypeScript + Prisma/PostgreSQL — האתר, ה-API ומסך הצילום
-  capture-agent/   C# / .NET 10 — תוכנת Windows לשליטה במצלמת Canon (EDSDK), שמירה מקומית וסנכרון
+  capture-agent/   C# / .NET 10 — AVOT Capture Desktop: שליטה במצלמת Canon (EDSDK), שמירה מקומית, סנכרון, חלון ניהול ועדכונים
+  print-agent/     Node.js — סוכן הדפסת תוויות (חיבור יוצא בלבד) למדפסת רשת / USB
 packages/
   shared/          מפתחות דומיין וחוזי API משותפים (Zod)
 scripts/           start-dev.ps1, check-env.ps1, dev-db.ps1
@@ -80,6 +81,9 @@ dotnet test                       # xUnit — תיאום צילום, שמירה,
 
 ## תיעוד
 
+- [**שדרוג זרימות העבודה — סיכום, הרשאות, בדיקות ומה לא נבדק**](docs/workflow-upgrade.md)
+- [הדפסת תוויות — מדפסת קבועה וסוכן הדפסה](docs/label-printing.md)
+- [מחיקה לצמיתות — ספרים, קטלוגים, מחיקה מרוכזת](docs/deletion.md)
 - [Phase 2 — מלאי, בתי מכירות, מחסן, מיגרציה](docs/phase2-inventory.md)
 - [מסופון מחסן](docs/warehouse-scanner.md)
 - [digiCamControl כספק מצלמה (ללא EDSDK שלנו)](docs/digicamcontrol.md)
