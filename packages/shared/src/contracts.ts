@@ -90,15 +90,15 @@ export const heartbeatSchema = z.object({
   agentVersion: z.string().max(50),
   apiVersion: z.number().int(),
   cameraKind: z.enum(["CANON", "DIGICAM", "SIMULATOR", "NONE"]),
-  cameraModel: z.string().max(200).nullable(),
+  cameraModel: z.string().max(200).nullish(),
   cameraConnected: z.boolean(),
   storagePath: z.string().max(500),
   freeDiskBytes: z.number().int().nonnegative(),
   pendingUploads: z.number().int().nonnegative(),
   failedUploads: z.number().int().nonnegative(),
-  lastSyncAt: z.string().datetime().nullable(),
-  lastError: z.string().max(2000).nullable(),
-  controllingUserId: z.string().uuid().nullable(),
+  lastSyncAt: z.string().datetime().nullish(),
+  lastError: z.string().max(2000).nullish(),
+  controllingUserId: z.string().uuid().nullish(),
 });
 export type HeartbeatInput = z.infer<typeof heartbeatSchema>;
 

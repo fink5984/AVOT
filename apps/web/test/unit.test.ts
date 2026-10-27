@@ -159,3 +159,13 @@ describe("capture desktop update manifest", () => {
     expect(releaseSchema.safeParse({ version: "1.0.0", url: "https://ok.example.com/x.exe", sha256: "xyz" }).success).toBe(false);
   });
 });
+
+describe("agent heartbeat payload", () => {
+  it("accepts the body a station sends when it has no camera model / last error / sync time yet (nulls omitted)", async () => {
+    const { heartbeatSchema } = await import("@avot/shared");
+    const body = { agentVersion: "0.2.1", apiVersion: 1, cameraKind: "CANON", cameraConnected: true, storagePath: "C:\\Photos", freeDiskBytes: 38_000_000_000, pendingUploads: 0, failedUploads: 0 };
+    expect(heartbeatSchema.safeParse(body).success).toBe(true);
+    expect(heartbeatSchema.safeParse({ ...body, cameraModel: null, lastSyncAt: null, lastError: null, controllingUserId: null }).success).toBe(true);
+    expect(heartbeatSchema.safeParse({ ...body, freeDiskBytes: -1 }).success).toBe(false);
+  });
+});

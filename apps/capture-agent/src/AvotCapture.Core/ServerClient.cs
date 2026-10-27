@@ -38,6 +38,7 @@ public sealed class ServerClient : IDisposable
 {
     public const int ApiVersion = 1;
     private readonly HttpClient _http;
+    private static readonly JsonSerializerOptions JsonKeepNulls = new(JsonSerializerDefaults.Web);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web) { DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull };
 
     public ServerClient(Uri baseUrl, string? deviceToken, HttpMessageHandler? handler = null)
@@ -97,7 +98,7 @@ public sealed class ServerClient : IDisposable
 
     public async Task<JsonElement> HeartbeatAsync(object body, CancellationToken ct)
     {
-        using var res = await _http.PostAsJsonAsync("api/agent/heartbeat", body, Json, ct);
+        using var res = await _http.PostAsJsonAsync("api/agent/heartbeat", body, JsonKeepNulls, ct); // the server schema wants explicit nulls
         return await Read<JsonElement>(res, ct);
     }
 
