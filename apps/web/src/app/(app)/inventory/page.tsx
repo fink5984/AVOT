@@ -64,7 +64,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             <span className="num">{fmt.num(counts.all)}</span> ספרים · מלאי משותף לכל בתי המכירות
           </span>
         }
-        actions={<InventoryActions canCreate={can(user.role, "inventory.create")} canImport={can(user.role, "inventory.import")} autoOpen={sp.new === "1"} />}
+        actions={<InventoryActions canCreate={can(user.role, "inventory.create")} canImport={can(user.role, "inventory.import")} />}
       />
       <PageBody>
         <div className="flex flex-wrap items-center gap-2">
@@ -126,6 +126,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             relocate: can(user.role, "inventory.relocate"),
           }}
           defaultHouse={house?.slug ?? null}
+          focusAdd={sp.new === "1"}
         />
 
         {pages > 1 && (

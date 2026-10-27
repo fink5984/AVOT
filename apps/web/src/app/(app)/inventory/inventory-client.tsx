@@ -90,7 +90,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * book appears at the top at once, and requests go out one at a time. Every request carries its own key
  * (opId): a double Enter, a retry after a lost response or a second tab can never create a second book.
  */
-function QuickAdd({ onAdded }: { onAdded: (row: InventoryRowDto) => void }) {
+function QuickAdd({ onAdded, autoFocus }: { onAdded: (row: InventoryRowDto) => void; autoFocus?: boolean }) {
   const toast = useToast();
   const [value, setValue] = useState("");
   const [pending, setPending] = useState(0);
@@ -98,6 +98,9 @@ function QuickAdd({ onAdded }: { onAdded: (row: InventoryRowDto) => void }) {
   const chain = useRef<Promise<void>>(Promise.resolve());
   const lastSubmit = useRef<{ title: string; at: number } | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (autoFocus) input.current?.focus();
+  }, [autoFocus]);
 
   async function create(title: string, opId: string) {
     for (let attempt = 0; attempt < 4; attempt++) {
@@ -177,11 +180,13 @@ export function InventoryTable({
   total,
   perms,
   defaultHouse,
+  focusAdd,
 }: {
   rows: InventoryRowDto[];
   total: number;
   perms: { capture: boolean; assign: boolean; label: boolean; edit: boolean; create: boolean; delete: boolean; relocate: boolean };
   defaultHouse: string | null;
+  focusAdd?: boolean;
 }) {
   const router = useRouter();
   const print = usePrintLabels();
@@ -212,7 +217,7 @@ export function InventoryTable({
   return (
     <>
       <div className="mt-4">
-        {perms.create && <QuickAdd onAdded={(row) => setAdded((a) => [row, ...a])} />}
+        {perms.create && <QuickAdd autoFocus={focusAdd} onAdded={(row) => setAdded((a) => [row, ...a])} />}
         <div className="card overflow-hidden">
           {all.length === 0 ? (
             <EmptyState icon={<Library />} title={shownTotal === 0 ? "אין ספרים בתצוגה זו" : "אין תוצאות"}>

@@ -26,15 +26,15 @@ interface NavItem {
 const ALL_BUT_WAREHOUSE: Role[] = ["ADMIN", "EDITOR", "PHOTOGRAPHER", "VIEWER"];
 
 const MAIN: NavItem[] = [
-  { href: "/", label: "סקירה כללית", icon: Home, exact: true },
-  { href: "/inventory", label: "מלאי", icon: Library, also: ["/search"] },
+  { href: "/", label: "לוח עבודה", icon: Home, exact: true },
+  { href: "/inventory", label: "מלאי ספרים", icon: Library, also: ["/search", "/labels"] },
   { href: "/capture", label: "צילום", icon: Camera, roles: ["ADMIN", "EDITOR", "PHOTOGRAPHER"] },
+  { href: "/houses", label: "קטלוגים ומכירות", icon: Gavel, roles: ALL_BUT_WAREHOUSE, exact: true, also: ["/catalogs", "/lots"] },
   { href: "/warehouse", label: "מחסן", icon: Warehouse, roles: ["ADMIN", "EDITOR", "WAREHOUSE", "VIEWER"] },
-  { href: "/scans", label: "סריקות", icon: ScanLine, roles: ["ADMIN", "WAREHOUSE"] },
-  { href: "/houses", label: "בתי מכירות", icon: Gavel, roles: ALL_BUT_WAREHOUSE, exact: true },
 ];
 
 const TOOLS: NavItem[] = [
+  { href: "/scans", label: "יומן סריקות", icon: ScanLine, roles: ["ADMIN", "WAREHOUSE"] },
   { href: "/exports", label: "הורדות", icon: Download, roles: ALL_BUT_WAREHOUSE },
   { href: "/reports", label: "דוחות", icon: BarChart3, roles: ["ADMIN", "EDITOR"] },
   { href: "/trash", label: "סל מחזור", icon: Trash2, roles: ["ADMIN", "EDITOR", "PHOTOGRAPHER"] },

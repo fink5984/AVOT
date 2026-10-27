@@ -12,7 +12,7 @@ import { HouseMark } from "@/components/house-mark";
 import { EmptyState, PageBody, PageHeader, Progress, Stat } from "@/components/ui/misc";
 import { fmt, t } from "@/i18n";
 
-export const metadata = { title: "סקירה כללית" };
+export const metadata = { title: "לוח עבודה" };
 
 export default async function OverviewPage({ searchParams }: { searchParams: Promise<{ denied?: string }> }) {
   const user = await requirePageUser();
@@ -60,7 +60,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
             )}
             {can(user.role, "inventory.create") && (
               <ButtonLink href="/inventory?new=1" variant="primary" icon={<Plus />}>
-                ספר חדש למלאי
+                הוספת ספר
               </ButtonLink>
             )}
           </>
@@ -125,14 +125,15 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
           </section>
         )}
 
+        {/* the numbers each role acts on */}
         <div className="card grid grid-cols-2 gap-px overflow-hidden bg-rule p-0 sm:grid-cols-4 lg:grid-cols-7 [&>*]:bg-paper">
           <Stat href="/inventory" label="ספרים במלאי" value={fmt.num(counts.all)} sub={`${fmt.num(photoCount)} תמונות`} />
-          <Stat href={inv("no_photos")} label="ללא צילום" value={fmt.num(counts.no_photos)} tone={counts.no_photos ? "info" : undefined} />
-          <Stat href={inv("no_location")} label="ללא מיקום במחסן" value={fmt.num(counts.no_location)} tone={counts.no_location ? "warn" : undefined} />
-          <Stat href={inv("no_catalog")} label="ללא קטלוג" value={fmt.num(counts.no_catalog)} />
-          <Stat href={inv("unsold")} label="לא נמכרו" value={fmt.num(counts.unsold)} />
-          <Stat href="/warehouse/picking" label="ליקוט / אריזה / משלוח" value={fmt.num(openPicks)} tone={openPicks ? "accent" : undefined} />
-          <Stat href={inv("missing")} label="חסרים / בבירור" value={fmt.num(counts.missing)} tone={counts.missing ? "danger" : undefined} />
+          {user.role !== "WAREHOUSE" && <Stat href={inv("no_photos")} label="ללא צילום" value={fmt.num(counts.no_photos)} tone={counts.no_photos ? "info" : undefined} />}
+          {user.role !== "PHOTOGRAPHER" && <Stat href={inv("no_location")} label="ללא מיקום במחסן" value={fmt.num(counts.no_location)} tone={counts.no_location ? "warn" : undefined} />}
+          {seesCatalogs && user.role !== "PHOTOGRAPHER" && <Stat href={inv("no_catalog")} label="ללא קטלוג" value={fmt.num(counts.no_catalog)} />}
+          {seesCatalogs && user.role !== "PHOTOGRAPHER" && <Stat href={inv("unsold")} label="לא נמכרו" value={fmt.num(counts.unsold)} />}
+          {user.role !== "PHOTOGRAPHER" && <Stat href="/warehouse/picking" label="ליקוט / אריזה / משלוח" value={fmt.num(openPicks)} tone={openPicks ? "accent" : undefined} />}
+          {user.role !== "PHOTOGRAPHER" && <Stat href={inv("missing")} label="חסרים / בבירור" value={fmt.num(counts.missing)} tone={counts.missing ? "danger" : undefined} />}
         </div>
 
         {conflicts > 0 && (
