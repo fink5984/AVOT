@@ -10,7 +10,7 @@ export const metadata = { title: "עמדות צילום" };
 export default async function StationsPage() {
   const admin = await requirePageUser("device.manage");
   const [devices, users] = await Promise.all([
-    db.device.findMany({ where: { organizationId: admin.organizationId }, orderBy: [{ revokedAt: "asc" }, { name: "asc" }], include: { assignedUser: { select: { name: true } } } }),
+    db.device.findMany({ where: { organizationId: admin.organizationId, kind: "CAPTURE" }, orderBy: [{ revokedAt: "asc" }, { name: "asc" }], include: { assignedUser: { select: { name: true } } } }),
     db.user.findMany({ where: { organizationId: admin.organizationId, status: "ACTIVE" }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
   ]);
   const controllers = await db.user.findMany({ where: { id: { in: devices.map((d) => d.controllingUserId).filter((x): x is string => !!x) } }, select: { id: true, name: true } });

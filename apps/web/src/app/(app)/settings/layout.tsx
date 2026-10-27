@@ -9,6 +9,7 @@ export default async function SettingsLayout({ children }: { children: React.Rea
   const items = [
     { href: "/settings", label: "העדפות צילום" },
     ...(can(user.role, "device.manage") ? [{ href: "/settings/stations", label: "עמדות צילום" }] : []),
+    ...(can(user.role, "print.manage") ? [{ href: "/settings/printer", label: "מדפסת תוויות" }] : []),
     ...(can(user.role, "house.manage") ? [{ href: "/settings/houses", label: "בתי מכירות" }] : []),
     ...(can(user.role, "user.manage") ? [{ href: "/settings/users", label: "משתמשים והרשאות" }] : []),
     ...(can(user.role, "audit.view") ? [{ href: "/settings/audit", label: "יומן פעילות" }] : []),
