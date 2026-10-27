@@ -1,0 +1,16 @@
+# Raspberry Pi / Linux: copy to /etc/systemd/system/, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now avot-print-agent
+[Unit]
+Description=AVOT label print agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/avot-print-agent/src/cli.mjs run
+Restart=always
+RestartSec=5
+User=avot
+Environment=AVOT_PRINT_AGENT_HOME=/var/lib/avot-print-agent
+
+[Install]
+WantedBy=multi-user.target

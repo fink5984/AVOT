@@ -1,0 +1,13 @@
+{
+  "name": "avot-print-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AVOT label print agent: pulls jobs from the AVOT server over outbound HTTPS and sends ZPL to a LAN or Windows printer",
+  "type": "module",
+  "bin": { "avot-print-agent": "src/cli.mjs" },
+  "engines": { "node": ">=20.18" },
+  "scripts": {
+    "start": "node src/cli.mjs run",
+    "test": "node --test test/agent.test.mjs"
+  }
+}
