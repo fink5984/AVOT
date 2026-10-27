@@ -81,10 +81,11 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
 
   // 4. handheld: store by shelf scan + book scan, typed as a keyboard wedge
   await page.goto("/scanner");
+  // the phone home screen speaks plain Hebrew: pick the activity, then follow "סרוק מדף" → "סרוק ספר"
+  await expect(page.getByRole("heading", { name: "מה עושים עכשיו?" })).toBeVisible();
+  await page.getByRole("button", { name: /הכנסת ספר למחסן/ }).click();
   const input = page.getByLabel("קלט סורק");
   await expect(input).toBeFocused();
-  // the phone home screen speaks plain Hebrew: pick the activity, then follow "סרוק מדף" → "סרוק ספר"
-  await page.getByRole("button", { name: /הכנסת ספר למחסן/ }).click();
   await expect(page.getByTestId("step")).toContainText("סרוק מדף");
   await wedge(page, "LOC-A-03-02");
   await expect(page.getByTestId("active-location")).toContainText("LOC-A-03-02");

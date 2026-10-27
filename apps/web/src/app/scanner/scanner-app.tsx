@@ -240,7 +240,8 @@ export function ScannerApp({ user, perms }: { user: { id: string; name: string }
   const startActivity = (a: Activity) => {
     setIntent(a.intent);
     setModeState(a.mode);
-    if (a.mode !== "STORE" && a.mode !== "TRANSFER" && a.mode !== "COUNT") setActive(null);
+    // every activity starts from a clean slate: a destination shelf left over from the previous activity must never be used silently
+    setActive(null);
     setResult(null);
     setOutMenu(false);
     setView("work");
@@ -413,7 +414,7 @@ export function ScannerApp({ user, perms }: { user: { id: string; name: string }
           type="button"
           onClick={() => void flush()}
           className={cn("flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[12.5px]", online ? "bg-studio-3" : "bg-[#5b4210] text-[#ffd98a]")}
-          aria-label={online ? "מחובר — סנכרון" : "אין חיבור"}
+          aria-label={pending > 0 ? `${pending} סריקות ממתינות לסנכרון — לחצו לסנכרון` : online ? "מחובר — סנכרון" : "אין חיבור"}
         >
           {online ? <Wifi className="size-3.5" /> : <WifiOff className="size-3.5" />}
           {pending > 0 ? <span className="num">{pending} ממתינות לסנכרון</span> : online ? "מחובר" : "לא מקוון"}
