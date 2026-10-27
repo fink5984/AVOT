@@ -1,13 +1,10 @@
-import Link from "next/link";
-import { BookOpen } from "lucide-react";
 import type { AuctionHouse } from "@prisma/client";
 import type { UserPrincipal } from "@/server/auth/principal";
 import { can } from "@/server/auth/permissions";
 import { listCatalogs } from "@/server/services/catalogs";
-import { CatalogStatusBadge } from "@/components/ui/badge";
-import { EmptyState, PageBody, PageHeader, Progress } from "@/components/ui/misc";
-import { fmt } from "@/i18n";
-import { CatalogActions, CatalogsToolbar, NewCatalogButton } from "./catalogs-client";
+import { PageBody, PageHeader } from "@/components/ui/misc";
+import { CatalogsToolbar, NewCatalogButton } from "./catalogs-client";
+import { CatalogsTable } from "./catalogs-table";
 import { HouseSwitcher } from "@/components/house-switcher";
 
 export interface CatalogsSearch {
@@ -39,76 +36,23 @@ export async function CatalogsView({ user, house, houses, sp }: { user: UserPrin
       />
       <PageBody>
         <CatalogsToolbar q={sp.q ?? ""} status={status} sort={sp.sort ?? "updated"} />
-        <div className="card mt-4 overflow-x-auto">
-          {catalogs.length === 0 ? (
-            <EmptyState icon={<BookOpen />} title={sp.q ? "לא נמצאו קטלוגים" : "עדיין אין קטלוגים"}>
-              {sp.q ? "נסו מילת חיפוש אחרת או שנו את הסינון." : canEdit ? "צרו את הקטלוג הראשון כדי להתחיל להוסיף ספרים ולצלם." : "מנהל או עורך יכולים ליצור קטלוג."}
-            </EmptyState>
-          ) : (
-            <table className="w-full min-w-[760px] text-[13.5px]">
-              <thead>
-                <tr className="border-b border-rule text-start text-[12.5px] text-muted">
-                  <th className="w-24 px-5 py-3 text-start font-medium">מספר</th>
-                  <th className="px-3 py-3 text-start font-medium">שם הקטלוג</th>
-                  <th className="w-28 px-3 py-3 text-start font-medium">סטטוס</th>
-                  <th className="w-56 px-3 py-3 text-start font-medium">התקדמות</th>
-                  <th className="w-24 px-3 py-3 text-start font-medium">תמונות</th>
-                  <th className="w-28 px-3 py-3 text-start font-medium">מכירה</th>
-                  <th className="w-28 px-3 py-3 text-start font-medium">עודכן</th>
-                  <th className="w-14 px-3 py-3" aria-label="פעולות" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-rule">
-                {catalogs.map((c) => (
-                  <tr key={c.id} className="relative transition-colors hover:bg-stone-2">
-                    <td className="px-5 py-3.5">
-                      <span className="num inline-flex h-7 min-w-9 items-center justify-center rounded-md bg-stone px-2 text-[13px] font-semibold">{c.number}</span>
-                    </td>
-                    <td className="px-3 py-3.5">
-                      {/* stretched link: the whole row opens the catalog, the actions cell sits above it */}
-                      <Link href={`/catalogs/${c.id}`} className="font-semibold text-ink after:absolute after:inset-0">
-                        {c.name}
-                      </Link>
-                      {c.description && <div className="max-w-md truncate text-[12.5px] text-muted">{c.description}</div>}
-                    </td>
-                    <td className="px-3 py-3.5">
-                      <CatalogStatusBadge status={c.status} />
-                    </td>
-                    <td className="px-3 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <Progress value={c.completedCount} max={c.lotCount} className="w-28" />
-                        <span className="num text-[12.5px] text-muted">
-                          {c.completedCount}/{c.lotCount}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="num px-3 py-3.5 text-start text-ink-2">{fmt.num(c.photoCount)}</td>
-                    <td className="px-3 py-3.5 text-muted">{c.saleDate ? fmt.date(c.saleDate) : "—"}</td>
-                    <td className="px-3 py-3.5 text-muted" title={fmt.dateTime(c.updatedAt)}>
-                      {fmt.relative(c.updatedAt)}
-                    </td>
-                    <td className="relative z-10 px-3 py-3.5">
-                      {canEdit && (
-                        <CatalogActions
-                          catalog={{
-                            id: c.id,
-                            number: c.number,
-                            name: c.name,
-                            description: c.description,
-                            saleDate: c.saleDate ? c.saleDate.toISOString().slice(0, 10) : null,
-                            status: c.status,
-                            photoCount: c.photoCount,
-                          }}
-                          canDelete={can(user.role, "catalog.delete")}
-                        />
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <CatalogsTable
+          canEdit={canEdit}
+          canDelete={can(user.role, "catalog.delete")}
+          emptyText={sp.q ? "נסו מילת חיפוש אחרת או שנו את הסינון." : canEdit ? "צרו את הקטלוג הראשון כדי להתחיל להוסיף ספרים ולצלם." : "מנהל או עורך יכולים ליצור קטלוג."}
+          rows={catalogs.map((c) => ({
+            id: c.id,
+            number: c.number,
+            name: c.name,
+            description: c.description,
+            saleDate: c.saleDate ? c.saleDate.toISOString().slice(0, 10) : null,
+            status: c.status,
+            lotCount: c.lotCount,
+            completedCount: c.completedCount,
+            photoCount: c.photoCount,
+            updatedAt: c.updatedAt.toISOString(),
+          }))}
+        />
       </PageBody>
     </>
   );

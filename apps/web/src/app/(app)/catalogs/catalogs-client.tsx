@@ -10,6 +10,7 @@ import { Menu } from "@/components/ui/menu";
 import { Tabs } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/toast";
 import { api, errorMessage } from "@/lib/api";
+import { DeleteDialog } from "@/components/deletion/delete-dialog";
 
 export interface CatalogFormValue {
   id?: string;
@@ -192,20 +193,6 @@ export function CatalogActions({ catalog, canDelete }: { catalog: CatalogFormVal
     }
   }
 
-  async function remove() {
-    setBusy(true);
-    try {
-      await api(`/api/catalogs/${catalog.id}`, { method: "DELETE" });
-      toast.success("הקטלוג נמחק");
-      setDel(false);
-      router.refresh();
-    } catch (err) {
-      toast.error(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <>
       <Menu
@@ -240,23 +227,7 @@ export function CatalogActions({ catalog, canDelete }: { catalog: CatalogFormVal
           <Button onClick={() => setDup(false)}>ביטול</Button>
         </div>
       </Dialog>
-      <Dialog open={del} onClose={() => setDel(false)} title={`מחיקת קטלוג ${catalog.number}`} width="sm">
-        {catalog.photoCount > 0 ? (
-          <p className="text-[13px] text-ink-2">
-            בקטלוג יש <span className="num">{catalog.photoCount}</span> תמונות. כדי להגן על התמונות המקוריות לא ניתן למחוק אותו — ניתן להעביר אותו לארכיון.
-          </p>
-        ) : (
-          <p className="text-[13px] text-ink-2">הקטלוג וכל הפריטים שבו יימחקו. אין בו תמונות. לא ניתן לבטל פעולה זו.</p>
-        )}
-        <div className="mt-5 flex gap-2">
-          {catalog.photoCount === 0 && (
-            <Button variant="danger" loading={busy} onClick={remove}>
-              מחיקה סופית
-            </Button>
-          )}
-          <Button onClick={() => setDel(false)}>{catalog.photoCount ? "סגירה" : "ביטול"}</Button>
-        </div>
-      </Dialog>
+      {del && <DeleteDialog kind="catalogs" open ids={[catalog.id]} onClose={() => setDel(false)} />}
     </>
   );
 }
