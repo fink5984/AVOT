@@ -120,3 +120,24 @@ describe("labels & shortcuts", () => {
     expect(isTypingTarget(new FakeInput("text") as unknown as EventTarget)).toBe(true);
   });
 });
+
+describe("camera scan gate (no double reads)", () => {
+  it("reports a code once while it stays in view, a different code at once, the same code again after it left and the cooldown passed", async () => {
+    const { createCodeGate } = await import("@/lib/scanner/camera");
+    let t = 1_000;
+    const gate = createCodeGate(2500, 900, () => t);
+    expect(gate("ITM-000001")).toBe(true);
+    for (let i = 0; i < 20; i++) {
+      t += 110; // ~20 consecutive frames of the same barcode
+      expect(gate("ITM-000001")).toBe(false);
+    }
+    t += 100;
+    expect(gate("ITM-000002")).toBe(true); // next book immediately
+    t += 100;
+    expect(gate("ITM-000001")).toBe(true); // A → B → A is three real scans
+    t += 1_000; // out of view
+    expect(gate("ITM-000001")).toBe(false); // still inside the 2.5 s cooldown after its last report
+    t += 1_500;
+    expect(gate("ITM-000001")).toBe(true); // shown again on purpose
+  });
+});

@@ -29,6 +29,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@prisma/client": "6.19.3",
+    "@zxing/library": "^0.21.3",
     "archiver": "^7.0.1",
     "lucide-react": "^0.544.0",
     "next": "15.5.28",

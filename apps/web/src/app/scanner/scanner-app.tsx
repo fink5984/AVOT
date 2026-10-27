@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { Check, CircleAlert, Clock, Keyboard, LogOut, MapPin, RefreshCw, TriangleAlert, Wifi, WifiOff } from "lucide-react";
+import { ArrowRight, BookDown, BookUp, Camera, Check, CircleAlert, Clock, ClipboardCheck, Keyboard, LogOut, MapPin, MoveRight, RefreshCw, Search, TriangleAlert, Wifi, WifiOff } from "lucide-react";
 import { SCAN_MODES, classifyCode, type ScanMode, type ScanOpInput, type ScanResponse } from "@avot/shared";
 import { t } from "@/i18n";
 import { ApiError, api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { attachAdapter, createDebouncer, feedback } from "@/lib/scanner/input";
 import { scanQueue, type QueuedScan, type ScanStatus } from "@/lib/scanner/queue";
+import { CameraPane } from "@/components/scanner/camera-pane";
 
 interface Loc {
   id: string;
@@ -43,6 +44,26 @@ const STATUS_TONE: Record<ScanStatus, string> = {
 };
 const LS_KEY = "avot.scanner";
 
+type Intent = "TEMP_OUT" | "FINAL_OUT" | undefined;
+interface Activity {
+  key: string;
+  mode: ScanMode;
+  intent?: Intent;
+  title: string;
+  hint: string;
+  icon: React.ComponentType<{ className?: string }>;
+}
+const ACTIVITIES: Record<string, Activity> = {
+  STORE: { key: "STORE", mode: "STORE", title: "הכנסת ספר למחסן", hint: "סורקים מדף, ואז ספרים ברצף", icon: BookDown },
+  TEMP_OUT: { key: "TEMP_OUT", mode: "PICK", intent: "TEMP_OUT", title: "הוצאה זמנית", hint: "הספר יוצא מהמדף וצריך לחזור אליו", icon: BookUp },
+  PICK: { key: "PICK", mode: "PICK", title: "ליקוט להזמנה", hint: "ספרים שנמכרו, לפי סדר המדפים", icon: BookUp },
+  FINAL_OUT: { key: "FINAL_OUT", mode: "PICK", intent: "FINAL_OUT", title: "הוצאה סופית", hint: "הספר יוצא ונשלח", icon: BookUp },
+  TRANSFER: { key: "TRANSFER", mode: "TRANSFER", title: "העברת ספר בין מדפים", hint: "סורקים מדף יעד ואת הספרים שמועברים אליו", icon: MoveRight },
+  FIND: { key: "FIND", mode: "FIND", title: "איתור ספר", hint: "סורקים ספר ורואים איפה הוא", icon: Search },
+  COUNT: { key: "COUNT", mode: "COUNT", title: "ספירת מלאי", hint: "סורקים מדף וכל הספרים שעליו", icon: ClipboardCheck },
+};
+const activityOf = (mode: ScanMode, intent: Intent) => Object.values(ACTIVITIES).find((a) => a.mode === mode && a.intent === intent) ?? ACTIVITIES.STORE!;
+
 function statusOf(r: ScanResponse): ScanStatus {
   return r.result === "OK" || r.result === "NOOP" ? "synced" : r.result === "CONFLICT" ? "conflict" : "error";
 }
@@ -59,6 +80,10 @@ function toResult(r: ScanResponse): Result {
 
 export function ScannerApp({ user, perms }: { user: { id: string; name: string }; perms: { operate: boolean; manage: boolean } }) {
   const [mode, setModeState] = useState<ScanMode>(perms.operate ? "STORE" : "FIND");
+  const [intent, setIntent] = useState<Intent>(undefined);
+  const [view, setView] = useState<"home" | "work">("home");
+  const [outMenu, setOutMenu] = useState(false);
+  const [cameraOn, setCameraOn] = useState(true);
   const [active, setActive] = useState<Loc | null>(null);
   const [count, setCount] = useState<{ id: string; zone: string | null } | null>(null);
   const [result, setResult] = useState<Result | null>(null);
@@ -74,8 +99,8 @@ export function ScannerApp({ user, perms }: { user: { id: string; name: string }
   const input = useRef<HTMLInputElement>(null);
   const locCache = useRef<Map<string, Loc>>(new Map());
   const debounce = useMemo(() => createDebouncer(700), []);
-  const stateRef = useRef({ mode, active, count });
-  stateRef.current = { mode, active, count };
+  const stateRef = useRef<{ mode: ScanMode; active: Loc | null; count: { id: string; zone: string | null } | null; intent: Intent }>({ mode, active, count, intent });
+  stateRef.current = { mode, active, count, intent };
 
   const allowedModes = SCAN_MODES.filter((m) => m === "FIND" || perms.operate);
 
@@ -212,7 +237,16 @@ export function ScannerApp({ user, perms }: { user: { id: string; name: string }
     if (mode === "COUNT") void loadCounts();
   }, [mode, loadPicks, loadCounts]);
 
+  const startActivity = (a: Activity) => {
+    setIntent(a.intent);
+    setModeState(a.mode);
+    if (a.mode !== "STORE" && a.mode !== "TRANSFER" && a.mode !== "COUNT") setActive(null);
+    setResult(null);
+    setOutMenu(false);
+    setView("work");
+  };
   const setMode = (m: ScanMode) => {
+    setIntent(undefined);
     setModeState(m);
     if (m !== "STORE" && m !== "TRANSFER" && m !== "COUNT") setActive(null);
     setResult({ kind: "ok", title: `מצב ${t.scanMode[m]}`, lines: [m === "STORE" || m === "TRANSFER" ? "סרקו ברקוד מדף" : m === "COUNT" ? "בחרו ספירה וסרקו מיקום" : "סרקו ברקוד ספר"] });
@@ -224,7 +258,7 @@ export function ScannerApp({ user, perms }: { user: { id: string; name: string }
       const code = raw.trim();
       if (!code || debounce(code)) return;
       const parsed = classifyCode(code);
-      const { mode: m, active: loc, count: cnt } = stateRef.current;
+      const { mode: m, active: loc, count: cnt, intent: why } = stateRef.current;
 
       if (parsed.type === "COMMAND") {
         if (!allowedModes.includes(parsed.mode)) {
@@ -252,6 +286,7 @@ export function ScannerApp({ user, perms }: { user: { id: string; name: string }
         countSessionId: cnt?.id ?? null,
         clientAt: new Date().toISOString(),
         deviceLabel: navigator.userAgent.slice(0, 100),
+        ...(m === "PICK" && why ? { intent: why } : {}),
       };
       const entry: QueuedScan = { opId: op.opId, userId: user.id, op, status: "pending", deferred: false, attempts: 0, createdAt: Date.now(), updatedAt: Date.now() };
       await scanQueue.put(entry); // durable before anything is shown
@@ -341,51 +376,131 @@ export function ScannerApp({ user, perms }: { user: { id: string; name: string }
   }
 
   const pending = log.filter((l) => l.status === "pending").length;
+  const act = activityOf(mode, intent);
+  // exactly what to scan next — plain words, no technical names
+  const step =
+    mode === "STORE"
+      ? active
+        ? { big: "סרוק ספר", small: `על המדף ${active.code}. אפשר להחליף מדף בכל רגע — פשוט סרקו מדף אחר.` }
+        : { big: "סרוק מדף", small: "קודם סורקים את ברקוד המדף שעליו מניחים את הספרים" }
+      : mode === "TRANSFER"
+        ? active
+          ? { big: "סרוק את הספרים שמועברים", small: `יעד: ${active.code}. הספרים עוברים מהמקום שבו הם נמצאים עכשיו.` }
+          : { big: "סרוק את מדף היעד", small: "אין צורך לסרוק את מדף המקור" }
+        : mode === "COUNT"
+          ? !count
+            ? { big: "בחרו ספירה", small: "או התחילו ספירה חדשה למטה" }
+            : active
+              ? { big: "סרוק ספרים", small: `סופרים את ${active.code}` }
+              : { big: "סרוק מדף", small: "ואז את כל הספרים שעליו" }
+          : mode === "FIND"
+            ? { big: "סרוק ספר", small: "תוצג התמונה והמיקום המדויק" }
+            : { big: "סרוק ספר", small: act.hint };
+
+  const header = (
+    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-studio-rule px-3">
+      {view === "work" ? (
+        <button type="button" onClick={() => setView("home")} className="flex h-8 items-center gap-1.5 rounded-full bg-studio-3 ps-2 pe-3 text-[13px] font-medium" aria-label="חזרה לפעולות">
+          <ArrowRight className="size-4" />
+          פעולות
+        </button>
+      ) : (
+        <span className="text-[14px] font-semibold">מסופון</span>
+      )}
+      <span className="truncate text-[12.5px] text-studio-muted">{view === "work" ? act.title : user.name}</span>
+      <div className="ms-auto flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => void flush()}
+          className={cn("flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[12.5px]", online ? "bg-studio-3" : "bg-[#5b4210] text-[#ffd98a]")}
+          aria-label={online ? "מחובר — סנכרון" : "אין חיבור"}
+        >
+          {online ? <Wifi className="size-3.5" /> : <WifiOff className="size-3.5" />}
+          {pending > 0 ? <span className="num">{pending} ממתינות לסנכרון</span> : online ? "מחובר" : "לא מקוון"}
+          {syncing && <RefreshCw className="size-3.5 animate-spin" />}
+        </button>
+        <Link href="/" className="flex size-8 items-center justify-center rounded-full bg-studio-3" aria-label="יציאה למערכת" title="למערכת">
+          <LogOut className="size-3.5" />
+        </Link>
+      </div>
+    </header>
+  );
+  const loginBanner = needLogin && (
+    <a href="/login?next=/scanner" className="bg-[#6b1513] px-3 py-2 text-center text-[13px]">
+      פג תוקף ההתחברות — הסריקות נשמרות במכשיר. לחצו כאן להתחברות מחדש.
+    </a>
+  );
+
+  if (view === "home") {
+    const tiles: { a: Activity | null; title: string; hint: string; icon: Activity["icon"]; on: () => void; off?: boolean }[] = [
+      { a: ACTIVITIES.STORE!, title: ACTIVITIES.STORE!.title, hint: ACTIVITIES.STORE!.hint, icon: BookDown, on: () => startActivity(ACTIVITIES.STORE!), off: !perms.operate },
+      { a: null, title: "הוצאת ספר מהמחסן", hint: "זמנית, ליקוט להזמנה או הוצאה סופית", icon: BookUp, on: () => setOutMenu(true), off: !perms.operate },
+      { a: ACTIVITIES.TRANSFER!, title: ACTIVITIES.TRANSFER!.title, hint: ACTIVITIES.TRANSFER!.hint, icon: MoveRight, on: () => startActivity(ACTIVITIES.TRANSFER!), off: !perms.operate },
+      { a: ACTIVITIES.FIND!, title: ACTIVITIES.FIND!.title, hint: ACTIVITIES.FIND!.hint, icon: Search, on: () => startActivity(ACTIVITIES.FIND!) },
+      { a: ACTIVITIES.COUNT!, title: ACTIVITIES.COUNT!.title, hint: ACTIVITIES.COUNT!.hint, icon: ClipboardCheck, on: () => startActivity(ACTIVITIES.COUNT!), off: !perms.operate },
+    ];
+    return (
+      <div className="flex min-h-dvh flex-col bg-studio text-studio-text">
+        {header}
+        {loginBanner}
+        <main className="flex flex-1 flex-col gap-3 p-3">
+          <h1 className="px-1 pt-1 text-[22px] font-bold">מה עושים עכשיו?</h1>
+          {tiles.map((t_) => (
+            <button
+              key={t_.title}
+              type="button"
+              disabled={t_.off}
+              onClick={t_.on}
+              className="flex min-h-24 items-center gap-4 rounded-2xl bg-studio-2 px-5 py-4 text-start ring-1 ring-studio-rule active:bg-studio-3 disabled:opacity-35"
+            >
+              <span className="flex size-14 shrink-0 items-center justify-center rounded-xl bg-studio-3">
+                <t_.icon className="size-7" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[20px] font-bold leading-tight">{t_.title}</span>
+                <span className="mt-0.5 block text-[14px] text-studio-muted">{t_.hint}</span>
+              </span>
+            </button>
+          ))}
+          {pending > 0 && <p className="rounded-lg bg-[#5b4210] px-4 py-3 text-[14px] text-[#ffd98a]">{pending} סריקות ממתינות לסנכרון — הן נשמרות במכשיר ויישלחו כשיחזור החיבור.</p>}
+        </main>
+        {outMenu && (
+          <div className="fixed inset-0 z-40 flex items-end bg-black/60" onClick={() => setOutMenu(false)} role="dialog" aria-label="סוג ההוצאה">
+            <div className="w-full space-y-2 rounded-t-3xl bg-studio-2 p-4 pb-8" onClick={(e) => e.stopPropagation()}>
+              <h2 className="px-1 pb-1 text-[18px] font-bold">איזו הוצאה?</h2>
+              {[ACTIVITIES.TEMP_OUT!, ACTIVITIES.PICK!, ACTIVITIES.FINAL_OUT!].map((a) => (
+                <button key={a.key} type="button" onClick={() => startActivity(a)} className="block w-full rounded-xl bg-studio-3 px-4 py-3.5 text-start">
+                  <span className="block text-[17px] font-semibold">{a.title}</span>
+                  <span className="block text-[13.5px] text-studio-muted">{a.hint}</span>
+                </button>
+              ))}
+              <button type="button" onClick={() => setOutMenu(false)} className="mt-1 h-11 w-full rounded-xl text-[15px] text-studio-muted">
+                ביטול
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
   const tone = result ? { ok: "bg-[#0f5132] ring-[#2fbf71]", warn: "bg-[#5b4210] ring-[#f0b429]", error: "bg-[#6b1513] ring-[#ff5d52]", queued: "bg-[#3d3410] ring-[#d9b84a]" }[result.kind] : "bg-studio-2 ring-studio-rule";
   const Icon = result ? { ok: Check, warn: TriangleAlert, error: CircleAlert, queued: Clock }[result.kind] : MapPin;
 
   return (
     <div className="flex min-h-dvh flex-col bg-studio text-studio-text" onClick={() => !keyboard && input.current?.focus()}>
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-studio-rule px-3">
-        <span className="text-[14px] font-semibold">מסופון</span>
-        <span className="truncate text-[12.5px] text-studio-muted">{user.name}</span>
-        <div className="ms-auto flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => void flush()}
-            className={cn("flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[12.5px]", online ? "bg-studio-3" : "bg-[#5b4210] text-[#ffd98a]")}
-            aria-label={online ? "מחובר — סנכרון" : "אין חיבור"}
-          >
-            {online ? <Wifi className="size-3.5" /> : <WifiOff className="size-3.5" />}
-            {pending > 0 ? <span className="num">{pending} ממתינות</span> : online ? "מחובר" : "לא מקוון"}
-            {syncing && <RefreshCw className="size-3.5 animate-spin" />}
-          </button>
-          <Link href="/" className="flex size-8 items-center justify-center rounded-full bg-studio-3" aria-label="יציאה למערכת" title="למערכת">
-            <LogOut className="size-3.5" />
-          </Link>
+      {header}
+      {loginBanner}
+
+      <div className="mx-2 mt-2 flex items-start gap-3 rounded-xl bg-studio-text px-4 py-3 text-studio" data-testid="step" aria-live="polite">
+        <div className="min-w-0 flex-1">
+          <div className="text-[24px] font-extrabold leading-tight">{step.big}</div>
+          <div className="mt-0.5 text-[13.5px] opacity-75">{step.small}</div>
         </div>
-      </header>
-
-      {needLogin && (
-        <a href="/login?next=/scanner" className="bg-[#6b1513] px-3 py-2 text-center text-[13px]">
-          פג תוקף ההתחברות — הסריקות נשמרות במכשיר. לחצו כאן להתחברות מחדש.
-        </a>
-      )}
-
-      <nav className="grid shrink-0 grid-cols-5 gap-1 p-2" aria-label="מצב עבודה">
-        {SCAN_MODES.map((m) => (
-          <button
-            key={m}
-            type="button"
-            disabled={!allowedModes.includes(m)}
-            onClick={() => setMode(m)}
-            aria-pressed={mode === m}
-            className={cn("h-11 rounded-lg text-[14px] font-semibold disabled:opacity-30", mode === m ? "bg-studio-text text-studio" : "bg-studio-3 text-studio-text")}
-          >
-            {t.scanMode[m]}
-          </button>
-        ))}
-      </nav>
+        <button type="button" onClick={() => setCameraOn((c) => !c)} aria-pressed={cameraOn} aria-label={cameraOn ? "כיבוי המצלמה" : "הפעלת המצלמה"} className={cn("flex size-11 shrink-0 items-center justify-center rounded-full", cameraOn ? "bg-studio text-studio-text" : "bg-studio-3 text-studio-text")}>
+          <Camera className="size-5" />
+        </button>
+      </div>
+      {cameraOn && <CameraPane enabled onCode={(c) => void onScan(c)} className="mx-2 mt-2 h-[30dvh] min-h-44 shrink-0" />}
 
       {(mode === "STORE" || mode === "TRANSFER" || mode === "COUNT") && (
         <div className="mx-2 flex items-center gap-2 rounded-lg bg-studio-2 px-3 py-2.5 ring-1 ring-studio-rule" data-testid="active-location">
@@ -442,7 +557,7 @@ export function ScannerApp({ user, perms }: { user: { id: string; name: string }
         <div className="flex items-start gap-3">
           <Icon className="mt-0.5 size-7 shrink-0" />
           <div className="min-w-0 flex-1">
-            <div className="text-[19px] font-bold leading-snug">{result?.title ?? `מצב ${t.scanMode[mode]} — מוכן לסריקה`}</div>
+            <div className="text-[19px] font-bold leading-snug">{result?.title ?? "מוכן לסריקה"}</div>
             {result?.lines.map((l, i) => (
               <div key={i} className="mt-0.5 truncate text-[14.5px] opacity-90">
                 {l}
