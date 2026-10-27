@@ -100,3 +100,25 @@ export function IconButton({
     </button>
   );
 }
+
+/** Icon-only link with the IconButton look (tooltip + accessible name from `label`). */
+export function IconButtonLink({
+  href,
+  label,
+  className,
+  size = "sm",
+  children,
+}: {
+  href: string;
+  label: string;
+  className?: string;
+  size?: Size;
+  children: React.ReactNode;
+}) {
+  const dim = size === "sm" ? "size-7.5" : size === "lg" ? "size-11" : "size-9";
+  return (
+    <Link href={href} aria-label={label} title={label} className={cn(base, variants.ghost, dim, "px-0 [&_svg]:size-4", className)}>
+      {children}
+    </Link>
+  );
+}

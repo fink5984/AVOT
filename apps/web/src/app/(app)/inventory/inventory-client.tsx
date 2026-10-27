@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BookPlus, Camera, FileUp, Gavel, Library, MoreHorizontal, Printer, Tag, X } from "lucide-react";
+import { BookPlus, Camera, FileUp, Gavel, Library, Loader2, MapPin, MoreHorizontal, Plus, Printer, Tag, Trash2, X } from "lucide-react";
 import type { CommercialStatus, LotStatus, PhysicalStatus } from "@avot/shared";
-import { Button, ButtonLink, IconButton } from "@/components/ui/button";
+import { Button, IconButton, IconButtonLink } from "@/components/ui/button";
 import { CommercialStatusBadge, PhotoStatusBadge, PhysicalStatusBadge } from "@/components/ui/badge";
 import { Dialog } from "@/components/ui/dialog";
 import { Menu } from "@/components/ui/menu";
@@ -15,7 +15,10 @@ import { HouseMark } from "@/components/house-mark";
 import { AssignDialog } from "@/components/inventory/assign-dialog";
 import { ItemFormDialog } from "@/components/inventory/item-form-dialog";
 import { fmt } from "@/i18n";
-import { api, errorMessage } from "@/lib/api";
+import { ApiError, api, errorMessage } from "@/lib/api";
+import { usePrintLabels } from "@/lib/print";
+import { LocationDialog } from "@/components/warehouse/location-dialog";
+import { DeleteDialog } from "@/components/deletion/delete-dialog";
 import { cn } from "@/lib/cn";
 
 export interface InventoryRowDto {
@@ -52,12 +55,120 @@ export function InventoryActions({ canCreate, canImport, autoOpen }: { canCreate
       )}
       {canCreate && (
         <Button variant="primary" icon={<BookPlus />} onClick={() => setOpen(true)}>
-          ספר חדש
+          הוספה עם פרטים
         </Button>
       )}
       <ItemFormDialog open={open} onClose={() => setOpen(false)} />
       <ImportDialog open={importOpen} onClose={() => setImportOpen(false)} />
     </>
+  );
+}
+
+/** One book as the table shows it. */
+function rowFromCreated(item: { id: string; inventoryNumber: string; barcode: string; title: string; author: string | null; photoStatus: LotStatus; physicalStatus: PhysicalStatus; commercialStatus: CommercialStatus; updatedAt: string }): InventoryRowDto {
+  return {
+    id: item.id,
+    inventoryNumber: item.inventoryNumber,
+    barcode: item.barcode,
+    title: item.title,
+    author: item.author,
+    photoStatus: item.photoStatus,
+    physicalStatus: item.physicalStatus,
+    commercialStatus: item.commercialStatus,
+    photoCount: 0,
+    thumbAssetId: null,
+    location: null,
+    assignment: null,
+    updatedAt: item.updatedAt,
+  };
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * The fixed "הקלד שם ספר ולחץ Enter להוספה…" row. Enter clears the field and keeps the focus there, the new
+ * book appears at the top at once, and requests go out one at a time. Every request carries its own key
+ * (opId): a double Enter, a retry after a lost response or a second tab can never create a second book.
+ */
+function QuickAdd({ onAdded }: { onAdded: (row: InventoryRowDto) => void }) {
+  const toast = useToast();
+  const [value, setValue] = useState("");
+  const [pending, setPending] = useState(0);
+  const [last, setLast] = useState<{ number: string; title: string } | null>(null);
+  const chain = useRef<Promise<void>>(Promise.resolve());
+  const lastSubmit = useRef<{ title: string; at: number } | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+
+  async function create(title: string, opId: string) {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const r = await api<{ item: Parameters<typeof rowFromCreated>[0]; existing: boolean }>("/api/inventory", { method: "POST", json: { title, opId } });
+        onAdded(rowFromCreated(r.item));
+        setLast({ number: r.item.inventoryNumber, title: r.item.title });
+        return;
+      } catch (err) {
+        // no connection: the same opId is retried, so a request that did reach the server is not repeated
+        if (err instanceof ApiError && err.status === 0 && attempt < 3) {
+          await sleep(1500 * (attempt + 1));
+          continue;
+        }
+        toast.error(`"${title}" לא נוסף: ${errorMessage(err)}`);
+        setValue((v) => v || title);
+        return;
+      }
+    }
+  }
+
+  function submit() {
+    const title = value.trim();
+    if (!title) return;
+    const prev = lastSubmit.current;
+    const now = Date.now();
+    if (prev && prev.title === title && now - prev.at < 700) return; // key bounce / double press
+    lastSubmit.current = { title, at: now };
+    setValue("");
+    const opId = crypto.randomUUID();
+    setPending((n) => n + 1);
+    chain.current = chain.current.then(() => create(title, opId)).finally(() => setPending((n) => n - 1));
+    input.current?.focus();
+  }
+
+  return (
+    <div className="mb-3">
+      <div className="relative">
+        <Plus className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-faint" aria-hidden />
+        <input
+          ref={input}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          maxLength={300}
+          enterKeyHint="done"
+          autoComplete="off"
+          aria-label="הוספת ספר חדש למלאי"
+          placeholder="הקלד שם ספר ולחץ Enter להוספה..."
+          className="h-11 w-full rounded-lg border border-rule-strong bg-paper ps-10 pe-24 text-[14.5px] shadow-card placeholder:text-faint hover:border-[#c6c2b8] focus:border-ink/50 focus:outline-none focus:ring-[3px] focus:ring-ink/8"
+        />
+        {pending > 0 && (
+          <span className="absolute end-3 top-1/2 flex -translate-y-1/2 items-center gap-1.5 text-[12px] text-muted" role="status">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            שומר…
+          </span>
+        )}
+      </div>
+      <div className="mt-1 h-4 px-1 text-[12px] text-muted" aria-live="polite">
+        {last && (
+          <>
+            נוסף <span className="num font-mono">{last.number}</span> · {last.title}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -69,13 +180,23 @@ export function InventoryTable({
 }: {
   rows: InventoryRowDto[];
   total: number;
-  perms: { capture: boolean; assign: boolean; label: boolean; edit: boolean };
+  perms: { capture: boolean; assign: boolean; label: boolean; edit: boolean; create: boolean; delete: boolean; relocate: boolean };
   defaultHouse: string | null;
 }) {
   const router = useRouter();
+  const print = usePrintLabels();
+  const [added, setAdded] = useState<InventoryRowDto[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [assignFor, setAssignFor] = useState<InventoryRowDto[] | null>(null);
-  const all = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  const [locationFor, setLocationFor] = useState<InventoryRowDto[] | null>(null);
+  const [deleteIds, setDeleteIds] = useState<string[] | null>(null);
+
+  // rows from the server replace the optimistic ones whenever the list is reloaded
+  useEffect(() => setAdded([]), [rows]);
+  const all = useMemo(() => [...added.filter((a) => !rows.some((r) => r.id === a.id)), ...rows], [added, rows]);
+  const shownTotal = total + added.filter((a) => !rows.some((r) => r.id === a.id)).length;
+
+  const allChecked = all.length > 0 && all.every((r) => selected.has(r.id));
   const toggle = (id: string) =>
     setSelected((s) => {
       const n = new Set(s);
@@ -83,116 +204,133 @@ export function InventoryTable({
       else n.add(id);
       return n;
     });
-  const chosen = rows.filter((r) => selected.has(r.id));
-  const printLabels = (ids: string[]) => router.push(`/labels/books?ids=${ids.join(",")}`);
+  const chosen = all.filter((r) => selected.has(r.id));
+  const asItems = (rs: InventoryRowDto[]) => rs.map((r) => ({ id: r.id, inventoryNumber: r.inventoryNumber, title: r.title }));
+  const printBooks = (rs: InventoryRowDto[]) => print(rs.map((r) => ({ type: "BOOK" as const, id: r.id })), { what: rs.length === 1 ? `תווית ${rs[0]!.inventoryNumber}` : undefined });
+  const canAssign = (r: InventoryRowDto) => perms.assign && r.physicalStatus !== "SHIPPED" && r.commercialStatus !== "SOLD";
 
   return (
     <>
-      <div className="card mt-4 overflow-x-auto">
-        {rows.length === 0 ? (
-          <EmptyState icon={<Library />} title={total === 0 ? "אין ספרים בתצוגה זו" : "אין תוצאות"}>
-            ספר חדש נקלט למלאי עם מספר קבוע (ITM-…). אחר כך מצלמים, מדפיסים תווית, מאחסנים במחסן ומשייכים לקטלוג.
-          </EmptyState>
-        ) : (
-          <table className="w-full min-w-[1180px] text-[13.5px]">
-            <thead>
-              <tr className="border-b border-rule text-[12.5px] text-muted">
-                <th className="w-11 ps-5 pe-1 py-3">
-                  <input type="checkbox" aria-label="בחירת הכול" checked={all} onChange={() => setSelected(all ? new Set() : new Set(rows.map((r) => r.id)))} className="size-4 accent-[var(--color-ink)]" />
-                </th>
-                <th className="w-14 px-2 py-3" aria-label="תמונה" />
-                <th className="w-32 px-2 py-3 text-start font-medium">מספר מלאי</th>
-                <th className="px-3 py-3 text-start font-medium">שם הספר</th>
-                <th className="w-32 px-3 py-3 text-start font-medium">צילום</th>
-                <th className="w-32 px-3 py-3 text-start font-medium">מיקום</th>
-                <th className="w-52 px-3 py-3 text-start font-medium">שיוך נוכחי</th>
-                <th className="w-32 px-3 py-3 text-start font-medium">מצב מלאי</th>
-                <th className="w-24 px-3 py-3 text-start font-medium">עודכן</th>
-                <th className="w-28 pe-4 ps-2 py-3" aria-label="פעולות" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-rule">
-              {rows.map((r) => (
-                <tr key={r.id} className={cn("group relative transition-colors hover:bg-stone-2", selected.has(r.id) && "bg-accent-soft/50 hover:bg-accent-soft/70")}>
-                  <td className="relative z-10 ps-5 pe-1 py-2">
-                    <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} aria-label={`בחירת ${r.inventoryNumber}`} className="size-4 accent-[var(--color-ink)]" />
-                  </td>
-                  <td className="px-2 py-2">
-                    <span className="block size-10 overflow-hidden rounded-md bg-stone ring-1 ring-rule">
-                      {r.thumbAssetId && <img src={`/api/assets/${r.thumbAssetId}/thumb`} alt="" loading="lazy" decoding="async" className="size-full object-cover" />}
-                    </span>
-                  </td>
-                  <td className="px-2 py-2">
-                    <span className="num font-mono text-[13px] font-semibold">{r.inventoryNumber}</span>
-                    {r.barcode !== r.inventoryNumber && <div className="num font-mono text-[11px] text-muted" title="ברקוד חיצוני">{r.barcode}</div>}
-                  </td>
-                  <td className="max-w-0 px-3 py-2">
-                    <Link href={`/inventory/${r.id}`} className="block truncate font-medium text-ink after:absolute after:inset-0">
-                      {r.title}
-                    </Link>
-                    {r.author && <div className="truncate text-[12.5px] text-muted">{r.author}</div>}
-                  </td>
-                  <td className="px-3 py-2">
-                    <PhotoStatusBadge status={r.photoStatus} />
-                    <div className="num mt-0.5 text-[11.5px] text-muted">{r.photoCount} תמונות</div>
-                  </td>
-                  <td className="px-3 py-2">
-                    {r.location ? (
-                      <span className="num font-mono text-[12.5px]" title={r.location.label}>
-                        {r.location.code}
+      <div className="mt-4">
+        {perms.create && <QuickAdd onAdded={(row) => setAdded((a) => [row, ...a])} />}
+        <div className="card overflow-hidden">
+          {all.length === 0 ? (
+            <EmptyState icon={<Library />} title={shownTotal === 0 ? "אין ספרים בתצוגה זו" : "אין תוצאות"}>
+              {perms.create ? "הקלידו שם ספר בשורה שלמעלה ולחצו Enter. הספר נקלט עם מספר מלאי וברקוד קבועים." : "אין ספרים להצגה."}
+            </EmptyState>
+          ) : (
+            <table className="w-full text-[13.5px]">
+              <thead>
+                <tr className="border-b border-rule text-[12.5px] text-muted">
+                  <th className="w-10 ps-4 pe-1 py-2.5">
+                    <input type="checkbox" aria-label="בחירת הכול" checked={allChecked} onChange={() => setSelected(allChecked ? new Set() : new Set(all.map((r) => r.id)))} className="size-4 accent-[var(--color-ink)]" />
+                  </th>
+                  <th className="w-12 px-1 py-2.5" aria-label="תמונה" />
+                  <th className="px-2 py-2.5 text-start font-medium">שם הספר</th>
+                  <th className="hidden w-28 px-2 py-2.5 text-start font-medium md:table-cell">צילום</th>
+                  <th className="hidden w-32 px-2 py-2.5 text-start font-medium lg:table-cell">מיקום</th>
+                  <th className="hidden w-48 px-2 py-2.5 text-start font-medium xl:table-cell">קטלוג</th>
+                  <th className="w-px pe-3 ps-2 py-2.5" aria-label="פעולות" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-rule">
+                {all.map((r) => (
+                  <tr key={r.id} className={cn("group relative transition-colors hover:bg-stone-2", selected.has(r.id) && "bg-accent-soft/50 hover:bg-accent-soft/70")}>
+                    <td className="relative z-10 ps-4 pe-1 py-1.5">
+                      <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} aria-label={`בחירת ${r.inventoryNumber}`} className="size-4 accent-[var(--color-ink)]" />
+                    </td>
+                    <td className="px-1 py-1.5">
+                      <span className="block size-9 overflow-hidden rounded-md bg-stone ring-1 ring-rule">
+                        {r.thumbAssetId && <img src={`/api/assets/${r.thumbAssetId}/thumb`} alt="" loading="lazy" decoding="async" className="size-full object-cover" />}
                       </span>
-                    ) : (
-                      <span className="text-[12.5px] text-faint">ללא מיקום</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    {r.assignment === null ? (
-                      <CommercialStatusBadge status={r.commercialStatus} />
-                    ) : "hidden" in r.assignment ? (
-                      <span className="text-[12.5px] text-muted">משויך לבית מכירות אחר</span>
-                    ) : (
-                      <div className="relative z-10">
-                        <HouseMark name={r.assignment.house.name} color={r.assignment.house.accentColor} className="text-[12.5px]" />
-                        <Link href={`/lots/${r.assignment.lotId}`} className="block text-[12.5px] text-ink-2 hover:underline">
-                          קטלוג <span className="num">{r.assignment.catalog.number}</span> · פריט <span className="num">{r.assignment.lotNumber}</span>
-                        </Link>
+                    </td>
+                    <td className="max-w-0 px-2 py-1.5">
+                      <Link href={`/inventory/${r.id}`} className="block truncate font-medium text-ink after:absolute after:inset-0">
+                        {r.title}
+                      </Link>
+                      <div className="flex items-center gap-2 truncate text-[12px] text-muted">
+                        <span className="num font-mono">{r.inventoryNumber}</span>
+                        {r.barcode !== r.inventoryNumber && <span className="num font-mono" title="ברקוד חיצוני">{r.barcode}</span>}
+                        {r.author && <span className="truncate">{r.author}</span>}
+                        <span className="md:hidden">
+                          <PhotoStatusBadge status={r.photoStatus} />
+                        </span>
                       </div>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    <PhysicalStatusBadge status={r.physicalStatus} />
-                  </td>
-                  <td className="px-3 py-2 text-[12.5px] text-muted" title={fmt.dateTime(r.updatedAt)} suppressHydrationWarning>
-                    {fmt.relative(r.updatedAt)}
-                  </td>
-                  <td className="relative z-10 pe-4 ps-2 py-2">
-                    <div className="flex items-center justify-end gap-1">
-                      {perms.capture && (
-                        <ButtonLink href={`/capture/${r.id}`} size="sm" icon={<Camera className="text-accent" />} aria-label={`צילום ${r.inventoryNumber}`} className="opacity-80 group-hover:opacity-100">
-                          צילום
-                        </ButtonLink>
+                    </td>
+                    <td className="hidden px-2 py-1.5 md:table-cell">
+                      <PhotoStatusBadge status={r.photoStatus} />
+                      <div className="num mt-0.5 text-[11.5px] text-muted">{r.photoCount} תמונות</div>
+                    </td>
+                    <td className="hidden px-2 py-1.5 lg:table-cell">
+                      {r.location ? (
+                        <span className="num font-mono text-[12.5px]" title={r.location.label}>
+                          {r.location.code}
+                        </span>
+                      ) : (
+                        <span className="text-[12.5px] text-faint">ללא מיקום</span>
                       )}
-                      <Menu
-                        trigger={(p) => (
-                          <IconButton label={`פעולות ל-${r.inventoryNumber}`} size="sm" {...p}>
-                            <MoreHorizontal />
+                      {r.physicalStatus !== "IN_STORAGE" && r.physicalStatus !== "AWAITING_STORAGE" && (
+                        <div className="mt-0.5">
+                          <PhysicalStatusBadge status={r.physicalStatus} />
+                        </div>
+                      )}
+                    </td>
+                    <td className="hidden px-2 py-1.5 xl:table-cell">
+                      {r.assignment === null ? (
+                        <CommercialStatusBadge status={r.commercialStatus} />
+                      ) : "hidden" in r.assignment ? (
+                        <span className="text-[12.5px] text-muted">משויך לבית מכירות אחר</span>
+                      ) : (
+                        <div className="relative z-10">
+                          <HouseMark name={r.assignment.house.name} color={r.assignment.house.accentColor} className="text-[12.5px]" />
+                          <Link href={`/lots/${r.assignment.lotId}`} className="block text-[12.5px] text-ink-2 hover:underline">
+                            קטלוג <span className="num">{r.assignment.catalog.number}</span> · פריט <span className="num">{r.assignment.lotNumber}</span>
+                          </Link>
+                        </div>
+                      )}
+                    </td>
+                    <td className="relative z-10 pe-3 ps-2 py-1">
+                      <div className="flex items-center justify-end gap-0.5">
+                        {perms.capture && (
+                          <IconButtonLink href={`/capture/${r.id}`} label={`צילום ${r.inventoryNumber}`}>
+                            <Camera className="text-accent" />
+                          </IconButtonLink>
+                        )}
+                        {perms.label && (
+                          <IconButton label={`הדפסת תווית ${r.inventoryNumber}`} size="sm" onClick={() => void printBooks([r])}>
+                            <Printer />
                           </IconButton>
                         )}
-                        items={[
-                          { label: "פתיחה והיסטוריה", icon: <Library />, onSelect: () => router.push(`/inventory/${r.id}`) },
-                          ...(perms.label ? [{ label: "הדפסת תווית", icon: <Tag />, onSelect: () => printLabels([r.id]) }] : []),
-                          ...(perms.assign && r.physicalStatus !== "SHIPPED" && r.commercialStatus !== "SOLD"
-                            ? [{ label: r.assignment ? "שינוי שיוך לקטלוג" : "שיוך לקטלוג", icon: <Gavel />, onSelect: () => setAssignFor([r]) }]
-                            : []),
-                        ]}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+                        {canAssign(r) && (
+                          <IconButton label={r.assignment ? "שינוי שיוך לקטלוג" : "שייך לקטלוג"} size="sm" onClick={() => setAssignFor([r])}>
+                            <Gavel />
+                          </IconButton>
+                        )}
+                        {perms.relocate && (
+                          <IconButton label="שנה מיקום" size="sm" onClick={() => setLocationFor([r])}>
+                            <MapPin />
+                          </IconButton>
+                        )}
+                        <Menu
+                          trigger={(p) => (
+                            <IconButton label={`פעולות נוספות ל-${r.inventoryNumber}`} size="sm" {...p}>
+                              <MoreHorizontal />
+                            </IconButton>
+                          )}
+                          items={[
+                            { label: "פתיחה והיסטוריה", icon: <Library />, onSelect: () => router.push(`/inventory/${r.id}`) },
+                            ...(perms.label ? [{ label: "תווית להדפסה ידנית (PDF / ZPL)", icon: <Tag />, onSelect: () => router.push(`/labels/books?ids=${r.id}`) }] : []),
+                            ...(perms.delete ? (["separator", { label: "מחיקה לצמיתות", icon: <Trash2 />, danger: true, onSelect: () => setDeleteIds([r.id]) }] as const) : []),
+                          ]}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
 
       {selected.size > 0 && (
@@ -201,13 +339,23 @@ export function InventoryTable({
             נבחרו <span className="num font-semibold">{selected.size}</span> ספרים
           </span>
           {perms.label && (
-            <Button size="sm" className="border-white/15 bg-white/8 text-paper shadow-none hover:bg-white/14" icon={<Printer />} onClick={() => printLabels([...selected])}>
+            <Button size="sm" className="border-white/15 bg-white/8 text-paper shadow-none hover:bg-white/14" icon={<Printer />} onClick={() => void printBooks(chosen)}>
               הדפסת תוויות
             </Button>
           )}
           {perms.assign && (
             <Button size="sm" className="border-white/15 bg-white/8 text-paper shadow-none hover:bg-white/14" icon={<Gavel />} onClick={() => setAssignFor(chosen)}>
               שיוך לקטלוג
+            </Button>
+          )}
+          {perms.relocate && (
+            <Button size="sm" className="border-white/15 bg-white/8 text-paper shadow-none hover:bg-white/14" icon={<MapPin />} onClick={() => setLocationFor(chosen)}>
+              שינוי מיקום
+            </Button>
+          )}
+          {perms.delete && (
+            <Button size="sm" className="border-danger/50 bg-danger/20 text-white shadow-none hover:bg-danger/35" icon={<Trash2 />} onClick={() => setDeleteIds(chosen.map((c) => c.id))}>
+              מחיקה
             </Button>
           )}
           <IconButton label="ניקוי בחירה" size="sm" className="text-white/60 hover:bg-white/10 hover:text-white" onClick={() => setSelected(new Set())}>
@@ -223,10 +371,12 @@ export function InventoryTable({
             setAssignFor(null);
             setSelected(new Set());
           }}
-          items={assignFor.map((r) => ({ id: r.id, inventoryNumber: r.inventoryNumber, title: r.title }))}
+          items={asItems(assignFor)}
           defaultHouse={defaultHouse}
         />
       )}
+      {locationFor && <LocationDialog open onClose={() => setLocationFor(null)} items={asItems(locationFor)} onDone={() => setSelected(new Set())} />}
+      {deleteIds && <DeleteDialog kind="books" open ids={deleteIds} onClose={() => setDeleteIds(null)} onDone={() => setSelected(new Set())} />}
     </>
   );
 }

@@ -121,6 +121,9 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             assign: can(user.role, "catalog.assign"),
             label: can(user.role, "label.print"),
             edit: can(user.role, "inventory.edit"),
+            create: can(user.role, "inventory.create"),
+            delete: can(user.role, "inventory.delete"),
+            relocate: can(user.role, "inventory.relocate"),
           }}
           defaultHouse={house?.slug ?? null}
         />
