@@ -97,6 +97,7 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
       </PageHeader>
       <LotsTable
         catalogId={catalog.id}
+        catalogLabel={`${catalog.number} · ${catalog.name}`}
         lots={rows}
         initialStatus={status ?? "ALL"}
         otherCatalogs={otherCatalogs.map((c) => ({ id: c.id, number: c.number, name: c.name, house: c.auctionHouse.name }))}

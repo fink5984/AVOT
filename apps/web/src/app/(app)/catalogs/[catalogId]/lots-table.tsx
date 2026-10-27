@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRightLeft, Ban, BookPlus, Camera, CircleCheck, CircleDashed, Copy, CornerDownLeft, Gavel, MoreHorizontal, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { ArrowRightLeft, Ban, BookPlus, Camera, CircleCheck, CircleDashed, Copy, CornerDownLeft, Gavel, Library, MoreHorizontal, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { LOT_STATUSES, PHOTO_CATEGORIES, type CommercialStatus, type LotStatus, type PhotoCategory } from "@avot/shared";
 import { Button, ButtonLink, IconButton } from "@/components/ui/button";
 import { CommercialStatusBadge, LOT_TONE, LotStatusBadge, toneDot } from "@/components/ui/badge";
@@ -16,6 +16,7 @@ import { EmptyState, PageBody } from "@/components/ui/misc";
 import { Tabs } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/toast";
 import { LotFormDialog, type LotFormValue } from "@/components/lot-form-dialog";
+import { AddFromInventoryDialog } from "@/components/inventory/add-from-inventory-dialog";
 import { fmt, t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -43,12 +44,14 @@ type Sort = "number" | "title" | "updated" | "status";
 
 export function LotsTable({
   catalogId,
+  catalogLabel,
   lots,
   initialStatus,
   otherCatalogs,
   perms,
 }: {
   catalogId: string;
+  catalogLabel: string;
   lots: LotRow[];
   initialStatus: string;
   otherCatalogs: { id: string; number: string; name: string; house?: string }[];
@@ -65,7 +68,11 @@ export function LotsTable({
   const [formOpen, setFormOpen] = useState(false);
   const [editLot, setEditLot] = useState<LotFormValue | null>(null);
   const [moveIds, setMoveIds] = useState<string[] | null>(null);
+  const [removeIds, setRemoveIds] = useState<string[] | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
+  // one key per typed title: a retry after a failed / lost request reuses it, so the book is created once
+  const quickOp = useRef<{ title: string; opId: string } | null>(null);
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -107,10 +114,13 @@ export function LotsTable({
     e.preventDefault();
     const title = quickTitle.trim();
     if (!title) return;
+    if (adding) return;
     setAdding(true);
+    if (quickOp.current?.title !== title) quickOp.current = { title, opId: crypto.randomUUID() };
     try {
-      const r = await api<{ lot: { lotNumber: number } }>(`/api/catalogs/${catalogId}/lots`, { method: "POST", json: { title } });
-      toast.success(`נוסף פריט ${r.lot.lotNumber} · ${title}`);
+      const r = await api<{ lot: { lotNumber: number } }>(`/api/catalogs/${catalogId}/lots`, { method: "POST", json: { title, opId: quickOp.current.opId } });
+      toast.success(`נוסף ספר חדש: פריט ${r.lot.lotNumber} · ${title}`, { detail: "הספר נקלט גם למלאי" });
+      quickOp.current = null;
       setQuickTitle("");
       router.refresh();
       quickRef.current?.focus();
@@ -208,7 +218,7 @@ export function LotsTable({
             ref={quickRef}
             value={quickTitle}
             onChange={(e) => setQuickTitle(e.target.value)}
-            placeholder="הוספת ספר לקטלוג — הקלידו את שם הספר ולחצו Enter"
+            placeholder="צור ספר חדש בקטלוג — הקלידו את שם הספר ולחצו Enter"
             className="h-9 min-w-0 flex-1 bg-transparent text-[14px] placeholder:text-faint focus:outline-none"
             aria-label="הוספה מהירה של פריט"
             maxLength={300}
@@ -219,6 +229,11 @@ export function LotsTable({
           <Button onClick={() => setFormOpen(true)} variant="ghost" size="sm" icon={<BookPlus />} className="hidden sm:inline-flex">
             עם פרטים מלאים
           </Button>
+          {perms.edit && (
+            <Button onClick={() => setPickerOpen(true)} size="sm" icon={<Library />}>
+              הוסף ספרים מהמלאי
+            </Button>
+          )}
         </form>
       )}
 
@@ -254,16 +269,21 @@ export function LotsTable({
         </Select>
       </div>
 
-      <div className="card mt-4 overflow-x-auto">
+      <div className="card mt-4">
         {lots.length === 0 ? (
           <EmptyState
             icon={<BookPlus />}
             title="אין עדיין ספרים בקטלוג"
             action={
               perms.create && (
-                <Button variant="primary" icon={<Plus />} onClick={() => quickRef.current?.focus()}>
-                  הוספת הספר הראשון
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="primary" icon={<Library />} onClick={() => setPickerOpen(true)}>
+                    הוסף ספרים מהמלאי
+                  </Button>
+                  <Button icon={<Plus />} onClick={() => quickRef.current?.focus()}>
+                    צור ספר חדש
+                  </Button>
+                </div>
               )
             }
           >
@@ -272,7 +292,7 @@ export function LotsTable({
         ) : visible.length === 0 ? (
           <EmptyState title="אין פריטים התואמים לסינון" />
         ) : (
-          <table className="w-full min-w-[980px] text-[13.5px]">
+          <table className="w-full text-[13.5px]">
             <thead>
               <tr className="border-b border-rule text-[12.5px] text-muted">
                 <th className="w-11 ps-5 pe-1 py-3">
@@ -287,15 +307,15 @@ export function LotsTable({
                 <th className="w-16 px-2 py-3" aria-label="תמונה" />
                 <th className="w-16 px-2 py-3 text-start font-medium">פריט</th>
                 <th className="px-3 py-3 text-start font-medium">שם הספר</th>
-                <th className="w-36 px-3 py-3 text-start font-medium">צילום</th>
+                <th className="hidden w-36 px-3 py-3 text-start font-medium md:table-cell">צילום</th>
                 <th className="w-32 px-3 py-3 text-start font-medium">מסחרי</th>
                 {PHOTO_CATEGORIES.map((c) => (
-                  <th key={c} className="w-14 px-1 py-3 text-center font-medium" title={t.category[c]}>
+                  <th key={c} className="hidden w-14 px-1 py-3 text-center font-medium 2xl:table-cell" title={t.category[c]}>
                     {t.categoryShort[c]}
                   </th>
                 ))}
                 <th className="w-14 px-2 py-3 text-center font-medium">סה״כ</th>
-                <th className="w-24 px-3 py-3 text-start font-medium">עודכן</th>
+                <th className="hidden w-24 px-3 py-3 text-start font-medium xl:table-cell">עודכן</th>
                 <th className="w-32 pe-4 ps-2 py-3" aria-label="פעולות" />
               </tr>
             </thead>
@@ -330,19 +350,19 @@ export function LotsTable({
                       {(l.subtitle || l.author) && <span> · {[l.author, l.subtitle].filter(Boolean).join(" · ")}</span>}
                     </div>
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="hidden px-3 py-2 md:table-cell">
                     <LotStatusBadge status={l.status} />
                   </td>
                   <td className="px-3 py-2">
                     <CommercialStatusBadge status={l.commercialStatus} className={cn(l.assignmentStatus === "ENDED" && "opacity-70")} />
                   </td>
                   {PHOTO_CATEGORIES.map((c) => (
-                    <td key={c} className={cn("num px-1 py-2 text-center", l.counts[c] ? "font-medium text-ink" : "text-faint")}>
+                    <td key={c} className={cn("num hidden px-1 py-2 text-center 2xl:table-cell", l.counts[c] ? "font-medium text-ink" : "text-faint")}>
                       {l.counts[c] || "·"}
                     </td>
                   ))}
                   <td className="num px-2 py-2 text-center font-semibold">{l.photoCount}</td>
-                  <td className="px-3 py-2 text-[12.5px] text-muted" title={fmt.dateTime(l.updatedAt)}>
+                  <td className="hidden px-3 py-2 text-[12.5px] text-muted xl:table-cell" title={fmt.dateTime(l.updatedAt)}>
                     {fmt.relative(l.updatedAt)}
                   </td>
                   <td className="relative z-10 pe-4 ps-2 py-2">
@@ -403,12 +423,19 @@ export function LotsTable({
               העברה לקטלוג אחר
             </Button>
           )}
+          {perms.edit && (
+            <Button size="sm" className="border-white/15 bg-white/8 text-paper shadow-none hover:bg-white/14" icon={<Trash2 />} onClick={() => setRemoveIds([...selected])}>
+              הסרה מהקטלוג
+            </Button>
+          )}
           <IconButton label="ניקוי בחירה" size="sm" className="text-white/60 hover:bg-white/10 hover:text-white" onClick={() => setSelected(new Set())}>
             <X />
           </IconButton>
         </div>
       )}
 
+      <AddFromInventoryDialog open={pickerOpen} onClose={() => setPickerOpen(false)} catalogId={catalogId} catalogLabel={catalogLabel} />
+      <RemoveLotsDialog catalogId={catalogId} ids={removeIds} lots={lots} onClose={() => setRemoveIds(null)} onDone={() => setSelected(new Set())} />
       <LotFormDialog open={formOpen} onClose={() => setFormOpen(false)} catalogId={catalogId} />
       {editLot && <LotFormDialog open onClose={() => setEditLot(null)} catalogId={catalogId} initial={editLot} />}
       <MoveLotsDialog ids={moveIds} onClose={() => setMoveIds(null)} catalogs={otherCatalogs} onDone={() => setSelected(new Set())} />
@@ -472,6 +499,45 @@ function MoveLotsDialog({
       <div className="mt-6 flex gap-2">
         <Button variant="primary" loading={busy} onClick={move} disabled={!target}>
           העברת {ids?.length ?? 0} פריטים
+        </Button>
+        <Button onClick={onClose}>ביטול</Button>
+      </div>
+    </Dialog>
+  );
+}
+
+/** Removing items from a catalog never deletes the books: one confirmation, one request, a per-item report. */
+function RemoveLotsDialog({ catalogId, ids, lots, onClose, onDone }: { catalogId: string; ids: string[] | null; lots: LotRow[]; onClose: () => void; onDone: () => void }) {
+  const router = useRouter();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const chosen = lots.filter((l) => ids?.includes(l.id));
+
+  async function run() {
+    if (!ids) return;
+    setBusy(true);
+    try {
+      const r = await api<{ done: string[]; failed: { lotId: string; message: string }[] }>(`/api/catalogs/${catalogId}/lots/bulk-remove`, { method: "POST", json: { lotIds: ids } });
+      if (r.failed.length) toast.warning(`${r.done.length} הוסרו · ${r.failed.length} לא הוסרו`, { detail: r.failed.slice(0, 2).map((f) => f.message).join(" · ") });
+      else toast.success(`${r.done.length} פריטים הוסרו מהקטלוג`, { detail: "הספרים והתמונות נשארו במלאי" });
+      onDone();
+      onClose();
+      router.refresh();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={!!ids} onClose={onClose} title={`הסרת ${chosen.length} פריטים מהקטלוג`} width="sm">
+      <p className="text-[13.5px] leading-relaxed">
+        הפריטים יוסרו מהקטלוג בלבד. <b>הספרים, התמונות והמיקום במחסן נשארים במלאי.</b> פריטים שיש להם מצב מסחרי (הוצע / נמכר) לא יוסרו.
+      </p>
+      <div className="mt-5 flex gap-2">
+        <Button variant="danger" loading={busy} onClick={run}>
+          הסרה מהקטלוג
         </Button>
         <Button onClick={onClose}>ביטול</Button>
       </div>
