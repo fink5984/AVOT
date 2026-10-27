@@ -15,6 +15,13 @@ namespace AvotCapture.Agent;
 /// </summary>
 internal static class Program
 {
+    /// <summary>The app is a Windows (GUI) executable: console output is not reliably visible to a waiting installer, so --out <file> writes the same text to a UTF-8 file.</summary>
+    private static void Emit(string[] args, string text)
+    {
+        if (Arg(args, "--out") is { } path) File.WriteAllText(path, text, new System.Text.UTF8Encoding(false));
+        else Console.WriteLine(text);
+    }
+
     private static string? Arg(string[] args, string name) => args.SkipWhile(a => a != name).Skip(1).FirstOrDefault();
 
     [STAThread]
@@ -38,13 +45,13 @@ internal static class Program
 
         if (args.Contains("--version"))
         {
-            Console.WriteLine(AgentHost.Version);
+            Emit(args, AgentHost.Version);
             return 0;
         }
         if (Arg(args, "--import-sdk") is { } sdkZip)
         {
             var r = SdkImporter.Import(sdkZip, settings);
-            Console.WriteLine(r.Message);
+            Emit(args, r.Message);
             return r.Ok ? 0 : 1;
         }
         if (args.Contains("--check"))
@@ -53,7 +60,7 @@ internal static class Program
             var lines = SystemCheck.RunAsync(settings, null, logs, CancellationToken.None).GetAwaiter().GetResult();
             Console.OutputEncoding = System.Text.Encoding.UTF8;
             // --brief: "key=OK|FAIL" lines the installer reads without a JSON parser
-            Console.WriteLine(args.Contains("--brief") ? string.Join(Environment.NewLine, lines.Select(l => $"{l.Key}={(l.Ok ? "OK" : "FAIL")}")) : SystemCheck.ToJson(lines));
+            Emit(args, args.Contains("--brief") ? string.Join(Environment.NewLine, lines.Select(l => $"{l.Key}={(l.Ok ? "OK" : "FAIL")}")) : SystemCheck.ToJson(lines));
             return lines.All(l => l.Ok) ? 0 : 3;
         }
 

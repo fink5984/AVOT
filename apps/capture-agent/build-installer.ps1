@@ -37,7 +37,7 @@ function Get-Iscc {
 }
 
 $dotnet = Get-Dotnet
-$publish = Join-Path $here 'artifacts\publish'
+$publishDir = Join-Path $here 'artifacts\publish'
 
 if (-not $SkipTests) {
   Write-Host "==> בדיקות" -ForegroundColor Cyan
@@ -46,20 +46,20 @@ if (-not $SkipTests) {
 }
 
 Write-Host "==> publish (self-contained, win-x64)" -ForegroundColor Cyan
-if (Test-Path $publish) { Remove-Item $publish -Recurse -Force }
+if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
 & $dotnet publish (Join-Path $here 'src\AvotCapture.Agent\AvotCapture.Agent.csproj') -c Release -r win-x64 --self-contained true `
-  -p:Version=$Version -p:DebugType=none -o $publish
+  -p:Version=$Version -p:DebugType=none -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw "publish נכשל" }
 # never ship Canon's proprietary DLLs from a developer machine
-Get-ChildItem $publish -Recurse -Include 'EDSDK*.dll', 'EdsImage*.dll' | Remove-Item -Force
+Get-ChildItem $publishDir -Recurse -Include 'EDSDK*.dll', 'EdsImage*.dll' | Remove-Item -Force
 
 $iscc = Get-Iscc
 if (-not $iscc) {
-  Write-Warning "Inno Setup 6 לא מותקן — נוצרה רק תיקיית publish: $publish`nהתקינו מ-https://jrsoftware.org/isdl.php והריצו שוב."
+  Write-Warning "Inno Setup 6 לא מותקן — נוצרה רק תיקיית publish: $publishDir`nהתקינו מ-https://jrsoftware.org/isdl.php והריצו שוב."
   exit 0
 }
 Write-Host "==> Inno Setup" -ForegroundColor Cyan
-& $iscc "/DAppVersion=$Version" "/DPublishDir=$publish" (Join-Path $here 'installer\AvotCaptureDesktop.iss')
+& $iscc "/DAppVersion=$Version" "/DPublishDir=$publishDir" (Join-Path $here 'installer\AvotCaptureDesktop.iss')
 if ($LASTEXITCODE -ne 0) { throw "בניית תוכנית ההתקנה נכשלה" }
 $setup = Join-Path $here "artifacts\AvotCaptureDesktop-Setup-$Version.exe"
 Write-Host "`nנוצר: $setup" -ForegroundColor Green

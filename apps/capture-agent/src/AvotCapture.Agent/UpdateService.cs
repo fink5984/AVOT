@@ -377,7 +377,9 @@ internal static class Authenticode
             data.dwStateAction = 2; // WTD_STATEACTION_CLOSE
             WinVerifyTrust(IntPtr.Zero, GenericVerifyV2, ref data);
             if (rc != 0) return false;
+            #pragma warning disable SYSLIB0057 // trust was already established by WinVerifyTrust above; this only reads the signer's thumbprint
             using var signer = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
+#pragma warning restore SYSLIB0057
             return string.Equals(signer.Thumbprint, thumbprint.Replace(" ", ""), StringComparison.OrdinalIgnoreCase);
         }
         finally

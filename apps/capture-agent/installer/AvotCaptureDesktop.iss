@@ -201,7 +201,7 @@ begin
     RunAgent('--pair "' + Trim(PairPage.Values[0]) + '" ' + Trim(PairPage.Values[1]) + ' "' + Trim(PairPage.Values[2]) + '"');
 
   Tmp := ExpandConstant('{tmp}\avot-check.txt');
-  Exec(ExpandConstant('{cmd}'), '/c ""' + ExpandConstant('{app}\AvotCaptureAgent.exe') + '" --check --brief > "' + Tmp + '" 2>&1"', '', SW_HIDE, ewWaitUntilTerminated, Rc);
+  Exec(ExpandConstant('{app}\AvotCaptureAgent.exe'), '--check --brief --out "' + Tmp + '"', '', SW_HIDE, ewWaitUntilTerminated, Rc);
   if not LoadStringsFromFile(Tmp, Lines) then SetArrayLength(Lines, 0);
 
   Report := Mark('app', 'התקנת התוכנה והרכיבים', 'ההתקנה לא הושלמה', Lines) +
@@ -209,7 +209,7 @@ begin
             Mark('camera', 'זיהוי מצלמת Canon EOS R7', 'חברו את המצלמה בכבל USB, הדליקו אותה וסגרו את EOS Utility', Lines) +
             Mark('pair', 'צימוד למערכת אבות', 'לא מצומד — צמדו מחלון התוכנה', Lines) +
             Mark('storage', 'תיקיית אחסון ושטח דיסק', 'אין הרשאת כתיבה או פחות מ-20GB פנויים', Lines) +
-            Mark('server', 'חיבור והעלאה לשרת', 'אין תקשורת עם השרת או שהעמדה לא מצומדת', Lines) +
-            #13#10 + 'צילום ניסיון: בחלון התוכנה שייפתח בסיום, לחצו ״צילום ניסיון״. הצילום נשמר בתיקייה test-shots ואינו משויך לספר.';
+            Mark('server', 'חיבור והעלאה לשרת', 'אין תקשורת עם השרת או שהעמדה לא מצומדת', Lines) + #13#10 +
+            'צילום ניסיון: בחלון התוכנה שייפתח בסיום, לחצו ״צילום ניסיון״. הצילום נשמר בתיקייה test-shots ואינו משויך לספר.';
   ResultPage.RichEditViewer.Lines.Text := Report;
 end;

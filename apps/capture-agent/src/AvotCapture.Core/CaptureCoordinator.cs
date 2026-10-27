@@ -48,6 +48,7 @@ public sealed class CaptureCoordinator : IDisposable
     private (string? userId, string? userName, string? token) _activeUser;
     private TaskCompletionSource<string>? _testShot;
     private long _testWindowUntilTicks;
+    private int _testExtraFiles;
 
     private sealed class PendingShot
     {
@@ -88,6 +89,7 @@ public sealed class CaptureCoordinator : IDisposable
             await trigger(ct);
             var path = await tcs.Task.WaitAsync(timeout, ct);
             // a RAW+JPEG shot delivers a second file a moment later: it belongs to the test as well
+            Interlocked.Exchange(ref _testExtraFiles, Math.Max(0, (_camera?.FilesPerShot ?? 1) - 1));
             Interlocked.Exchange(ref _testWindowUntilTicks, DateTime.UtcNow.AddSeconds(8).Ticks);
             return path;
         }
@@ -104,7 +106,12 @@ public sealed class CaptureCoordinator : IDisposable
     private bool TryTakeAsTestFile(CameraFileReady file)
     {
         var waiting = Volatile.Read(ref _testShot);
-        if (waiting is null && DateTime.UtcNow.Ticks > Interlocked.Read(ref _testWindowUntilTicks)) return false;
+        if (waiting is null)
+        {
+            // only the remaining file(s) of the SAME test shot (e.g. the JPEG after the RAW) — never a real shot's file
+            if (!_pending.IsEmpty || DateTime.UtcNow.Ticks > Interlocked.Read(ref _testWindowUntilTicks) || Volatile.Read(ref _testExtraFiles) <= 0) return false;
+            Interlocked.Decrement(ref _testExtraFiles);
+        }
         var dir = Path.Combine(_opt.StorageRoot, "test-shots");
         Directory.CreateDirectory(dir);
         var dest = Path.Combine(dir, $"test-{DateTime.Now:yyyyMMdd-HHmmss-fff}{Path.GetExtension(file.CameraFilename).ToLowerInvariant()}");
