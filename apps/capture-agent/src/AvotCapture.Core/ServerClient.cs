@@ -75,6 +75,26 @@ public sealed class ServerClient : IDisposable
         return await Read<PairResponse>(res, ct);
     }
 
+    public async Task<T> GetAsync<T>(string path, CancellationToken ct)
+    {
+        using var res = await _http.GetAsync(path.TrimStart('/'), ct);
+        return await Read<T>(res, ct);
+    }
+
+    /// <summary>Cheap reachability probe of the paired server (no authentication needed).</summary>
+    public async Task<bool> PingAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var res = await _http.GetAsync("api/health", ct);
+            return res.IsSuccessStatusCode;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
     public async Task<JsonElement> HeartbeatAsync(object body, CancellationToken ct)
     {
         using var res = await _http.PostAsJsonAsync("api/agent/heartbeat", body, Json, ct);

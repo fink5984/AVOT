@@ -1,7 +1,7 @@
 ﻿<#
 .SYNOPSIS
-  Builds AVOT Capture Agent: tests → self-contained win-x64 publish → Inno Setup installer.
-  Output: apps\capture-agent\artifacts\AvotCaptureAgent-Setup-<version>.exe
+  Builds AVOT Capture Desktop: tests → self-contained win-x64 publish → Inno Setup installer.
+  Output: apps\capture-agent\artifacts\AvotCaptureDesktop-Setup-<version>.exe
 
 .EXAMPLE
   .\apps\capture-agent\build-installer.ps1
@@ -9,7 +9,13 @@
 #>
 param(
   [string]$Version = '0.1.0',
-  [switch]$SkipTests
+  [switch]$SkipTests,
+  # prints / writes the release manifest the station's updater and the website download button read
+  [switch]$Publish,
+  # where the installer will be hosted (HTTPS), e.g. your R2 public URL; required with -Publish
+  [string]$DownloadUrl,
+  # optional: SHA-1 thumbprint of the code-signing certificate to pin (stations then refuse any other signer)
+  [string]$SignerThumbprint
 )
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
@@ -53,6 +59,21 @@ if (-not $iscc) {
   exit 0
 }
 Write-Host "==> Inno Setup" -ForegroundColor Cyan
-& $iscc "/DAppVersion=$Version" "/DPublishDir=$publish" (Join-Path $here 'installer\AvotCaptureAgent.iss')
+& $iscc "/DAppVersion=$Version" "/DPublishDir=$publish" (Join-Path $here 'installer\AvotCaptureDesktop.iss')
 if ($LASTEXITCODE -ne 0) { throw "בניית תוכנית ההתקנה נכשלה" }
-Write-Host "`nנוצר: $(Join-Path $here "artifacts\AvotCaptureAgent-Setup-$Version.exe")" -ForegroundColor Green
+$setup = Join-Path $here "artifacts\AvotCaptureDesktop-Setup-$Version.exe"
+Write-Host "`nנוצר: $setup" -ForegroundColor Green
+
+if ($Publish) {
+  if (-not $DownloadUrl -or -not $DownloadUrl.StartsWith('https://')) { throw "-Publish דורש -DownloadUrl בכתובת https://" }
+  $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+  $manifest = [ordered]@{ version = $Version; url = $DownloadUrl; sha256 = $hash; sizeBytes = (Get-Item $setup).Length }
+  if ($SignerThumbprint) { $manifest.signerThumbprint = $SignerThumbprint.ToLower() }
+  $json = $manifest | ConvertTo-Json
+  $out = Join-Path $here 'artifacts\capture-desktop.json'
+  Set-Content $out $json -Encoding utf8
+  Write-Host "`nמניפסט שחרור נכתב ל-$out" -ForegroundColor Cyan
+  Write-Host "1) העלו את $setup אל $DownloadUrl"
+  Write-Host "2) בשרת (Railway) הגדירו את המשתנה AGENT_RELEASE_MANIFEST לתוכן הבא — העמדות יקבלו את העדכון, וכפתור ההורדה באתר יצביע עליו:"
+  Write-Host $json
+}

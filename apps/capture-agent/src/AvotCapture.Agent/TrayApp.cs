@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using Microsoft.Extensions.Logging;
 
 namespace AvotCapture.Agent;
 
@@ -19,14 +20,18 @@ public sealed class TrayApp : IDisposable
     private readonly ToolStripMenuItem _modeSim = new("סימולטור (בדיקות בלבד)");
     private readonly System.Windows.Forms.Timer _refresh = new() { Interval = 2000 };
     private readonly SynchronizationContext _ui;
+    private MainForm? _window;
+    private readonly ILoggerFactory _logs;
 
-    public TrayApp(AgentHost host)
+    public TrayApp(AgentHost host, ILoggerFactory logs)
     {
         _host = host;
+        _logs = logs;
         _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         var menu = new ContextMenuStrip { RightToLeft = RightToLeft.Yes, ShowImageMargin = false };
-        menu.Items.Add(new ToolStripMenuItem($"AVOT Capture Agent {AgentHost.Version}") { Enabled = false, Font = new Font(menu.Font, FontStyle.Bold) });
+        menu.Items.Add(new ToolStripMenuItem($"AVOT Capture Desktop {AgentHost.Version}") { Enabled = false, Font = new Font(menu.Font, FontStyle.Bold) });
         menu.Items.AddRange([_status, _camera, _queue, _server, new ToolStripSeparator()]);
+        menu.Items.Add("פתיחת חלון הניהול", null, (_, _) => ShowWindow());
         menu.Items.Add("פתיחת AVOT Studio", null, (_, _) => OpenUrl(_host.Settings.ServerUrl));
         menu.Items.Add("פתיחת תיקיית הצילומים", null, (_, _) => Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_host.Settings.StorageRoot}\"") { UseShellExecute = true }));
         menu.Items.Add("צימוד לשרת…", null, (_, _) => ShowPairing());
@@ -53,8 +58,8 @@ public sealed class TrayApp : IDisposable
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("יציאה", null, (_, _) => Exit());
 
-        _icon = new NotifyIcon { Icon = MakeIcon(Color.FromArgb(146, 124, 93)), Visible = true, ContextMenuStrip = menu, Text = "AVOT Capture Agent" };
-        _icon.DoubleClick += (_, _) => OpenUrl(_host.Settings.ServerUrl);
+        _icon = new NotifyIcon { Icon = MakeIcon(Color.FromArgb(146, 124, 93)), Visible = true, ContextMenuStrip = menu, Text = "AVOT Capture Desktop" };
+        _icon.DoubleClick += (_, _) => ShowWindow();
         if (_host.Settings.AutoStart && !_autostart.Checked) _autostart.Checked = true;
         _host.Changed += () => _ui.Post(_ => Refresh(), null);
         _refresh.Tick += (_, _) => Refresh();
@@ -84,6 +89,15 @@ public sealed class TrayApp : IDisposable
         _icon.Text = tip.Length > 63 ? tip[..63] : tip;
     }
 
+    /// <summary>Opens (or brings forward) the management window. Closing it only hides it; the engine keeps running.</summary>
+    public void ShowWindow()
+    {
+        _window ??= new MainForm(_host, _logs);
+        if (!_window.Visible) _window.Show();
+        _window.WindowState = FormWindowState.Normal;
+        _window.Activate();
+    }
+
     public void ShowPairing()
     {
         using var f = new PairingForm(_host);
@@ -102,6 +116,7 @@ public sealed class TrayApp : IDisposable
         if (pending > 0 && MessageBox.Show($"{pending} צילומים שמורים בעמדה וטרם הועלו. הם לא יאבדו ויועלו בהפעלה הבאה. לצאת בכל זאת?", "AVOT Capture Agent", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2, MessageBoxOptions.RtlReading | MessageBoxOptions.RightAlign) != DialogResult.Yes)
             return;
         _icon.Visible = false;
+        _window?.ReallyClose();
         Application.Exit();
     }
 

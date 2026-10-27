@@ -46,6 +46,8 @@ public sealed class CaptureCoordinator : IDisposable
     private ICameraDevice? _camera;
     private volatile CaptureContext? _active;
     private (string? userId, string? userName, string? token) _activeUser;
+    private TaskCompletionSource<string>? _testShot;
+    private long _testWindowUntilTicks;
 
     private sealed class PendingShot
     {
@@ -68,6 +70,48 @@ public sealed class CaptureCoordinator : IDisposable
 
     public string StagingDir => Path.Combine(_opt.StorageRoot, ".staging");
     public CaptureContext? ActiveContext => _active;
+
+    /// <summary>True while a shot is being received from the camera (the station must not restart or update meanwhile).</summary>
+    public bool HasShotInProgress => !_pending.IsEmpty || (Directory.Exists(StagingDir) && Directory.EnumerateFiles(StagingDir).Any());
+
+    /// <summary>
+    /// Fires one test shot through <paramref name="trigger"/>. The resulting file(s) are kept under
+    /// &lt;storage&gt;	est-shots and are never associated with a book, never queued for upload.
+    /// </summary>
+    public async Task<string> TestShotAsync(Func<CancellationToken, Task> trigger, TimeSpan timeout, CancellationToken ct)
+    {
+        if (!_pending.IsEmpty) throw new CaptureRejectedException("צילום אחר בתהליך — המתינו לסיומו", 409);
+        var tcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (Interlocked.CompareExchange(ref _testShot, tcs, null) is not null) throw new CaptureRejectedException("צילום ניסיון כבר מתבצע", 409);
+        try
+        {
+            await trigger(ct);
+            var path = await tcs.Task.WaitAsync(timeout, ct);
+            // a RAW+JPEG shot delivers a second file a moment later: it belongs to the test as well
+            Interlocked.Exchange(ref _testWindowUntilTicks, DateTime.UtcNow.AddSeconds(8).Ticks);
+            return path;
+        }
+        catch (TimeoutException)
+        {
+            throw new CameraException("המצלמה לא החזירה תמונה. בדקו שהיא במצב צילום ושהכרטיס/המיקוד תקינים.");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _testShot, null);
+        }
+    }
+
+    private bool TryTakeAsTestFile(CameraFileReady file)
+    {
+        var waiting = Volatile.Read(ref _testShot);
+        if (waiting is null && DateTime.UtcNow.Ticks > Interlocked.Read(ref _testWindowUntilTicks)) return false;
+        var dir = Path.Combine(_opt.StorageRoot, "test-shots");
+        Directory.CreateDirectory(dir);
+        var dest = Path.Combine(dir, $"test-{DateTime.Now:yyyyMMdd-HHmmss-fff}{Path.GetExtension(file.CameraFilename).ToLowerInvariant()}");
+        File.Move(file.StagingPath, dest, overwrite: true);
+        waiting?.TrySetResult(dest);
+        return true;
+    }
 
     public event Action<string>? CaptureSaved;
 
@@ -161,6 +205,7 @@ public sealed class CaptureCoordinator : IDisposable
         await _fileGate.WaitAsync();
         try
         {
+            if (TryTakeAsTestFile(file)) return;
             var ext = Path.GetExtension(file.CameraFilename);
             var role = DurableFiles.RoleFor(ext);
             PendingShot? shot = null;

@@ -171,6 +171,7 @@ public sealed class LocalApi : IAsyncDisposable
             if (context is null || !Guid.TryParse(captureId, out _)) return Error(400, "VALIDATION", "בקשת צילום לא תקינה");
             try
             {
+                _host.Updates.NoteShutter();
                 var rec = await _host.Coordinator.RequestCaptureAsync(
                     new CaptureRequest(captureId!, context, p.UserId, p.UserName, ctx.Request.Headers.Authorization.ToString()[7..]), ctx.RequestAborted);
                 return Results.Json(new { captureId = rec.CaptureId, stage = rec.Stage.ToString() }, statusCode: 202);

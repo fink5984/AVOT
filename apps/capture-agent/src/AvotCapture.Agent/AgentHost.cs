@@ -15,6 +15,10 @@ public sealed class AgentHost : IAsyncDisposable
     public CaptureCoordinator Coordinator { get; }
     public UploadQueue Uploads { get; }
     public LeaseManager Leases { get; } = new();
+    public UpdateService Updates { get; }
+    public DeletedCapturesService Deletions { get; }
+    /// <summary>Authenticated client for the paired server; null while the station is not paired.</summary>
+    public ServerClient? ServerClientOrNull => _client;
     public ICameraDevice? Camera { get; private set; }
     public string? CameraError { get; private set; }
     public string? ServerError { get; private set; }
@@ -40,8 +44,11 @@ public sealed class AgentHost : IAsyncDisposable
         Store = new LocalStore(Path.Combine(AgentSettings.Folder, "captures.db"));
         Coordinator = new CaptureCoordinator(Store, Feed, new CoordinatorOptions { StorageRoot = settings.StorageRoot }, logs.CreateLogger("Capture"));
         Uploads = new UploadQueue(Store, Feed, () => _client, logs.CreateLogger("Upload")) { RetentionDays = settings.LocalRetentionDays };
+        Updates = new UpdateService(this, logs.CreateLogger("Update"));
+        Deletions = new DeletedCapturesService(this, logs.CreateLogger("Deletions"));
         Coordinator.CaptureSaved += _ =>
         {
+            Updates.NoteShutter();
             Uploads.Kick();
             Changed?.Invoke();
         };
@@ -60,6 +67,8 @@ public sealed class AgentHost : IAsyncDisposable
     {
         Coordinator.RecoverAfterRestart();
         Uploads.Start();
+        Updates.Start();
+        Deletions.Start();
         _cameraLoop = Task.Run(() => CameraLoopAsync(_cts.Token));
         _heartbeatLoop = Task.Run(() => HeartbeatLoopAsync(_cts.Token));
     }
@@ -156,6 +165,25 @@ public sealed class AgentHost : IAsyncDisposable
         }
     }
 
+    /// <summary>Drops the current camera session; the camera loop opens a fresh one within a few seconds.</summary>
+    public async Task ReconnectCameraAsync()
+    {
+        CameraError = null;
+        var cam = Camera;
+        if (cam is not null && cam.GetStatus().Connected) await cam.DisconnectAsync();
+        Feed.Publish(seq => new AgentEvent(seq, "camera"));
+        Changed?.Invoke();
+    }
+
+    /// <summary>One shutter release that is kept as a test file only (never assigned to a book, never uploaded).</summary>
+    public async Task<string> TestShotAsync(CancellationToken ct)
+    {
+        var cam = Camera;
+        if (cam is null || !cam.GetStatus().Connected) throw new CameraException("המצלמה אינה מחוברת");
+        Updates.NoteShutter();
+        return await Coordinator.TestShotAsync(c => cam.TriggerShutterAsync(c), TimeSpan.FromSeconds(30), ct);
+    }
+
     public async Task SwitchCameraModeAsync(string mode)
     {
         Settings.CameraMode = mode;
@@ -237,6 +265,8 @@ public sealed class AgentHost : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
+        Updates.Dispose();
+        Deletions.Dispose();
         await Uploads.DisposeAsync();
         if (Camera is not null) await Camera.DisposeAsync();
         Coordinator.Dispose();

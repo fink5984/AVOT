@@ -26,11 +26,36 @@ internal static class Program
         var log = logs.CreateLogger("Program");
         AppDomain.CurrentDomain.UnhandledException += (_, e) => log.LogCritical(e.ExceptionObject as Exception, "unhandled");
 
+        // a freshly installed update that keeps crashing is rolled back to the previous version before anything else starts
+        if (UpdateService.RecoverIfNeeded(log)) return 0;
+
         var settings = AgentSettings.Load();
+
         if (Arg(args, "--storage") is { } storage) settings.StorageRoot = Path.GetFullPath(storage);
         if (Arg(args, "--port") is { } port) settings.Port = int.Parse(port);
         if (Arg(args, "--camera") is { } cam) settings.CameraMode = cam.ToUpperInvariant() is "SIMULATOR" or "DIGICAM" or "AUTO" ? cam.ToUpperInvariant() : "CANON";
         settings.Save();
+
+        if (args.Contains("--version"))
+        {
+            Console.WriteLine(AgentHost.Version);
+            return 0;
+        }
+        if (Arg(args, "--import-sdk") is { } sdkZip)
+        {
+            var r = SdkImporter.Import(sdkZip, settings);
+            Console.WriteLine(r.Message);
+            return r.Ok ? 0 : 1;
+        }
+        if (args.Contains("--check"))
+        {
+            // used by the installer wizard: one JSON document, exit code 0 only when every line is OK
+            var lines = SystemCheck.RunAsync(settings, null, logs, CancellationToken.None).GetAwaiter().GetResult();
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            // --brief: "key=OK|FAIL" lines the installer reads without a JSON parser
+            Console.WriteLine(args.Contains("--brief") ? string.Join(Environment.NewLine, lines.Select(l => $"{l.Key}={(l.Ok ? "OK" : "FAIL")}")) : SystemCheck.ToJson(lines));
+            return lines.All(l => l.Ok) ? 0 : 3;
+        }
 
         var pairIdx = Array.IndexOf(args, "--pair");
         if (pairIdx >= 0)
@@ -102,8 +127,9 @@ internal static class Program
         {
             ApplicationConfiguration.Initialize();
             Application.ThreadException += (_, e) => log.LogError(e.Exception, "UI thread exception");
-            using var tray = new TrayApp(host);
+            using var tray = new TrayApp(host, logs);
             if (!settings.IsPaired) tray.ShowPairing();
+            if (!args.Contains("--tray")) tray.ShowWindow();
             Application.Run();
         }
 

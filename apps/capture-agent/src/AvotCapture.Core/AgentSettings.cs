@@ -35,6 +35,10 @@ public sealed class AgentSettings
     /// <summary>0 = keep verified originals forever.</summary>
     public int LocalRetentionDays { get; set; }
     public bool RawPlusJpegSimulation { get; set; }
+    /// <summary>Remove local copies of photos of books that were permanently deleted in AVOT Studio (stations only; copies already downloaded elsewhere cannot be touched).</summary>
+    public bool SyncDeletions { get; set; } = true;
+    /// <summary>Check for / download / apply AVOT Capture Desktop updates automatically.</summary>
+    public bool AutoUpdate { get; set; } = true;
 
     public bool IsPaired => DeviceId is not null && DeviceTokenProtected is not null && DeviceSecretProtected is not null && ServerUrl is not null;
 
