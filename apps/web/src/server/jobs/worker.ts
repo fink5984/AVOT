@@ -7,6 +7,7 @@ import { runExportJob } from "../services/exports";
 import { processAssetDerivatives, enqueueFinalStage } from "../services/derivatives";
 import { finalizeProcessedAsset, markFinalFailed } from "../services/book-processing";
 import { purgeExpiredTrash } from "../services/assets";
+import { resumeStalledDeletions, runDeleteCatalogsJob, runDeleteItemsJob } from "../services/deletion";
 
 const POLL_MS = 2000;
 const STALE_LOCK_MS = 15 * 60 * 1000;
@@ -35,6 +36,8 @@ async function runJob(job: Job) {
     if (job.type === "EXPORT_ZIP") await runExportJob(job);
     else if (job.type === "PROCESS_ASSET") await processAssetDerivatives((job.payload as { assetId: string }).assetId);
     else if (job.type === "PROCESS_FINAL") await finalizeProcessedAsset((job.payload as { assetId: string }).assetId);
+    else if (job.type === "DELETE_ITEMS") await runDeleteItemsJob(job);
+    else if (job.type === "DELETE_CATALOGS") await runDeleteCatalogsJob(job);
     else if (job.type === "PURGE_TRASH") {
       const org = await db.organization.findUnique({ where: { id: job.organizationId } });
       if (org) await purgeExpiredTrash(org.id, org.trashRetentionDays);
@@ -42,7 +45,7 @@ async function runJob(job: Job) {
     await db.job.update({ where: { id: job.id }, data: { status: "SUCCEEDED", finishedAt: new Date(), error: null } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const retry = job.attempts < MAX_ATTEMPTS;
+    const retry = job.attempts < (job.type === "DELETE_ITEMS" || job.type === "DELETE_CATALOGS" ? 6 : MAX_ATTEMPTS);
     log.error("job failed", { jobId: job.id, type: job.type, attempt: job.attempts, retry, err });
     await db.job.update({
       where: { id: job.id },
@@ -95,7 +98,10 @@ async function maintenance() {
     }
 
     const orgs = await db.organization.findMany({ select: { id: true, trashRetentionDays: true } });
-    for (const org of orgs) await purgeExpiredTrash(org.id, org.trashRetentionDays);
+    for (const org of orgs) {
+      await purgeExpiredTrash(org.id, org.trashRetentionDays);
+      await resumeStalledDeletions(org.id);
+    }
 
     // a preview exists but the full-resolution pass was lost (restart, deleted job) → queue it again
     const stuck = await db.photoAsset.findMany({
