@@ -185,6 +185,34 @@ enum JobType {
   PROCESS_ASSET
   PROCESS_FINAL
   PURGE_TRASH
+  /// permanent deletion of books + their files (see services/deletion.ts)
+  DELETE_ITEMS
+  /// permanent deletion of catalogs (books stay in inventory)
+  DELETE_CATALOGS
+}
+
+enum PrintJobKind {
+  BOOK
+  LOCATION
+  TEST
+}
+
+/// PENDING → CLAIMED (a print agent took it) → SENT (written to the printer) → DONE (printer confirmed).
+/// Printers that cannot report completion stay at SENT: the UI never claims "printed" for them.
+enum PrintJobStatus {
+  PENDING
+  CLAIMED
+  SENT
+  DONE
+  FAILED
+  CANCELLED
+}
+
+enum PrinterConnection {
+  /// raw TCP (port 9100) from the print agent on the local network
+  NETWORK
+  /// a Windows printer (USB or shared) addressed by its Windows name
+  WINDOWS
 }
 
 enum JobStatus {
@@ -220,6 +248,8 @@ model Organization {
   pairingCodes   PairingCode[]
   captureSession CaptureSession[]
   cameraProfiles CameraProfile[]
+  printers       Printer[]
+  printJobs      PrintJob[]
 }
 
 model User {
@@ -321,6 +351,11 @@ model InventoryItem {
   locationUpdatedAt DateTime?
   /// set when the item was created by the Phase 2 migration from a legacy lot
   migratedFromLotId String?        @unique @db.Uuid
+  /// client-generated key of the "create" request — a double Enter / retried request never creates a second book
+  createOpId      String?          @db.Uuid
+  /// set when a permanent deletion was requested: the book is hidden from everyday work until its files are gone
+  deletionRequestedAt DateTime?
+  deletionRequestedById String?    @db.Uuid
   receivedAt      DateTime         @default(now())
   photoCompletedAt DateTime?
   createdById     String?          @db.Uuid
@@ -340,6 +375,7 @@ model InventoryItem {
   @@unique([organizationId, serial])
   @@unique([organizationId, inventoryNumber])
   @@unique([organizationId, barcode])
+  @@unique([organizationId, createOpId])
   @@index([organizationId, updatedAt])
   @@index([organizationId, physicalStatus])
   @@index([organizationId, commercialStatus])
@@ -724,6 +760,8 @@ model Device {
   id             String    @id @default(uuid()) @db.Uuid
   organizationId String    @db.Uuid
   name           String
+  /// CAPTURE (camera station) | PRINT (label print agent)
+  kind           String    @default("CAPTURE")
   machineName    String?
   /// sha256 of the bearer token used by the agent for server calls
   tokenHash      String    @unique
@@ -735,6 +773,8 @@ model Device {
   cameraKind     String?
   cameraModel    String?
   cameraConnected Boolean  @default(false)
+  /// print agents: JSON status of the printers it drives, and the agent's own report
+  printStatus    Json?
   storagePath    String?
   freeDiskBytes  BigInt?
   pendingUploads Int       @default(0)
@@ -759,6 +799,7 @@ model PairingCode {
   organizationId String    @db.Uuid
   codeHash       String    @unique
   deviceName     String
+  kind           String    @default("CAPTURE")
   createdById    String    @db.Uuid
   expiresAt      DateTime
   usedAt         DateTime?
@@ -1030,4 +1071,74 @@ model PickTask {
 
   @@index([organizationId, status])
   @@index([inventoryItemId])
+}
+
+/* ─────────────────────────── Label printing ─────────────────────────── */
+
+/// A label printer. Only the print agent (a paired Device of kind PRINT) talks to it; the server
+/// never connects to a printer's local address.
+model Printer {
+  id             String            @id @default(uuid()) @db.Uuid
+  organizationId String            @db.Uuid
+  name           String
+  /// free text: "Zebra ZD421", "TSC TE210" …
+  model          String?
+  connection     PrinterConnection @default(NETWORK)
+  /// NETWORK: IPv4/hostname of the printer on the agent's LAN
+  host           String?
+  port           Int               @default(9100)
+  /// WINDOWS: the printer's name in Windows
+  windowsName    String?
+  /// label stock key (see LABEL_SIZES), e.g. "57x32"
+  labelSize      String            @default("57x32")
+  /// "ZPL" today; the column keeps room for other languages
+  language       String            @default("ZPL")
+  /// dots per mm: 8 = 203 dpi, 12 = 300 dpi
+  dotsPerMm      Int               @default(8)
+  isPrimary      Boolean           @default(false)
+  active         Boolean           @default(true)
+  /// the print agent that serves this printer (null = any print agent of the organization)
+  agentId        String?           @db.Uuid
+  lastStatus     String?
+  lastStatusAt   DateTime?
+  lastError      String?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  jobs         PrintJob[]
+
+  @@index([organizationId])
+}
+
+model PrintJob {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @db.Uuid
+  printerId      String?        @db.Uuid
+  kind           PrintJobKind
+  /// [{ "type": "BOOK" | "LOCATION", "id": uuid }]  — rendered by the server when an agent claims the job
+  items          Json
+  copies         Int            @default(1)
+  labelCount     Int            @default(1)
+  status         PrintJobStatus @default(PENDING)
+  attempts       Int            @default(0)
+  /// request key of the click that created the job: a double click never prints twice
+  idemKey        String?
+  /// human summary for the queue ("ITM-000184 · שם הספר")
+  summary        String?
+  createdById    String?        @db.Uuid
+  claimedById    String?        @db.Uuid
+  claimedAt      DateTime?
+  sentAt         DateTime?
+  doneAt         DateTime?
+  error          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  printer      Printer?     @relation(fields: [printerId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, idemKey])
+  @@index([organizationId, status, createdAt])
+  @@index([status, createdAt])
 }

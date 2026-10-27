@@ -33,12 +33,18 @@ export const PERMISSIONS = {
   "inventory.create": ["ADMIN", "EDITOR", "PHOTOGRAPHER"],
   "inventory.edit": ["ADMIN", "EDITOR"],
   "inventory.import": ["ADMIN", "EDITOR"],
+  /** permanent deletion of books (database rows and every stored file) */
+  "inventory.delete": ["ADMIN"],
+  /** change a book's shelf from inventory / catalog screens (movement history is always written) */
+  "inventory.relocate": ["ADMIN", "EDITOR", "WAREHOUSE"],
   /** assign a book to a catalog, end / change an assignment */
   "catalog.assign": ["ADMIN", "EDITOR"],
   /** offered / sold / unsold / withdrawn */
   "commercial.edit": ["ADMIN", "EDITOR"],
   "label.print": ["ADMIN", "EDITOR", "PHOTOGRAPHER", "WAREHOUSE"],
   "house.manage": ["ADMIN"],
+  /** printers, print queue administration, test prints, re-print of any job */
+  "print.manage": ["ADMIN"],
 
   /* warehouse */
   "warehouse.view": ["ADMIN", "EDITOR", "WAREHOUSE", "VIEWER"],
