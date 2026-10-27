@@ -259,3 +259,39 @@ export async function locationContents(orgId: string, locationId: string) {
     take: 1000,
   });
 }
+
+export const bulkMoveSchema = z.object({
+  itemIds: z.array(z.string().uuid()).min(1).max(500),
+  locationId: z.string().uuid().nullable(),
+  note: z.string().trim().max(500).nullish(),
+});
+
+/**
+ * Places several books on one shelf. Each book is its own transaction so one blocked book (shipped,
+ * picked …) never stops the rest; the result lists what failed and why.
+ */
+export async function bulkManualMove(user: UserPrincipal, input: z.infer<typeof bulkMoveSchema>) {
+  if (input.locationId) {
+    const loc = await db.storageLocation.findFirst({ where: { id: input.locationId, organizationId: user.organizationId, active: true } });
+    if (!loc) throw notFound("המיקום");
+  }
+  const done: string[] = [];
+  const failed: { itemId: string; message: string }[] = [];
+  for (const itemId of input.itemIds) {
+    try {
+      const item = await db.inventoryItem.findFirst({ where: { id: itemId, organizationId: user.organizationId, deletionRequestedAt: null }, select: { id: true, currentLocationId: true } });
+      if (!item) throw notFound("הספר");
+      if (item.currentLocationId === input.locationId) {
+        done.push(itemId);
+        continue;
+      }
+      await db.$transaction((tx) => moveItemTx(tx, user, itemId, input.locationId, "MANUAL", { note: input.note ?? null }));
+      done.push(itemId);
+    } catch (err) {
+      if (!(err instanceof AppError)) throw err;
+      failed.push({ itemId, message: err.message });
+    }
+  }
+  if (done.length) await audit(user, { action: "warehouse.items_moved", entityType: "warehouse", entityId: input.locationId, data: { to: input.locationId, count: done.length } });
+  return { done, failed };
+}

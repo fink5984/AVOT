@@ -46,8 +46,8 @@ export async function loadCaptureContext(orgId: string, targetId: string): Promi
   const item = await db.inventoryItem.findFirst({ where: { id: targetId, organizationId: orgId } });
   if (!item) return null;
   const [prev, next, assets] = await Promise.all([
-    db.inventoryItem.findFirst({ where: { organizationId: orgId, serial: { lt: item.serial } }, orderBy: { serial: "desc" }, select: { id: true, serial: true, title: true } }),
-    db.inventoryItem.findFirst({ where: { organizationId: orgId, serial: { gt: item.serial } }, orderBy: { serial: "asc" }, select: { id: true, serial: true, title: true } }),
+    db.inventoryItem.findFirst({ where: { organizationId: orgId, deletionRequestedAt: null, serial: { lt: item.serial } }, orderBy: { serial: "desc" }, select: { id: true, serial: true, title: true } }),
+    db.inventoryItem.findFirst({ where: { organizationId: orgId, deletionRequestedAt: null, serial: { gt: item.serial } }, orderBy: { serial: "asc" }, select: { id: true, serial: true, title: true } }),
     listAssets(orgId, item.id),
   ]);
   const nav = (x: { id: string; serial: number; title: string } | null) => (x ? { id: x.id, lotNumber: x.serial, title: x.title } : null);

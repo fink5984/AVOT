@@ -10,7 +10,7 @@ import { assertHouse } from "../auth/houses";
 import { requirementsSchema } from "./catalogs";
 import { changeStatus } from "./item-status";
 import { assignToCatalog, syncItemCommercial } from "./assignments";
-import { createItemTx, itemProgress, setItemCategoryNote, type CategoryProgress } from "./inventory";
+import { createItemTx, findItemByOpId, itemProgress, setItemCategoryNote, type CategoryProgress } from "./inventory";
 
 /*
  * A Lot is a catalog lot: one inventory book's participation in a catalog.
@@ -33,8 +33,10 @@ export const lotInputSchema = z.object({
   printYear: optionalText(50),
   printPlace: optionalText(200),
   requirements: requirementsSchema.optional(),
+  /** request key (see createItem): a retried quick-add returns the lot it already created */
+  opId: z.string().uuid().optional(),
 });
-export type LotInput = z.infer<typeof lotInputSchema>;
+export type LotInput = z.input<typeof lotInputSchema>;
 
 export const lotPatchSchema = lotInputSchema.partial().extend({
   status: z.enum(["NOT_STARTED", "IN_PROGRESS", "PENDING_REVIEW", "COMPLETED", "NEEDS_RESHOOT"]).optional(),
@@ -62,9 +64,26 @@ export async function getLotForUser(user: UserPrincipal, lotId: string) {
 /** New book received into inventory and assigned to this catalog. */
 export async function createLot(user: UserPrincipal, catalogId: string, input: LotInput) {
   const catalog = await getCatalog(user, catalogId);
+  const lotOfPriorRequest = async () => {
+    const prior = await findItemByOpId(user.organizationId, input.opId);
+    return prior ? db.lot.findFirst({ where: { inventoryItemId: prior.id, catalogId }, orderBy: { assignedAt: "desc" } }) : null;
+  };
+  const already = await lotOfPriorRequest();
+  if (already) return already;
   if (catalog.status === "ARCHIVED") throw new AppError("CONFLICT", "הקטלוג בארכיון — לא ניתן להוסיף אליו פריטים");
   const requirements = (input.requirements ?? catalog.defaultRequirements ?? DEFAULT_REQUIREMENTS) as CategoryRequirements;
-  const lot = await db.$transaction(async (tx) => {
+  const lot = await createLotTx(user, catalog, catalogId, input, requirements).catch(async (err) => {
+    // an identical request (same opId) finished first: its lot is the answer
+    const raced = await lotOfPriorRequest();
+    if (raced) return raced;
+    throw err;
+  });
+  await db.catalog.update({ where: { id: catalogId }, data: { updatedAt: new Date() } });
+  return lot;
+}
+
+async function createLotTx(user: UserPrincipal, catalog: { id: string; number: string }, catalogId: string, input: LotInput, requirements: CategoryRequirements) {
+  return db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "Catalog" WHERE id = ${catalogId}::uuid FOR UPDATE`;
     const next = await nextLotNumber(tx, catalogId);
     const lotNumber = input.lotNumber ?? next.lotNumber;
@@ -75,7 +94,7 @@ export async function createLot(user: UserPrincipal, catalogId: string, input: L
     const item = await createItemTx(
       tx,
       user,
-      { title: input.title, subtitle: input.subtitle, author: input.author, printYear: input.printYear, printPlace: input.printPlace, internalNotes: input.internalNotes },
+      { title: input.title, subtitle: input.subtitle, author: input.author, printYear: input.printYear, printPlace: input.printPlace, internalNotes: input.internalNotes, opId: input.opId },
       { requirements },
     );
     const created = await tx.lot.create({
@@ -108,8 +127,6 @@ export async function createLot(user: UserPrincipal, catalogId: string, input: L
     );
     return created;
   });
-  await db.catalog.update({ where: { id: catalogId }, data: { updatedAt: new Date() } });
-  return lot;
 }
 
 export async function updateLot(user: UserPrincipal, lotId: string, input: z.infer<typeof lotPatchSchema>) {
@@ -246,6 +263,7 @@ export async function listLots(
     where: {
       organizationId: user.organizationId,
       catalogId,
+      item: { deletionRequestedAt: null },
       ...(opts.status && opts.status !== "ALL" ? { status: opts.status as never } : {}),
       ...(opts.assignment === "active" ? { assignmentStatus: "ACTIVE" as const } : {}),
       ...(q

@@ -44,6 +44,7 @@ export async function globalSearch(user: UserPrincipal, raw: string) {
     db.inventoryItem.findMany({
       where: {
         organizationId: orgId,
+        deletionRequestedAt: null,
         OR: [
           { title: { contains: q, mode: "insensitive" } },
           { author: { contains: q, mode: "insensitive" } },

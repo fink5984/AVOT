@@ -10,7 +10,7 @@ import type { DevicePrincipal, UserPrincipal } from "../auth/principal";
 
 const PAIRING_TTL_MS = 15 * 60 * 1000;
 
-export async function createPairingCode(user: UserPrincipal, deviceName: string, replaceDeviceId?: string) {
+export async function createPairingCode(user: UserPrincipal, deviceName: string, replaceDeviceId?: string, kind: "CAPTURE" | "PRINT" = "CAPTURE") {
   if (replaceDeviceId) {
     const existing = await db.device.findFirst({ where: { id: replaceDeviceId, organizationId: user.organizationId } });
     if (!existing) throw notFound("עמדת הצילום");
@@ -22,6 +22,7 @@ export async function createPairingCode(user: UserPrincipal, deviceName: string,
       organizationId: user.organizationId,
       codeHash: sha256Hex(code),
       deviceName,
+      kind,
       createdById: user.userId,
       // a code created for an existing station re-pairs it (new credentials, same station) instead of adding another
       deviceId: replaceDeviceId ?? null,
@@ -59,6 +60,7 @@ export async function pairDevice(input: z.infer<typeof pairDeviceSchema>) {
           data: {
             organizationId: pc.organizationId,
             name: input.name || pc.deviceName,
+            kind: pc.kind,
             machineName: input.machineName,
             agentVersion: input.agentVersion,
             apiVersion: input.apiVersion,

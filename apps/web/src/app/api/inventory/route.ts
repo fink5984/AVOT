@@ -12,6 +12,7 @@ export const GET = route(async (req) => {
       q: p.get("q") ?? undefined,
       view,
       houseId: p.get("houseId") ?? undefined,
+      notInCatalogId: p.get("notInCatalogId") ?? undefined,
       photoStatus: p.get("photoStatus") ?? undefined,
       physicalStatus: p.get("physicalStatus") ?? undefined,
       sort: (p.get("sort") as "updated" | "number" | "title" | null) ?? undefined,
@@ -24,6 +25,6 @@ export const GET = route(async (req) => {
 /** Receive a new physical book into inventory. */
 export const POST = route(async (req) => {
   const user = await authenticateUser(req, "inventory.create");
-  const item = await createItem(user, await parseJson(req, itemInputSchema));
-  return json({ item }, { status: 201 });
+  const { item, existing } = await createItem(user, await parseJson(req, itemInputSchema));
+  return json({ item, existing }, { status: existing ? 200 : 201 });
 });

@@ -82,6 +82,11 @@ async function handle(tx: Tx, user: UserPrincipal, op: ScanOpInput, code: Scanne
     return { result: "OK", message: `מצב ${he.scanMode[code.mode]}`, codeType: "COMMAND" };
   }
 
+  if (code.type === "ZONE") {
+    // a column label identifies a column; a physical book always needs the exact shelf
+    return err("זו תווית עמודה. סרקו את תווית המדף המדויק שעליו מניחים את הספר.");
+  }
+
   if (code.type === "LOCATION") {
     const loc = await findLocationByCode(orgId, code.value, tx);
     if (!loc) return err(`מיקום ${code.value} לא קיים במערכת`);

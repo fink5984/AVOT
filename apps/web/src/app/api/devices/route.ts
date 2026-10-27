@@ -7,7 +7,7 @@ import { isOnline } from "@/server/services/devices";
 export const GET = route(async (req) => {
   const user = await authenticateUser(req, "photo.capture");
   const devices = await db.device.findMany({
-    where: { organizationId: user.organizationId, revokedAt: null },
+    where: { organizationId: user.organizationId, revokedAt: null, kind: "CAPTURE" },
     orderBy: { name: "asc" },
   });
   return json({

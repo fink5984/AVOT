@@ -163,7 +163,7 @@ export interface ScanResponse {
   message: string;
   /** succeeded, but the worker should look (e.g. counted book is recorded elsewhere) */
   warning?: boolean;
-  codeType: "ITEM" | "LOCATION" | "COMMAND" | "LOT" | "UNKNOWN";
+  codeType: "ITEM" | "LOCATION" | "ZONE" | "COMMAND" | "LOT" | "UNKNOWN";
   /** the device should make this its active location */
   activeLocation?: { id: string; code: string; label: string } | null;
   item?: {

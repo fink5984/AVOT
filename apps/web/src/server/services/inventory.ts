@@ -30,9 +30,11 @@ export const itemInputSchema = z.object({
   sizeCategory: z.enum(BOOK_SIZES).optional(),
   /** external tag already on the box / sleeve; default = the inventory number */
   barcode: z.string().trim().min(3).max(64).regex(/^[\x21-\x7e]+$/, "ברקוד: תווי ASCII בלבד").optional(),
+  /** client-generated key of this create request: a double Enter / retried request returns the same book */
+  opId: z.string().uuid().optional(),
 });
 export type ItemInput = z.input<typeof itemInputSchema>;
-export const itemPatchSchema = itemInputSchema.partial();
+export const itemPatchSchema = itemInputSchema.omit({ opId: true }).partial();
 
 /** Bibliographic fields copied to a lot when the book is assigned to a catalog. */
 export const LOT_COPY_FIELDS = ["title", "subtitle", "author", "printYear", "printPlace"] as const;
@@ -89,6 +91,7 @@ export async function createItemTx(
       sizeCategory: input.sizeCategory && input.sizeCategory !== "UNKNOWN" ? input.sizeCategory : sizeFromDimensions(input.heightMm, input.widthMm),
       requirements: asJson(opts.requirements ?? DEFAULT_REQUIREMENTS),
       createdById: principal.userId,
+      createOpId: input.opId ?? null,
     },
   });
   await tx.inventoryStatusEvent.createMany({
@@ -109,8 +112,27 @@ export async function createItemTx(
   return item;
 }
 
-export async function createItem(principal: UserPrincipal, input: ItemInput) {
-  return db.$transaction((tx) => createItemTx(tx, principal, input));
+/** The book already created by a request with this key (null when none, or the key is absent). */
+export async function findItemByOpId(orgId: string, opId: string | undefined, tx: Tx = db) {
+  if (!opId) return null;
+  return tx.inventoryItem.findUnique({ where: { organizationId_createOpId: { organizationId: orgId, createOpId: opId } } });
+}
+
+/**
+ * Receives a book. Idempotent on `opId`: the same key (double Enter, a retry after a lost response,
+ * two tabs racing) always yields the one book, never a second inventory number.
+ */
+export async function createItem(principal: UserPrincipal, input: ItemInput): Promise<{ item: Awaited<ReturnType<typeof createItemTx>>; existing: boolean }> {
+  const prior = await findItemByOpId(principal.organizationId, input.opId);
+  if (prior) return { item: prior, existing: true };
+  try {
+    return { item: await db.$transaction((tx) => createItemTx(tx, principal, input)), existing: false };
+  } catch (err) {
+    // lost the race against an identical request: its row is the answer
+    const raced = await findItemByOpId(principal.organizationId, input.opId);
+    if (raced) return { item: raced, existing: true };
+    throw err;
+  }
 }
 
 export async function getItemOrThrow(orgId: string, id: string, tx: Tx = db) {
@@ -172,6 +194,8 @@ export interface InventoryListOptions {
   q?: string;
   view?: InventoryView;
   houseId?: string;
+  /** hide books that already hold an ACTIVE assignment in this catalog (the "add from inventory" picker) */
+  notInCatalogId?: string;
   photoStatus?: string;
   physicalStatus?: string;
   sort?: "updated" | "number" | "title";
@@ -180,7 +204,8 @@ export interface InventoryListOptions {
 }
 
 export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.InventoryItemWhereInput {
-  const and: Prisma.InventoryItemWhereInput[] = [{ organizationId: orgId }];
+  // books waiting for their permanent deletion are out of everyday work
+  const and: Prisma.InventoryItemWhereInput[] = [{ organizationId: orgId, deletionRequestedAt: null }];
   const q = o.q?.trim();
   if (q) {
     const code = classifyCode(q);
@@ -218,6 +243,7 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
       and.push({ commercialStatus: "UNSOLD" });
       break;
   }
+  if (o.notInCatalogId) and.push({ lots: { none: { catalogId: o.notInCatalogId, assignmentStatus: "ACTIVE" } } });
   if (o.houseId) and.push({ lots: { some: { assignmentStatus: "ACTIVE", catalog: { auctionHouseId: o.houseId } } } });
   if (o.photoStatus) and.push({ photoStatus: o.photoStatus as never });
   if (o.physicalStatus) and.push({ physicalStatus: o.physicalStatus as never });
@@ -294,7 +320,7 @@ export type InventoryRow = Awaited<ReturnType<typeof listInventory>>["items"][nu
 export async function inventoryCounts(orgId: string) {
   const views = INVENTORY_VIEWS.filter((v) => v !== "all");
   const counts = await Promise.all(views.map((view) => db.inventoryItem.count({ where: inventoryWhere(orgId, { view }) })));
-  const total = await db.inventoryItem.count({ where: { organizationId: orgId } });
+  const total = await db.inventoryItem.count({ where: { organizationId: orgId, deletionRequestedAt: null } });
   return { all: total, ...Object.fromEntries(views.map((v, i) => [v, counts[i]!])) } as Record<InventoryView, number>;
 }
 
@@ -309,7 +335,7 @@ export async function findItemByCode(orgId: string, raw: string, tx: Tx = db) {
   }
   const value = code.type === "ITEM" ? code.value : code.value.trim();
   if (!value) return null;
-  return tx.inventoryItem.findFirst({ where: { organizationId: orgId, OR: [{ inventoryNumber: value }, { barcode: value }] } });
+  return tx.inventoryItem.findFirst({ where: { organizationId: orgId, deletionRequestedAt: null, OR: [{ inventoryNumber: value }, { barcode: value }] } });
 }
 
 /* ───────────────────────── detail & history ───────────────────────── */

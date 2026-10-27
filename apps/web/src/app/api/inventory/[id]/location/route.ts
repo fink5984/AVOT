@@ -10,9 +10,9 @@ export const GET = route<Ctx>(async (req, { params }) => {
   return json({ suggestions: await suggestLocations(user.organizationId, (await params).id) });
 });
 
-/** Desktop correction of the location; day-to-day moves are done with the handheld. */
+/** "שנה מיקום": warehouse → column → shelf picked in the UI. Always recorded as a movement. */
 export const POST = route<Ctx>(async (req, { params }) => {
-  const user = await authenticateUser(req, "warehouse.manage");
+  const user = await authenticateUser(req, "inventory.relocate");
   await manualMove(user, (await params).id, await parseJson(req, manualMoveSchema));
   return json({ ok: true });
 });

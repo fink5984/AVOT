@@ -83,6 +83,9 @@ export async function assignToCatalog(user: UserPrincipal, itemId: string, input
       }
       assertHouse(user, active.catalog.auctionHouseId);
       if (active.commercialStatus === "SOLD") throw new AppError("CONFLICT", "השיוך הקודם מסומן כנמכר");
+      if (active.commercialStatus === "OFFERED") throw new AppError("CONFLICT", "הספר מוצע כעת למכירה — לא ניתן להעביר אותו לקטלוג אחר");
+      const openPick = await tx.pickTask.count({ where: { inventoryItemId: itemId, status: { in: ["OPEN", "PICKED", "PACKED"] } } });
+      if (openPick) throw new AppError("CONFLICT", "לספר יש משימת ליקוט פעילה — לא ניתן להעביר אותו");
       await endLotTx(tx, user, active.id, input.endOutcome ?? "WITHDRAWN", `הועבר ל${catalog.auctionHouse.name}, קטלוג ${catalog.number}`);
     }
     const next = await nextLotNumber(tx, catalog.id);

@@ -8,7 +8,10 @@ import { AppError } from "@/server/errors";
 const schema = z.object({
   itemIds: z.array(z.string().uuid()).min(1).max(500),
   catalogId: z.string().uuid(),
+  /** move every book that is active elsewhere (explicit, applies to the whole batch) */
   replaceActive: z.boolean().optional(),
+  /** move only these books out of their current catalog (the picker's per-book confirmation) */
+  replaceItemIds: z.array(z.string().uuid()).max(500).optional(),
 });
 
 /**
@@ -23,7 +26,7 @@ export const POST = route(async (req) => {
   const failed: { itemId: string; message: string }[] = [];
   for (const itemId of input.itemIds) {
     try {
-      const lot = await assignToCatalog(user, itemId, { catalogId: input.catalogId, replaceActive: input.replaceActive, endOutcome: "WITHDRAWN" });
+      const lot = await assignToCatalog(user, itemId, { catalogId: input.catalogId, replaceActive: input.replaceActive || input.replaceItemIds?.includes(itemId), endOutcome: "WITHDRAWN" });
       done.push({ itemId, lotNumber: lot.lotNumber });
     } catch (err) {
       if (!(err instanceof AppError)) return errorResponse(err);

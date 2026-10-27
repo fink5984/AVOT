@@ -112,6 +112,15 @@ export function formatLocationCode(parts: { warehouse?: string | null; zone: str
   return ["LOC", ...(parts.warehouse ? [seg(parts.warehouse)] : []), seg(parts.zone), seg(parts.shelf), seg(parts.cell)].join("-");
 }
 
+/**
+ * Column (zone) identification label: "COL-C1" / "COL-W2-C1". It is NOT a place a book can be put on —
+ * scanners tell the worker to scan a shelf instead (a book must always get an exact shelf).
+ */
+export function formatZoneCode(parts: { warehouse?: string | null; zone: string }): string {
+  const seg = (v: string) => v.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
+  return ["COL", ...(parts.warehouse ? [seg(parts.warehouse)] : []), seg(parts.zone)].join("-");
+}
+
 /** Work-mode command barcodes. They only switch the scanner UI — every action is still authorised by the server. */
 export const COMMAND_CODES = {
   "CMD-STORE": "STORE",
@@ -125,6 +134,8 @@ export type CommandCode = keyof typeof COMMAND_CODES;
 export type ScannedCode =
   | { type: "ITEM"; value: string }
   | { type: "LOCATION"; value: string }
+  /** a warehouse column label — identifies a column, never a shelf */
+  | { type: "ZONE"; value: string }
   | { type: "COMMAND"; value: CommandCode; mode: ScanMode }
   /** legacy catalog label (QR with AVOT-LOT:<uuid> or /l/<uuid>) */
   | { type: "LOT"; value: string }
@@ -143,6 +154,7 @@ export function classifyCode(raw: string): ScannedCode {
   if (up in COMMAND_CODES) return { type: "COMMAND", value: up as CommandCode, mode: COMMAND_CODES[up as CommandCode] };
   if (/^ITM-\d{1,9}$/.test(up)) return { type: "ITEM", value: formatInventoryNumber(Number(up.slice(4))) };
   if (/^LOC(-[A-Z0-9]+){2,5}$/.test(up)) return { type: "LOCATION", value: up };
+  if (/^COL(-[A-Z0-9]+){1,2}$/.test(up)) return { type: "ZONE", value: up };
   const lot = v.match(new RegExp(`(?:AVOT-LOT:|/l/)(${UUID})`, "i"));
   if (lot) return { type: "LOT", value: lot[1]!.toLowerCase() };
   return { type: "UNKNOWN", value: v };
