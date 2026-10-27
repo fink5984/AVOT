@@ -280,6 +280,7 @@ export function Gallery({
       key: a.id,
       title: `${t.category[a.category]} · ${a.displayName ?? `צילום ${a.sequence}`}`,
       src: a.previewUrl,
+      fullSrc: a.processedUrl ?? (a.processed ? a.previewUrl : `/api/assets/${a.id}/original`),
       originalSrc: `/api/assets/${a.id}/original`,
       downloadHref: perms.download ? `/api/assets/${a.id}/original?download=1` : null,
       rotation: a.rotation,

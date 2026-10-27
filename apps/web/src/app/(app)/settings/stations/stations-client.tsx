@@ -40,6 +40,7 @@ export function StationsAdmin({ devices, users, serverUrl }: { devices: Station[
   const toast = useToast();
   const [pairOpen, setPairOpen] = useState(false);
   const [code, setCode] = useState<{ code: string; expiresAt: string } | null>(null);
+  const [repair, setRepair] = useState<Station | null>(null);
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<AgentHello | null | undefined>(undefined);
 
@@ -60,6 +61,20 @@ export function StationsAdmin({ devices, users, serverUrl }: { devices: Station[
     try {
       const r = await api<{ code: string; expiresAt: string }>("/api/devices/pairing-code", { method: "POST", json: { name } });
       setCode(r);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function repairStation(d: Station) {
+    setBusy(true);
+    try {
+      const r = await api<{ code: string; expiresAt: string }>("/api/devices/pairing-code", { method: "POST", json: { deviceId: d.id } });
+      setRepair(d);
+      setCode(r);
+      setPairOpen(true);
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -98,7 +113,7 @@ export function StationsAdmin({ devices, users, serverUrl }: { devices: Station[
               ? `במחשב זה פועל Capture Agent ${local.version}${local.paired ? ` (מצומד: ${local.deviceName ?? ""})` : " — לא מצומד"}${local.camera.model ? ` · ${local.camera.model}` : ""}`
               : "Capture Agent לא זוהה במחשב זה."}
         </div>
-        <Button variant="primary" className="ms-auto" icon={<Link2 />} onClick={() => { setCode(null); setPairOpen(true); }}>
+        <Button variant="primary" className="ms-auto" icon={<Link2 />} onClick={() => { setCode(null); setRepair(null); setPairOpen(true); }}>
           צימוד עמדה חדשה
         </Button>
       </div>
@@ -171,11 +186,16 @@ export function StationsAdmin({ devices, users, serverUrl }: { devices: Station[
                       </Select>
                     </td>
                     <td className="px-3 py-2.5">
-                      {!d.revoked && (
-                        <Button size="sm" variant="danger" onClick={() => revoke(d)}>
-                          ביטול
+                      <div className="flex gap-1.5">
+                        <Button size="sm" loading={busy} onClick={() => repairStation(d)} title="קוד צימוד חדש לעמדה זו, בלי להוסיף עמדה נוספת">
+                          צימוד מחדש
                         </Button>
-                      )}
+                        {!d.revoked && (
+                          <Button size="sm" variant="danger" onClick={() => revoke(d)}>
+                            ביטול
+                          </Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -185,7 +205,7 @@ export function StationsAdmin({ devices, users, serverUrl }: { devices: Station[
         )}
       </Panel>
 
-      <Dialog open={pairOpen} onClose={() => setPairOpen(false)} title="צימוד עמדת צילום" width="sm">
+      <Dialog open={pairOpen} onClose={() => setPairOpen(false)} title={repair ? `צימוד מחדש: ${repair.name}` : "צימוד עמדת צילום"} width="sm">
         {!code ? (
           <form onSubmit={createCode} className="space-y-3">
             <Field label="שם העמדה" hint="למשל: עמדת צילום 1 — חדר הספרייה">

@@ -42,6 +42,8 @@ export interface AssetDto {
   hasThumb: boolean;
   thumbUrl: string | null;
   previewUrl: string | null;
+  /** full-resolution processed image (rotated, background removed, cropped); null until the full pass has produced a file */
+  processedUrl: string | null;
   processingStatus: string;
   quality: QualityReport | null;
   needsReshoot: boolean;
@@ -125,6 +127,7 @@ export function toAssetDto(a: AssetRow): AssetDto {
     hasThumb: !!a.thumbKey,
     thumbUrl: a.thumbKey ? `/api/assets/${a.id}/thumb${v}` : null,
     previewUrl: a.thumbKey ? `/api/assets/${a.id}/preview${v}` : null,
+    processedUrl: a.processedKey ? `/api/assets/${a.id}/processed${v}` : null,
     processingStatus: a.processingStatus,
     quality: (a.quality as QualityReport | null) ?? null,
     needsReshoot: a.needsReshoot,

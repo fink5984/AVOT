@@ -10,7 +10,12 @@ import type { DevicePrincipal, UserPrincipal } from "../auth/principal";
 
 const PAIRING_TTL_MS = 15 * 60 * 1000;
 
-export async function createPairingCode(user: UserPrincipal, deviceName: string) {
+export async function createPairingCode(user: UserPrincipal, deviceName: string, replaceDeviceId?: string) {
+  if (replaceDeviceId) {
+    const existing = await db.device.findFirst({ where: { id: replaceDeviceId, organizationId: user.organizationId } });
+    if (!existing) throw notFound("עמדת הצילום");
+    deviceName = existing.name;
+  }
   const code = String(randomInt(0, 100_000_000)).padStart(8, "0");
   const row = await db.pairingCode.create({
     data: {
@@ -18,10 +23,12 @@ export async function createPairingCode(user: UserPrincipal, deviceName: string)
       codeHash: sha256Hex(code),
       deviceName,
       createdById: user.userId,
+      // a code created for an existing station re-pairs it (new credentials, same station) instead of adding another
+      deviceId: replaceDeviceId ?? null,
       expiresAt: new Date(Date.now() + PAIRING_TTL_MS),
     },
   });
-  await audit(user, { action: "device.pairing_code_created", entityType: "device", entityId: row.id, data: { deviceName } });
+  await audit(user, { action: "device.pairing_code_created", entityType: "device", entityId: replaceDeviceId ?? row.id, data: { deviceName, repair: !!replaceDeviceId } });
   return { code, expiresAt: row.expiresAt };
 }
 
@@ -35,18 +42,31 @@ export async function pairDevice(input: z.infer<typeof pairDeviceSchema>) {
   const result = await db.$transaction(async (tx) => {
     const pc = await tx.pairingCode.findUnique({ where: { codeHash: sha256Hex(input.code) } });
     if (!pc || pc.usedAt || pc.expiresAt < new Date()) throw new AppError("UNAUTHENTICATED", "קוד הצימוד שגוי או שפג תוקפו");
-    const device = await tx.device.create({
-      data: {
-        organizationId: pc.organizationId,
-        name: input.name || pc.deviceName,
-        machineName: input.machineName,
-        agentVersion: input.agentVersion,
-        apiVersion: input.apiVersion,
-        tokenHash: sha256Hex(token),
-        secretEnc: encryptSecret(secret),
-        lastSeenAt: new Date(),
-      },
-    });
+    const device = pc.deviceId
+      ? await tx.device.update({
+          where: { id: pc.deviceId },
+          data: {
+            machineName: input.machineName,
+            agentVersion: input.agentVersion,
+            apiVersion: input.apiVersion,
+            tokenHash: sha256Hex(token),
+            secretEnc: encryptSecret(secret),
+            revokedAt: null,
+            lastSeenAt: new Date(),
+          },
+        })
+      : await tx.device.create({
+          data: {
+            organizationId: pc.organizationId,
+            name: input.name || pc.deviceName,
+            machineName: input.machineName,
+            agentVersion: input.agentVersion,
+            apiVersion: input.apiVersion,
+            tokenHash: sha256Hex(token),
+            secretEnc: encryptSecret(secret),
+            lastSeenAt: new Date(),
+          },
+        });
     await tx.pairingCode.update({ where: { id: pc.id }, data: { usedAt: new Date(), deviceId: device.id } });
     await tx.auditLog.create({
       data: {

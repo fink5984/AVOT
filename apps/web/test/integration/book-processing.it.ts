@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import sharp from "sharp";
 import { randomUUID, createHash } from "node:crypto";
-import { DEFAULT_PROCESSING, type ProcessingSettings } from "@avot/shared";
+import { DEFAULT_PROCESSING, API_VERSION, type ProcessingSettings } from "@avot/shared";
+import { createPairingCode, pairDevice } from "@/server/services/devices";
 import { db } from "@/server/db";
 import { storage } from "@/server/storage";
 import { registerCapture, uploadFileContent } from "@/server/services/captures";
@@ -187,6 +188,18 @@ describe.skipIf(!hasDb)("green-screen processing against a real database", () =>
       const seqs = (await db.photoAsset.findMany({ where: { inventoryItemId: itemId }, select: { sequence: true } })).map((s) => s.sequence);
       expect(new Set(seqs).size).toBe(seqs.length);
     }
+  });
+
+  it("re-pairing keeps the same station and replaces its credentials", async () => {
+    const first = await createPairingCode(user, "Station A");
+    const a = await pairDevice({ code: first.code, name: "Station A", machineName: "PC", agentVersion: "0.1.0", apiVersion: API_VERSION });
+    const again = await createPairingCode(user, "", a.deviceId);
+    const b = await pairDevice({ code: again.code, name: "ignored", machineName: "PC2", agentVersion: "0.2.0", apiVersion: API_VERSION });
+    expect(b.deviceId).toBe(a.deviceId);
+    expect(b.name).toBe("Station A");
+    expect(b.deviceToken).not.toBe(a.deviceToken);
+    expect(await db.device.count({ where: { organizationId: orgId, name: "Station A" } })).toBe(1);
+    await expect(pairDevice({ code: again.code, name: "x", machineName: "PC", agentVersion: "0.2.0", apiVersion: API_VERSION })).rejects.toThrow(); // single use
   });
 
   it("deleting and purging a photo removes the processed file as well", async () => {

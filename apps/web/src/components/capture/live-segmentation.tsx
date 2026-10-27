@@ -64,7 +64,22 @@ export function LiveSegmentation({
     const wc = work.current;
     const wctx = wc.getContext("2d", { willReadFrequently: true });
     const octx = canvas.getContext("2d");
-    if (!wctx || !octx) return;
+    // the mask is computed small (fast) but the picture is drawn at display resolution (sharp)
+    const fgCanvas = document.createElement("canvas");
+    const fgCtx = fgCanvas.getContext("2d");
+    const maskCanvas = document.createElement("canvas");
+    const maskCtx = maskCanvas.getContext("2d");
+    if (!wctx || !octx || !fgCtx || !maskCtx) return;
+    const DISPLAY_MAX = 1280;
+    const checker = document.createElement("canvas");
+    checker.width = checker.height = 16;
+    const cctx = checker.getContext("2d")!;
+    cctx.fillStyle = "#f5f5f5";
+    cctx.fillRect(0, 0, 16, 16);
+    cctx.fillStyle = "#d6d6d6";
+    cctx.fillRect(0, 0, 8, 8);
+    cctx.fillRect(8, 8, 8, 8);
+    const checkerPattern = octx.createPattern(checker, "repeat");
 
     let tier: number = 0;
     let degraded = false;
@@ -101,10 +116,6 @@ export function LiveSegmentation({
         wc.width = W;
         wc.height = H;
       }
-      if (canvas.width !== W || canvas.height !== H) {
-        canvas.width = W;
-        canvas.height = H;
-      }
       let result: SegmentResult;
       const t0 = performance.now();
       let img: ImageData;
@@ -139,39 +150,57 @@ export function LiveSegmentation({
       }
 
       canvas.style.display = "block";
+      const scale = showProcessed ? Math.max(1, Math.min(DISPLAY_MAX, size.w) / W) : 1;
+      const OW = Math.round(W * scale);
+      const OH = Math.round(H * scale);
+      if (canvas.width !== OW || canvas.height !== OH) {
+        canvas.width = OW;
+        canvas.height = OH;
+      } else {
+        octx.clearRect(0, 0, OW, OH);
+      }
       if (showProcessed) {
         const fillRgb: [number, number, number] | null = s.background === "transparent" ? null : parseHexColor(s.background);
-        const o = octx.createImageData(W, H);
-        const d = o.data;
-        const src = img.data;
-        for (let y = 0, i = 0; y < H; y++) {
-          for (let x = 0; x < W; x++, i++) {
-            const a = result.alpha[i]! / 255;
-            const p = i * 4;
-            let br: number, bg: number, bb2: number;
-            if (fillRgb) {
-              [br, bg, bb2] = fillRgb;
-            } else {
-              const c = ((x >> 3) + (y >> 3)) & 1 ? 214 : 245; // transparency checkerboard
-              br = bg = bb2 = c;
-            }
-            d[p] = src[p]! * a + br * (1 - a);
-            d[p + 1] = src[p + 1]! * a + bg * (1 - a);
-            d[p + 2] = src[p + 2]! * a + bb2 * (1 - a);
-            d[p + 3] = 255;
-          }
+        if (maskCanvas.width !== W || maskCanvas.height !== H) {
+          maskCanvas.width = W;
+          maskCanvas.height = H;
         }
-        octx.putImageData(o, 0, 0);
-      } else {
-        octx.clearRect(0, 0, W, H);
+        const mk = maskCtx.createImageData(W, H);
+        for (let i = 0; i < result.alpha.length; i++) {
+          const p = i * 4;
+          mk.data[p] = mk.data[p + 1] = mk.data[p + 2] = 255;
+          mk.data[p + 3] = result.alpha[i]!;
+        }
+        maskCtx.putImageData(mk, 0, 0);
+        // sharp picture (drawn at display size) knocked out by the upscaled soft mask
+        if (fgCanvas.width !== OW || fgCanvas.height !== OH) {
+          fgCanvas.width = OW;
+          fgCanvas.height = OH;
+        }
+        fgCtx.globalCompositeOperation = "source-over";
+        fgCtx.imageSmoothingEnabled = true;
+        fgCtx.clearRect(0, 0, OW, OH);
+        fgCtx.drawImage(preview, 0, 0, OW, OH);
+        fgCtx.globalCompositeOperation = "destination-in";
+        fgCtx.drawImage(maskCanvas, 0, 0, W, H, 0, 0, OW, OH);
+        fgCtx.globalCompositeOperation = "source-over";
+        if (fillRgb) {
+          octx.fillStyle = `rgb(${fillRgb[0]},${fillRgb[1]},${fillRgb[2]})`;
+          octx.fillRect(0, 0, OW, OH);
+        } else if (checkerPattern) {
+          octx.fillStyle = checkerPattern;
+          octx.fillRect(0, 0, OW, OH);
+        }
+        octx.imageSmoothingEnabled = true;
+        octx.drawImage(fgCanvas, 0, 0);
       }
       if (smooth && (m === "frame" || degraded || showProcessed)) {
         // crop frame = book bounds + margin, exactly what Auto Crop will cut
         const mg = (Math.max(smooth.x1 - smooth.x0, smooth.y1 - smooth.y0) * s.marginPct) / 100;
-        octx.lineWidth = Math.max(1.5, W / 220);
+        octx.lineWidth = Math.max(1.5, OW / 220);
         octx.strokeStyle = showProcessed ? "rgba(207,68,22,0.9)" : "rgba(255,255,255,0.95)";
-        octx.setLineDash(s.autoCrop ? [] : [5, 4]);
-        octx.strokeRect(smooth.x0 - mg, smooth.y0 - mg, smooth.x1 - smooth.x0 + 2 * mg, smooth.y1 - smooth.y0 + 2 * mg);
+        octx.setLineDash(s.autoCrop ? [] : [5 * scale, 4 * scale]);
+        octx.strokeRect((smooth.x0 - mg) * scale, (smooth.y0 - mg) * scale, (smooth.x1 - smooth.x0 + 2 * mg) * scale, (smooth.y1 - smooth.y0 + 2 * mg) * scale);
       }
 
       report({

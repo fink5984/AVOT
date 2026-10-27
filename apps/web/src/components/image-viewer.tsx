@@ -10,6 +10,8 @@ export interface ViewerItem {
   title: string;
   /** fast preview (≤2048px) */
   src: string | null;
+  /** full-resolution image that matches the preview's look (processed when available), loaded on demand for sharp display / 1:1 */
+  fullSrc?: string | null;
   /** full-resolution original, loaded on demand for 1:1 inspection */
   originalSrc?: string | null;
   downloadHref?: string | null;
@@ -26,7 +28,7 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
   const item = items[index];
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [useOriginal, setUseOriginal] = useState(false);
+  const [hires, setHires] = useState(false);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [showInfo, setShowInfo] = useState(true);
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
@@ -36,9 +38,23 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
-    setUseOriginal(false);
     setNatural(null);
   }, [index]);
+
+  const hiResSrc = item?.fullSrc ?? item?.originalSrc ?? null;
+  // show the fast preview instantly, then swap to the full-resolution picture once it has fully loaded (from cache, so no flash)
+  useEffect(() => {
+    setHires(false);
+    if (!hiResSrc) return;
+    let alive = true;
+    const im = new Image();
+    im.onload = () => alive && setHires(true);
+    im.src = hiResSrc;
+    return () => {
+      alive = false;
+      im.onload = null;
+    };
+  }, [hiResSrc, index]);
 
   /** zoom that makes one image pixel equal one screen pixel */
   const oneToOne = useCallback(() => {
@@ -56,7 +72,6 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
       else if (e.key === "+" || e.key === "=") setZoom((z) => Math.min(16, z * 1.5));
       else if (e.key === "-") setZoom((z) => Math.max(1, z / 1.5));
       else if (e.code === "Digit1" || e.code === "Numpad1") {
-        setUseOriginal(true);
         setZoom((z) => (z > 1 ? 1 : oneToOne()));
       } else if (e.code === "KeyI") setShowInfo((s) => !s);
       else return;
@@ -68,7 +83,7 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
   }, [index, items.length, onClose, onIndex, oneToOne]);
 
   if (!item) return null;
-  const src = useOriginal && item.originalSrc ? item.originalSrc : item.src;
+  const src = hires && hiResSrc ? hiResSrc : item.src;
 
   return (
     <div className="fixed inset-0 z-[90] flex flex-col bg-studio text-studio-text" role="dialog" aria-modal="true" aria-label={item.title}>
@@ -85,13 +100,10 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
           <button className="rounded-sm p-1.5 hover:bg-studio-3" onClick={() => setZoom((z) => Math.min(16, z * 1.5))} aria-label="הגדלה">
             <Plus className="size-4" />
           </button>
-          {item.originalSrc && (
+          {hiResSrc && (
             <button
-              className={cn("rounded-sm px-2 py-1 text-[12px] hover:bg-studio-3", useOriginal && "bg-studio-3")}
-              onClick={() => {
-                setUseOriginal(true);
-                setZoom((z) => (z > 1 ? 1 : oneToOne()));
-              }}
+              className={cn("rounded-sm px-2 py-1 text-[12px] hover:bg-studio-3", zoom > 1 && "bg-studio-3")}
+              onClick={() => setZoom((z) => (z > 1 ? 1 : oneToOne()))}
               title="בדיקת חדות ברזולוציה מלאה (מקש 1)"
             >
               1:1
@@ -177,7 +189,7 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
                 <div>
                   <dt className="text-[11px] text-studio-muted">רזולוציה מוצגת כעת</dt>
                   <dd className="num text-start">
-                    {natural.w}×{natural.h} {useOriginal ? "(מקור)" : "(תצוגה מקדימה)"}
+                    {natural.w}×{natural.h} {hires ? "(רזולוציה מלאה)" : "(תצוגה מקדימה)"}
                   </dd>
                 </div>
               )}

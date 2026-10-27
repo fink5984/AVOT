@@ -163,6 +163,8 @@ export function CaptureStudio({
   // rotation belongs to the profile: it turns the live view and the saved (processed) pixels alike
   const rotation = processing.rotation;
   const [peaking, setPeaking] = useState(false);
+  // hardware focus magnification (digiCamControl / Canon): a sensor region shown at true pixel density for a sharp focus check
+  const [focusZoom, setFocusZoom] = useState(false);
   const [hidePanels, setHidePanels] = useState(false);
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   const [health, setHealth] = useState<StorageHealth>({ freeBytes: null, level: "ok" });
@@ -174,6 +176,20 @@ export function CaptureStudio({
   const [liveStatus, setLiveStatus] = useState<LiveSegStatus | null>(null);
   const [editAsset, setEditAsset] = useState<AssetDto | null>(null);
   const rotateView = useCallback(() => patchRef.current({ rotation: ((processingRef.current.rotation + 90) % 360) as 0 | 90 | 180 | 270 }), []);
+
+  // toggle the camera's own focus-magnification (sharp focus check despite the low-resolution live-view stream)
+  const toggleFocusZoom = useCallback(() => {
+    setFocusZoom((on) => {
+      const next = !on;
+      if (next) setZoom(1);
+      // 50% = a moderate magnification: a sharp region without cropping in too close (100% is 1:1 and far too tight)
+      void driverRef.current?.setControl?.(`focus:LiveView_Zoom_${next ? "50" : "All"}`, true).catch(() => {
+        setFocusZoom(false);
+        toast.warning("הגדלת פוקוס חומרתית אינה נתמכת במצלמה זו");
+      });
+      return next;
+    });
+  }, [toast]);
 
   const updateShot = useCallback((captureId: string, patch: Partial<LocalShot> & { lotId?: string; category?: PhotoCategory }) => {
     setShots((m) => {
@@ -264,6 +280,7 @@ export function CaptureStudio({
       setPreview(null);
       setInfo(null);
       setControls([]);
+      setFocusZoom(false);
       setChoice(c);
 
       let driver: CameraDriver;
@@ -308,6 +325,8 @@ export function CaptureStudio({
         setPreview(driver.previewElement());
         setInfo(driver.info());
         setControls(driver.controls());
+        // the camera may still be in focus-magnification from a previous session — start from the full view
+        if (c.kind === "DIGICAM") void driver.setControl?.("focus:LiveView_Zoom_All", true).catch(() => undefined);
         setPrefs({ lastCamera: { kind: c.kind, id: c.id, label: c.label } });
         const cur = ctxRef.current;
         await driver.setActiveContext?.({
@@ -722,10 +741,13 @@ export function CaptureStudio({
   const viewerItems: ViewerItem[] = stripItems.map((it) => {
     const asset = it.assetId ? ctx.assets.find((a) => a.id === it.assetId) : undefined;
     const d = asset ? assetViewerDetails(asset) : null;
+    // sharp source that matches the preview: the full-res processed file, else the processed preview until it is ready, else the raw original
+    const full = asset ? (asset.processedUrl ?? (asset.processed ? asset.previewUrl : `/api/assets/${asset.id}/original`)) : it.src;
     return {
       key: it.key,
       title: `${ctx.target === "item" ? ctx.item.inventoryNumber : `פריט ${ctx.lot.lotNumber}`} · ${t.category[it.category]} · צילום ${it.seq ?? "—"}`,
       src: asset?.previewUrl ?? it.src,
+      fullSrc: full,
       originalSrc: asset ? `/api/assets/${asset.id}/original` : it.src,
       downloadHref: asset ? `/api/assets/${asset.id}/original?download=1` : null,
       rotation: it.rotation,
@@ -982,7 +1004,7 @@ export function CaptureStudio({
                 <LiveSegmentation
                   preview={ready || conn.state === "busy" ? preview : null}
                   settings={processing}
-                  mode={calibrating ? "frame" : processing.liveMode}
+                  mode={calibrating ? "frame" : focusZoom ? "full" : processing.liveMode}
                   calibrating={calibrating}
                   onCalibrate={(sample: BgSample) => {
                     patchRef.current({ bgSample: sample });
@@ -1052,6 +1074,12 @@ export function CaptureStudio({
                     <span className="num">{z}×</span>
                   </ToolButton>
                 ))}
+                {choice?.kind === "DIGICAM" && (
+                  <ToolButton active={focusZoom} onClick={toggleFocusZoom} title="הגדלת פוקוס במצלמה — אזור מהחיישן בחדות מלאה לבדיקת פוקוס">
+                    <Focus />
+                    <span>פוקוס חד</span>
+                  </ToolButton>
+                )}
               </div>
             </div>
 

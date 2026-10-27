@@ -57,7 +57,10 @@ export async function serveAsset(
     });
     return new Response(null, { status: 302, headers: { location: url, "cache-control": "private, max-age=240" } });
   }
-  const stream = await store.getStream(key);
+  // a DB row whose file is absent from local storage (e.g. a DB shared with another machine) is a 404, not a 500
+  const stream = await store.getStream(key).catch((err: NodeJS.ErrnoException) => {
+    throw err.code === "ENOENT" ? notFound("הקובץ") : err;
+  });
   const headers: Record<string, string> = {
     "content-type": contentType,
     "cache-control": kind === "original" || kind === "processed" ? "private, no-store" : "private, max-age=3600",
