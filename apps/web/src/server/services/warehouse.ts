@@ -295,3 +295,166 @@ export async function bulkManualMove(user: UserPrincipal, input: z.infer<typeof 
   if (done.length) await audit(user, { action: "warehouse.items_moved", entityType: "warehouse", entityId: input.locationId, data: { to: input.locationId, count: done.length } });
   return { done, failed };
 }
+
+
+/* ───────────────────────── simple structure: warehouse → column → shelf ─────────────────────────
+ * UI vocabulary maps onto the stored hierarchy: Warehouse = warehouse, WarehouseZone = column,
+ * Shelf = shelf, and every shelf gets ONE StorageLocation (cell "01") — the exact place a book is
+ * assigned to. Cells stay available as an advanced mechanism (createLocations). Codes are written once
+ * and never changed or reused, so printed barcodes stay valid however the structure is edited later.
+ */
+
+const MAX_LOCATIONS_PER_CALL = 2000;
+
+export const warehouseWizardSchema = z.object({
+  name: z.string().trim().min(1, "שם המחסן נדרש").max(100),
+  columns: z.number().int().min(1, "לפחות עמודה אחת").max(99),
+  shelvesPerColumn: z.number().int().min(1, "לפחות מדף אחד בכל עמודה").max(99),
+});
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+async function nextWarehouseCode(tx: Tx, orgId: string) {
+  const existing = new Set((await tx.warehouse.findMany({ where: { organizationId: orgId }, select: { code: true } })).map((w) => w.code));
+  for (let n = 1; n < 1000; n++) if (!existing.has(`W${n}`)) return `W${n}`;
+  throw new AppError("CONFLICT", "יותר מדי מחסנים");
+}
+
+/** Creates a column with `shelves` shelves, each with its single location. Codes continue after the highest existing one. */
+async function createColumnTx(tx: Tx, orgId: string, wh: { id: string; code: string; isDefault: boolean }, shelves: number, name?: string | null) {
+  const zones = await tx.warehouseZone.findMany({ where: { warehouseId: wh.id }, select: { code: true, sortOrder: true } });
+  const used = zones.map((z) => /^C(\d+)$/.exec(z.code)).filter((m): m is RegExpExecArray => !!m).map((m) => Number(m[1]));
+  const index = Math.max(0, ...used) + 1;
+  if (index > 99) throw new AppError("CONFLICT", "מספר העמודות המרבי במחסן הוא 99");
+  const zone = await tx.warehouseZone.create({
+    data: { warehouseId: wh.id, code: `C${index}`, name: name?.trim() || `עמודה ${index}`, sortOrder: Math.max(0, ...zones.map((z) => z.sortOrder)) + 1 },
+  });
+  await addShelvesTx(tx, orgId, wh, zone, shelves);
+  return zone;
+}
+
+async function addShelvesTx(tx: Tx, orgId: string, wh: { code: string; isDefault: boolean }, zone: { id: string; code: string }, count: number) {
+  const shelves = await tx.shelf.findMany({ where: { zoneId: zone.id }, select: { code: true, sortOrder: true } });
+  const used = shelves.map((s) => Number(s.code)).filter((n) => Number.isInteger(n));
+  const start = Math.max(0, ...used) + 1;
+  if (start + count - 1 > 99) throw new AppError("CONFLICT", "מספר המדפים המרבי בעמודה הוא 99");
+  let order = Math.max(0, ...shelves.map((s) => s.sortOrder));
+  for (let i = 0; i < count; i++) {
+    const code = pad2(start + i);
+    const shelf = await tx.shelf.create({ data: { zoneId: zone.id, code, sortOrder: ++order } });
+    await tx.storageLocation.create({
+      data: {
+        organizationId: orgId,
+        shelfId: shelf.id,
+        cell: "01",
+        code: formatLocationCode({ warehouse: wh.isDefault ? null : wh.code, zone: zone.code, shelf: code, cell: "01" }),
+        sortKey: sortKey(wh.code, zone.code, code, "01"),
+      },
+    });
+  }
+}
+
+/** The wizard: "מחסן 1, 8 עמודות, 5 מדפים בכל עמודה" → 40 shelves with locations and barcodes, atomically. */
+export async function createWarehouseFromWizard(user: UserPrincipal, input: z.infer<typeof warehouseWizardSchema>) {
+  if (input.columns * input.shelvesPerColumn > MAX_LOCATIONS_PER_CALL) throw new AppError("VALIDATION", "המבנה גדול מדי ליצירה אחת");
+  const name = input.name.trim();
+  const dup = await db.warehouse.findFirst({ where: { organizationId: user.organizationId, name } });
+  if (dup) throw new AppError("CONFLICT", `מחסן בשם "${name}" כבר קיים`);
+  const wh = await db.$transaction(
+    async (tx) => {
+      const first = (await tx.warehouse.count({ where: { organizationId: user.organizationId } })) === 0;
+      const warehouse = await tx.warehouse.create({ data: { organizationId: user.organizationId, code: await nextWarehouseCode(tx, user.organizationId), name, isDefault: first } });
+      for (let c = 0; c < input.columns; c++) await createColumnTx(tx, user.organizationId, warehouse, input.shelvesPerColumn);
+      return warehouse;
+    },
+    { timeout: 120_000 },
+  );
+  await audit(user, { action: "warehouse.wizard_created", entityType: "warehouse", entityId: wh.id, data: { name, columns: input.columns, shelvesPerColumn: input.shelvesPerColumn } });
+  return wh;
+}
+
+export const addColumnSchema = z.object({ warehouseId: z.string().uuid(), shelves: z.number().int().min(1).max(99), name: z.string().trim().max(100).nullish() });
+
+export async function addColumn(user: UserPrincipal, input: z.infer<typeof addColumnSchema>) {
+  const wh = await db.warehouse.findFirst({ where: { id: input.warehouseId, organizationId: user.organizationId } });
+  if (!wh) throw notFound("המחסן");
+  const zone = await db.$transaction((tx) => createColumnTx(tx, user.organizationId, wh, input.shelves, input.name), { timeout: 60_000 });
+  await audit(user, { action: "warehouse.column_added", entityType: "warehouse", entityId: zone.id, data: { code: zone.code, shelves: input.shelves } });
+  return zone;
+}
+
+export const addShelvesSchema = z.object({ zoneId: z.string().uuid(), count: z.number().int().min(1).max(99) });
+
+export async function addShelvesToColumn(user: UserPrincipal, input: z.infer<typeof addShelvesSchema>) {
+  const zone = await zoneOf(user.organizationId, input.zoneId);
+  await db.$transaction((tx) => addShelvesTx(tx, user.organizationId, zone.warehouse, zone, input.count), { timeout: 60_000 });
+  await audit(user, { action: "warehouse.shelves_added", entityType: "warehouse", entityId: zone.id, data: { count: input.count } });
+}
+
+export const renameSchema = z.object({ name: z.string().trim().min(1).max(100) });
+
+/** Display names only. Codes (and so printed barcodes) are never edited. */
+export async function renameWarehouse(user: UserPrincipal, id: string, name: string) {
+  const wh = await db.warehouse.findFirst({ where: { id, organizationId: user.organizationId } });
+  if (!wh) throw notFound("המחסן");
+  const clash = await db.warehouse.findFirst({ where: { organizationId: user.organizationId, name, id: { not: id } } });
+  if (clash) throw new AppError("CONFLICT", `מחסן בשם "${name}" כבר קיים`);
+  const u = await db.warehouse.update({ where: { id }, data: { name } });
+  await audit(user, { action: "warehouse.renamed", entityType: "warehouse", entityId: id, data: { from: wh.name, to: name } });
+  return u;
+}
+
+export async function renameColumn(user: UserPrincipal, id: string, name: string) {
+  const zone = await zoneOf(user.organizationId, id);
+  const u = await db.warehouseZone.update({ where: { id }, data: { name } });
+  await audit(user, { action: "warehouse.column_renamed", entityType: "warehouse", entityId: id, data: { from: zone.name, to: name } });
+  return u;
+}
+
+export const reorderSchema = z.object({ kind: z.enum(["columns", "shelves"]), parentId: z.string().uuid(), orderedIds: z.array(z.string().uuid()).min(1).max(200) });
+
+/** Display order only (sortOrder) — never touches codes or the location sort keys used for pick routes. */
+export async function reorderStructure(user: UserPrincipal, input: z.infer<typeof reorderSchema>) {
+  if (input.kind === "columns") {
+    const wh = await db.warehouse.findFirst({ where: { id: input.parentId, organizationId: user.organizationId }, include: { zones: { select: { id: true } } } });
+    if (!wh) throw notFound("המחסן");
+    const valid = new Set(wh.zones.map((z) => z.id));
+    if (input.orderedIds.length !== valid.size || input.orderedIds.some((id) => !valid.has(id))) throw new AppError("VALIDATION", "רשימת העמודות אינה תואמת");
+    await db.$transaction(input.orderedIds.map((id, i) => db.warehouseZone.update({ where: { id }, data: { sortOrder: i + 1 } })));
+  } else {
+    const zone = await zoneOf(user.organizationId, input.parentId);
+    const shelves = await db.shelf.findMany({ where: { zoneId: zone.id }, select: { id: true } });
+    const valid = new Set(shelves.map((s) => s.id));
+    if (input.orderedIds.length !== valid.size || input.orderedIds.some((id) => !valid.has(id))) throw new AppError("VALIDATION", "רשימת המדפים אינה תואמת");
+    await db.$transaction(input.orderedIds.map((id, i) => db.shelf.update({ where: { id }, data: { sortOrder: i + 1 } })));
+  }
+  await audit(user, { action: "warehouse.reordered", entityType: "warehouse", entityId: input.parentId, data: { kind: input.kind } });
+}
+
+/** Disables / re-enables a shelf (all its locations). Disabling is refused while books are on it. */
+export async function setShelfActive(user: UserPrincipal, shelfId: string, active: boolean) {
+  const shelf = await db.shelf.findFirst({ where: { id: shelfId, zone: { warehouse: { organizationId: user.organizationId } } }, include: { locations: { select: { id: true } } } });
+  if (!shelf) throw notFound("המדף");
+  if (!active) {
+    const n = await db.inventoryItem.count({ where: { currentLocationId: { in: shelf.locations.map((l) => l.id) } } });
+    if (n) throw new AppError("CONFLICT", `על המדף ${n} ספרים — העבירו אותם לפני השבתה`);
+  }
+  await db.storageLocation.updateMany({ where: { shelfId }, data: { active } });
+  await audit(user, { action: active ? "warehouse.shelf_enabled" : "warehouse.shelf_disabled", entityType: "warehouse", entityId: shelfId });
+}
+
+/** The books on a shelf (all its locations) for the "click a shelf" panel. */
+export async function shelfContents(orgId: string, shelfId: string) {
+  const shelf = await db.shelf.findFirst({ where: { id: shelfId, zone: { warehouse: { organizationId: orgId } } }, include: { zone: { include: { warehouse: true } }, locations: true } });
+  if (!shelf) throw notFound("המדף");
+  const items = await db.inventoryItem.findMany({
+    where: { organizationId: orgId, currentLocationId: { in: shelf.locations.map((l) => l.id) }, deletionRequestedAt: null },
+    orderBy: { serial: "asc" },
+    take: 500,
+    select: { id: true, inventoryNumber: true, title: true, author: true, physicalStatus: true, primaryAssetId: true, currentLocation: { select: { code: true } } },
+  });
+  return {
+    shelf: { id: shelf.id, code: shelf.code, zone: shelf.zone.name, warehouse: shelf.zone.warehouse.name, locations: shelf.locations.map((l) => ({ id: l.id, code: l.code, cell: l.cell, active: l.active })) },
+    items: items.map((i) => ({ id: i.id, inventoryNumber: i.inventoryNumber, title: i.title, author: i.author, physicalStatus: i.physicalStatus, thumbAssetId: i.primaryAssetId, locationCode: i.currentLocation?.code ?? null })),
+  };
+}
