@@ -767,6 +767,8 @@ export function CaptureStudio({
   const isAgent = choice?.kind === "CANON" || choice?.kind === "DIGICAM" || choice?.kind === "AGENT_SIMULATOR";
   const agentQueue = isAgent ? (driverRef.current as AgentDriver | null)?.queueStatus?.() : null;
   const diskCritical = isAgent ? agentQueue?.disk.level === "critical" : health.level === "critical";
+  // the live estimate does not trust the detection → the shot will be flagged "needs review" instead of auto-cropped
+  const lowConfidence = ready && processing.liveMode !== "full" && !!liveStatus && liveStatus.confidence !== null && liveStatus.confidence < processing.minConfidence;
 
   return (
     <div ref={root} className="flex h-dvh flex-col overflow-hidden bg-studio text-studio-text">
@@ -1103,9 +1105,9 @@ export function CaptureStudio({
               {!calibrating && ready && liveStatus?.degraded && processing.liveMode !== "full" && (
                 <div className="rounded-full bg-black/60 px-3 py-1 text-[12px] text-studio-muted ring-1 ring-white/10">העיבוד החי איטי במחשב זה — מוצגת מסגרת חיתוך בלבד. העיבוד המלא מתבצע אחרי הצילום.</div>
               )}
-              {!calibrating && ready && processing.liveMode !== "full" && liveStatus?.confidence !== null && liveStatus && liveStatus.confidence < processing.minConfidence && (
+              {!calibrating && ready && processing.liveMode !== "full" && lowConfidence && (
                 <div className="rounded-full bg-[#4a3a1a]/90 px-3 py-1 text-[12px] text-[#f2d79e] ring-1 ring-white/10" data-testid="live-low-confidence">
-                  זיהוי הספר לא בטוח{liveStatus.warnings.length ? ` — ${liveStatus.warnings.map(warningLabel).join(", ")}` : ""}. בדקו הארה/רקע או התאימו את הרגישות בהגדרות.
+                  זיהוי הספר לא בטוח{liveStatus?.warnings.length ? ` — ${liveStatus.warnings.map(warningLabel).join(", ")}` : ""}. השאירו שוליים ירוקים סביב הספר שלא ייגע בקצוות, או התאימו הארה/רגישות — אחרת הצילום יסומן ״לבדיקה״.
                 </div>
               )}
             </div>
@@ -1122,10 +1124,10 @@ export function CaptureStudio({
                 onClick={() => void trigger()}
                 disabled={!ready || diskCritical}
                 aria-label="צילום (רווח)"
-                title="צילום (רווח)"
+                title={lowConfidence ? "זיהוי הספר חלש — שפרו מסגור (שוליים ירוקים, הספר לא נוגע בקצוות). אפשר עדיין לצלם (רווח)" : "צילום (רווח)"}
                 className={cn(
                   "group pointer-events-auto relative flex size-[80px] items-center justify-center rounded-full border-[3px] transition-transform active:scale-95 disabled:cursor-not-allowed disabled:opacity-40",
-                  ready ? "border-white bg-black/20 backdrop-blur-sm" : "border-white/40",
+                  !ready ? "border-white/40" : lowConfidence ? "border-[#e8b04b] bg-black/20 backdrop-blur-sm" : "border-white bg-black/20 backdrop-blur-sm",
                 )}
               >
                 <span className={cn("size-[62px] rounded-full transition-all", ready ? "bg-white group-hover:size-[58px] group-active:bg-accent" : "bg-white/50")} />
