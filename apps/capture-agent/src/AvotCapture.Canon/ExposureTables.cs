@@ -8,6 +8,14 @@ namespace AvotCapture.Canon;
 /// </summary>
 internal static class ExposureTables
 {
+    /// <summary>kEdsPropID_WhiteBalance values (labels only; the settable list comes from the camera).</summary>
+    public static readonly Dictionary<uint, string> WhiteBalance = new()
+    {
+        [0] = "אוטומטי", [1] = "אור יום", [2] = "מעונן", [3] = "טונגסטן", [4] = "פלורסנט", [5] = "פלאש", [6] = "מותאם אישית",
+        [8] = "צל", [9] = "טמפרטורת צבע", [10] = "מותאם אישית 2", [11] = "מותאם אישית 3", [15] = "מותאם אישית 4", [16] = "מותאם אישית 5",
+        [17] = "סביבה (Ambience)", [18] = "סביבה (לבן)",
+    };
+
     public static readonly Dictionary<uint, string> Iso = new()
     {
         [0x00] = "Auto", [0x28] = "6", [0x30] = "12", [0x38] = "25", [0x40] = "50", [0x48] = "100", [0x4b] = "125", [0x4d] = "160",

@@ -78,6 +78,14 @@ internal static class Eds
     public const uint PropID_AvailableShots = 0x0000040A;
     public const uint PropID_Evf_OutputDevice = 0x00000500;
     public const uint PropID_Evf_Mode = 0x00000501;
+    // Live-view magnification (the camera's own magnifier). Values per EDSDK 13.x EDSDKTypes.h — verify against the
+    // header of the SDK package actually installed (docs/canon-edsdk.md, "Hardware verification").
+    public const uint PropID_WhiteBalance = 0x00000106;
+    public const uint PropID_Evf_Zoom = 0x00000507;
+    public const uint PropID_Evf_ZoomPosition = 0x00000508;
+    public const uint EvfZoom_Fit = 1;
+    public const uint EvfZoom_x5 = 5;
+    public const uint EvfZoom_x10 = 10;
 
     public const uint SaveTo_Camera = 1;
     public const uint SaveTo_Host = 2;
@@ -90,6 +98,14 @@ internal static class Eds
     public const uint CameraCommand_ExtendShutDownTimer = 0x00000001;
     public const uint CameraCommand_PressShutterButton = 0x00000004;
     public const uint CameraCommand_DoEvfAf = 0x00000102;
+    public const uint CameraCommand_DriveLensEvf = 0x00000103;
+    // EvfDriveLens steps: Near = focus closer, Far = focus farther; 1 = small … 3 = large step
+    public const int DriveLens_Near1 = 0x0001;
+    public const int DriveLens_Near2 = 0x0002;
+    public const int DriveLens_Near3 = 0x0003;
+    public const int DriveLens_Far1 = 0x8001;
+    public const int DriveLens_Far2 = 0x8002;
+    public const int DriveLens_Far3 = 0x8003;
     public const int ShutterButton_OFF = 0x00000000;
     public const int ShutterButton_Halfway = 0x00000001;
     public const int ShutterButton_Completely = 0x00000003;
@@ -133,6 +149,13 @@ internal static class Eds
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    public struct Point
+    {
+        public int X;
+        public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     public struct Capacity
     {
         public int NumberOfFreeClusters;
@@ -173,6 +196,8 @@ internal static class Eds
     [DllImport(Dll)] public static extern uint EdsGetPropertyData(IntPtr inRef, uint inPropertyID, int inParam, int inPropertySize, out uint outPropertyData);
     [DllImport(Dll)] public static extern uint EdsGetPropertyData(IntPtr inRef, uint inPropertyID, int inParam, int inPropertySize, IntPtr outPropertyData);
     [DllImport(Dll)] public static extern uint EdsSetPropertyData(IntPtr inRef, uint inPropertyID, int inParam, int inPropertySize, ref uint inPropertyData);
+    [DllImport(Dll)] public static extern uint EdsSetPropertyData(IntPtr inRef, uint inPropertyID, int inParam, int inPropertySize, ref Point inPropertyData);
+    [DllImport(Dll)] public static extern uint EdsGetPropertyData(IntPtr inRef, uint inPropertyID, int inParam, int inPropertySize, out Point outPropertyData);
     [DllImport(Dll)] public static extern uint EdsGetPropertyDesc(IntPtr inRef, uint inPropertyID, out PropertyDesc outPropertyDesc);
     [DllImport(Dll)] public static extern uint EdsSetObjectEventHandler(IntPtr inCameraRef, uint inEvent, ObjectEventHandler inHandler, IntPtr inContext);
     [DllImport(Dll)] public static extern uint EdsSetPropertyEventHandler(IntPtr inCameraRef, uint inEvent, PropertyEventHandler inHandler, IntPtr inContext);

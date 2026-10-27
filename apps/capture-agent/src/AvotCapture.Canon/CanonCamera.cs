@@ -32,6 +32,7 @@ public sealed class CanonCamera : ICameraDevice
     private volatile bool _liveView;
     private volatile byte[]? _frame;
     private bool _afOnShutter;
+    private uint _evfZoom = Eds.EvfZoom_Fit;
     private readonly Dictionary<uint, uint> _props = [];
 
     // keep delegates alive — the SDK holds raw function pointers
@@ -153,7 +154,7 @@ public sealed class CanonCamera : ICameraDevice
         var saveTo = Eds.SaveTo_Host;
         Check(Eds.EdsSetPropertyData(_camera, Eds.PropID_SaveTo, 0, sizeof(uint), ref saveTo), "SetSaveTo");
         Check(Eds.EdsSetCapacity(_camera, new Eds.Capacity { NumberOfFreeClusters = 0x7FFFFFFF, BytesPerSector = 0x1000, Reset = 1 }), "SetCapacity");
-        foreach (var id in new[] { Eds.PropID_BatteryLevel, Eds.PropID_ImageQuality, Eds.PropID_ISOSpeed, Eds.PropID_Av, Eds.PropID_Tv, Eds.PropID_ExposureCompensation, Eds.PropID_AEMode })
+        foreach (var id in new[] { Eds.PropID_BatteryLevel, Eds.PropID_ImageQuality, Eds.PropID_ISOSpeed, Eds.PropID_Av, Eds.PropID_Tv, Eds.PropID_ExposureCompensation, Eds.PropID_AEMode, Eds.PropID_WhiteBalance })
             ReadProp(id);
         RefreshDescriptors();
         _lastError = null;
@@ -221,6 +222,7 @@ public sealed class CanonCamera : ICameraDevice
                 (Eds.PropID_Tv, "מהירות תריס", ExposureTables.Tv),
                 (Eds.PropID_Av, "צמצם", ExposureTables.Av),
                 (Eds.PropID_ExposureCompensation, "פיצוי חשיפה", ExposureTables.Comp),
+                (Eds.PropID_WhiteBalance, "איזון לבן", ExposureTables.WhiteBalance),
             })
             {
                 var desc = _descCache.TryGetValue(id, out var d) ? d : null;
@@ -231,6 +233,7 @@ public sealed class CanonCamera : ICameraDevice
                     desc.Select(v => new ControlOption(((uint)v).ToString(), ExposureTables.Label(table, (uint)v))).ToList()));
             }
             controls.Add(new CameraControl("afOnShutter", "מיקוד אוטומטי בכל צילום", "toggle", _afOnShutter));
+            if (_liveView) AddLiveViewControls(controls);
         }
         _props.TryGetValue(Eds.PropID_BatteryLevel, out var battery);
         return new CameraStatus
@@ -252,6 +255,9 @@ public sealed class CanonCamera : ICameraDevice
                     new Readout("תריס", ExposureTables.Label(ExposureTables.Tv, _props.GetValueOrDefault(Eds.PropID_Tv))),
                     new Readout("צמצם", ExposureTables.Label(ExposureTables.Av, _props.GetValueOrDefault(Eds.PropID_Av))),
                     new Readout("פיצוי", ExposureTables.Label(ExposureTables.Comp, _props.GetValueOrDefault(Eds.PropID_ExposureCompensation))),
+                    new Readout("מקור כוח", battery == 0xFFFFFFFF ? "מתח רשת" : battery <= 100 ? $"סוללה {battery}%" : "לא ידוע"),
+                    new Readout("איכות", QualityLabel()),
+                    new Readout("הגדלה", _liveView ? (_evfZoom <= 1 ? "מלאה" : $"{_evfZoom}× (מהמצלמה)") : "—"),
                 ]
                 : [],
             LastError = _lastError,
@@ -263,7 +269,7 @@ public sealed class CanonCamera : ICameraDevice
     /// <summary>Refreshes allowed values of exposure properties (they change with the mode dial).</summary>
     private void RefreshDescriptors()
     {
-        foreach (var id in new[] { Eds.PropID_ISOSpeed, Eds.PropID_Tv, Eds.PropID_Av, Eds.PropID_ExposureCompensation })
+        foreach (var id in new[] { Eds.PropID_ISOSpeed, Eds.PropID_Tv, Eds.PropID_Av, Eds.PropID_ExposureCompensation, Eds.PropID_WhiteBalance, Eds.PropID_Evf_Zoom })
         {
             if (Eds.EdsGetPropertyDesc(_camera, id, out var desc) == Eds.EDS_ERR_OK && desc.NumElements > 0 && desc.PropDesc is not null)
                 _descCache[id] = desc.PropDesc.Take(Math.Min(desc.NumElements, desc.PropDesc.Length)).ToArray();
@@ -292,6 +298,21 @@ public sealed class CanonCamera : ICameraDevice
         if (id == "afOnShutter")
         {
             _afOnShutter = value is "true" or "True" or "1";
+            return;
+        }
+        if (id == "evfZoom")
+        {
+            SetEvfZoom(uint.Parse(value));
+            return;
+        }
+        if (id.StartsWith("evfMove:", StringComparison.Ordinal))
+        {
+            MoveEvfZoom(id[8..]);
+            return;
+        }
+        if (id.StartsWith("focus:", StringComparison.Ordinal))
+        {
+            DriveLens(id[6..]);
             return;
         }
         if (!id.StartsWith("prop:", StringComparison.Ordinal)) throw new CameraException("הגדרה לא נתמכת");
@@ -334,8 +355,73 @@ public sealed class CanonCamera : ICameraDevice
     {
         if (_sessionOpen) SetEvfOutput(enable: false);
         _liveView = false;
+        _evfZoom = Eds.EvfZoom_Fit; // the camera drops its magnification with live view
         _frame = null;
     });
+
+    /// <summary>Camera-side magnifier controls. Only what the camera reports as settable in its current state is offered.</summary>
+    private void AddLiveViewControls(List<CameraControl> controls)
+    {
+        if (_descCache.TryGetValue(Eds.PropID_Evf_Zoom, out var zooms) && zooms.Length > 1)
+        {
+            controls.Add(new CameraControl(
+                "evfZoom", "הגדלה במצלמה (EVF)", "select", _evfZoom.ToString(),
+                zooms.Select(v => new ControlOption(((uint)v).ToString(), v <= 1 ? "תמונה מלאה" : $"{v}×")).ToList()));
+            if (_evfZoom > 1)
+                foreach (var (dir, label) in new[] { ("left", "הזזת האזור שמאלה"), ("right", "הזזת האזור ימינה"), ("up", "הזזת האזור למעלה"), ("down", "הזזת האזור למטה") })
+                    controls.Add(new CameraControl($"evfMove:{dir}", label, "action", null));
+        }
+        // manual focus in steps — needs the lens in MF (or AF+MF) mode; the camera answers with an error otherwise
+        foreach (var (id, label) in new[]
+                 {
+                     ("focus:near1", "מיקוד קרוב · צעד קטן"), ("focus:near2", "מיקוד קרוב · צעד בינוני"), ("focus:near3", "מיקוד קרוב · צעד גדול"),
+                     ("focus:far1", "מיקוד רחוק · צעד קטן"), ("focus:far2", "מיקוד רחוק · צעד בינוני"), ("focus:far3", "מיקוד רחוק · צעד גדול"),
+                 })
+            controls.Add(new CameraControl(id, label, "action", null));
+    }
+
+    private void SetEvfZoom(uint zoom)
+    {
+        if (!_liveView) throw new CameraException("הגדלה במצלמה זמינה רק בזמן תצוגה חיה");
+        if (!_descCache.TryGetValue(Eds.PropID_Evf_Zoom, out var allowed) || !allowed.Contains((int)zoom))
+            throw new CameraException("רמת ההגדלה אינה נתמכת במצב הנוכחי של המצלמה");
+        var v = zoom;
+        Check(Eds.EdsSetPropertyData(_camera, Eds.PropID_Evf_Zoom, 0, sizeof(uint), ref v), "SetEvfZoom");
+        _evfZoom = zoom;
+        StatusChanged?.Invoke();
+    }
+
+    /// <summary>Moves the magnified area by a fixed step. Out-of-range moves are rejected by the camera and reported as "edge reached".</summary>
+    private void MoveEvfZoom(string dir)
+    {
+        if (!_liveView || _evfZoom <= 1) throw new CameraException("יש להפעיל הגדלה לפני הזזת האזור");
+        const int step = 160;
+        var rc = Eds.EdsGetPropertyData(_camera, Eds.PropID_Evf_ZoomPosition, 0, 8, out Eds.Point p);
+        if (rc != Eds.EDS_ERR_OK) throw new CameraException("המצלמה אינה מאפשרת להזיז את אזור ההגדלה במצב הנוכחי");
+        p = dir switch
+        {
+            "left" => p with { X = Math.Max(0, p.X - step) },
+            "right" => p with { X = p.X + step },
+            "up" => p with { Y = Math.Max(0, p.Y - step) },
+            "down" => p with { Y = p.Y + step },
+            _ => throw new CameraException("כיוון לא נתמך"),
+        };
+        var err = Eds.EdsSetPropertyData(_camera, Eds.PropID_Evf_ZoomPosition, 0, 8, ref p);
+        if (err != Eds.EDS_ERR_OK) throw new CameraException("הגעתם לקצה התמונה");
+    }
+
+    private void DriveLens(string step)
+    {
+        if (!_liveView) throw new CameraException("מיקוד ידני זמין רק בזמן תצוגה חיה");
+        var code = step switch
+        {
+            "near1" => Eds.DriveLens_Near1, "near2" => Eds.DriveLens_Near2, "near3" => Eds.DriveLens_Near3,
+            "far1" => Eds.DriveLens_Far1, "far2" => Eds.DriveLens_Far2, "far3" => Eds.DriveLens_Far3,
+            _ => throw new CameraException("צעד מיקוד לא נתמך"),
+        };
+        var err = Eds.EdsSendCommand(_camera, Eds.CameraCommand_DriveLensEvf, code);
+        if (err != Eds.EDS_ERR_OK) throw new CameraException("המיקוד הידני אינו זמין. העבירו את העדשה למצב MF (או AF+MF) ונסו שוב.");
+    }
 
     private void SetEvfOutput(bool enable)
     {

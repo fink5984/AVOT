@@ -141,3 +141,21 @@ describe("camera scan gate (no double reads)", () => {
     expect(gate("ITM-000001")).toBe(true); // shown again on purpose
   });
 });
+
+describe("capture desktop update manifest", () => {
+  it("tells a station about a newer version only, with a verified-download description", async () => {
+    const { releaseSchema, updateAnswer, compareVersions } = await import("@/server/services/agent-release");
+    const rel = releaseSchema.parse({ version: "1.2.0", url: "https://files.example.com/AvotCaptureDesktop-Setup-1.2.0.exe", sha256: "A".repeat(64), sizeBytes: 123, minVersion: "1.0.0" });
+    expect(compareVersions("1.10.0", "1.9.9")).toBe(1);
+    expect(compareVersions("1.2.0", "1.2.0")).toBe(0);
+    expect(updateAnswer(rel, "1.1.0")).toMatchObject({ updateAvailable: true, latest: "1.2.0", sha256: "a".repeat(64), mandatory: false });
+    expect(updateAnswer(rel, "0.9.0")).toMatchObject({ updateAvailable: true, mandatory: true });
+    expect(updateAnswer(rel, "1.2.0")).toEqual({ updateAvailable: false, latest: "1.2.0", mandatory: false });
+    expect(updateAnswer(null, "1.0.0")).toEqual({ updateAvailable: false, latest: null });
+  });
+  it("refuses plain-http installers and malformed hashes", async () => {
+    const { releaseSchema } = await import("@/server/services/agent-release");
+    expect(releaseSchema.safeParse({ version: "1.0.0", url: "http://evil.example.com/x.exe", sha256: "a".repeat(64) }).success).toBe(false);
+    expect(releaseSchema.safeParse({ version: "1.0.0", url: "https://ok.example.com/x.exe", sha256: "xyz" }).success).toBe(false);
+  });
+});

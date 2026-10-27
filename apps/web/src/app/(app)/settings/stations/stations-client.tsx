@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Link2, MonitorSmartphone, Trash2 } from "lucide-react";
+import { Download, Link2, MonitorSmartphone, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, ButtonLink } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Field, Input, Select } from "@/components/ui/field";
 import { EmptyState, Panel } from "@/components/ui/misc";
@@ -124,7 +124,10 @@ export function StationsAdmin({ devices, users, serverUrl }: { devices: Station[
               ? `במחשב זה פועל Capture Agent ${local.version}${local.paired ? ` (מצומד: ${local.deviceName ?? ""})` : " — לא מצומד"}${local.camera.model ? ` · ${local.camera.model}` : ""}`
               : "Capture Agent לא זוהה במחשב זה."}
         </div>
-        <Button variant="primary" className="ms-auto" icon={<Link2 />} onClick={() => { setCode(null); setRepair(null); setPairOpen(true); }}>
+        <ButtonLink href="/api/agent/download" icon={<Download />} className="ms-auto">
+          הורדת תוכנת צילום
+        </ButtonLink>
+        <Button variant="primary" icon={<Link2 />} onClick={() => { setCode(null); setRepair(null); setPairOpen(true); }}>
           צימוד עמדה חדשה
         </Button>
       </div>
