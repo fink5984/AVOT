@@ -27,7 +27,7 @@ export default async function CapturePage({ params, searchParams }: { params: Pr
 
   return (
     <CaptureStudio
-      user={{ id: user.userId, name: user.name, canOrganize: can(user.role, "photo.organize"), canStatus: can(user.role, "lot.status"), canDelete: can(user.role, "photo.delete") }}
+      user={{ id: user.userId, name: user.name, canOrganize: can(user.role, "photo.organize"), canStatus: can(user.role, "lot.status"), canDelete: can(user.role, "photo.delete"), canCreate: can(user.role, "inventory.create") && can(user.role, "lot.create") }}
       initialContext={ctx}
       initialCategory={initialCategory}
       serverPrefs={pref?.value ?? null}

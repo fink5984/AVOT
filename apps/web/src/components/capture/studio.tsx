@@ -20,6 +20,7 @@ import {
   RefreshCw,
   RotateCw,
   ScanLine,
+  BookPlus,
   SlidersHorizontal,
 } from "lucide-react";
 import { PHOTO_CATEGORIES, type BgSample, type CaptureStage, type PhotoCategory } from "@avot/shared";
@@ -51,6 +52,7 @@ import { CameraSettingsDialog } from "./camera-settings-dialog";
 import { PhotoEditorDialog, warningLabel } from "./photo-editor";
 import { ControlRow } from "./control-row";
 import { ScanOpenDialog } from "./scan-open-dialog";
+import { NewBookDialog } from "./new-book-dialog";
 
 interface LocalShot {
   captureId: string;
@@ -101,7 +103,7 @@ export function CaptureStudio({
   serverPrefs,
   simulatorAllowed,
 }: {
-  user: { id: string; name: string; canOrganize: boolean; canStatus: boolean; canDelete: boolean };
+  user: { id: string; name: string; canOrganize: boolean; canStatus: boolean; canDelete: boolean; canCreate: boolean };
   initialContext: CaptureLotContext;
   initialCategory: PhotoCategory;
   serverPrefs: unknown;
@@ -150,7 +152,10 @@ export function CaptureStudio({
 
   // ── shots ──────────────────────────────────────────────────────
   const [shots, setShots] = useState<Map<string, LocalShot>>(new Map());
+
   const inflight = useRef(false);
+  const shotsRef = useRef<Map<string, LocalShot>>(new Map());
+  shotsRef.current = shots;
   const lastTrigger = useRef(0);
   const [flashKey, setFlashKey] = useState(0);
   const [replaceTarget, setReplaceTarget] = useState<string | null>(null);
@@ -170,6 +175,7 @@ export function CaptureStudio({
   const [health, setHealth] = useState<StorageHealth>({ freeBytes: null, level: "ok" });
   const [advanceOpen, setAdvanceOpen] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
+  const [newBook, setNewBook] = useState<null | "new" | "finish">(null);
   const [completing, setCompleting] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
@@ -726,14 +732,33 @@ export function CaptureStudio({
     }
   }
 
+  // ── new book without leaving the studio ────────────────────────
+  /**
+   * True once the last shot is safely stored (IndexedDB commit / agent disk + queue). The upload to the cloud
+   * is NOT awaited. Gives up after 30 s so a stuck driver can never trap the worker.
+   */
+  const waitDurable = useCallback(async () => {
+    const until = Date.now() + 30_000;
+    for (;;) {
+      const capturing = [...shotsRef.current.values()].some((s) => s.stage === "CAPTURING");
+      if (!inflight.current && !capturing) return true;
+      if (Date.now() > until) return false;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }, []);
+
+  async function markComplete() {
+    // the photo status belongs to the book; a catalog lot mirrors it
+    if (ctxRef.current.target === "item") await api(`/api/inventory/${ctxRef.current.item.id}`, { method: "PATCH", json: { photoStatus: prefs.completeStatus } });
+    else await api(`/api/lots/${ctxRef.current.lot.id}`, { method: "PATCH", json: { status: prefs.completeStatus } });
+    setCtx((c) => ({ ...c, lot: { ...c.lot, status: prefs.completeStatus } }));
+  }
+
   // ── lot completion / continuous mode ───────────────────────────
   async function completeLot() {
     setCompleting(true);
     try {
-      // the photo status belongs to the book; a catalog lot mirrors it
-      if (ctx.target === "item") await api(`/api/inventory/${ctx.item.id}`, { method: "PATCH", json: { photoStatus: prefs.completeStatus } });
-      else await api(`/api/lots/${ctx.lot.id}`, { method: "PATCH", json: { status: prefs.completeStatus } });
-      setCtx((c) => ({ ...c, lot: { ...c.lot, status: prefs.completeStatus } }));
+      await markComplete();
       toast.success(`${ctx.target === "item" ? ctx.item.inventoryNumber : `פריט ${ctx.lot.lotNumber}`} סומן: ${t.lotStatus[prefs.completeStatus]}`);
       setAdvanceOpen(false);
       if (ctx.next && prefs.continuous) await switchLot(ctx.next.id);
@@ -802,6 +827,17 @@ export function CaptureStudio({
           )}
         </div>
         <div className="ms-auto flex items-center gap-2">
+          {user.canCreate && (
+            <button
+              type="button"
+              onClick={() => setNewBook("new")}
+              className="flex h-9 items-center gap-1.5 rounded-md bg-studio-text px-3 text-[13px] font-semibold text-studio transition-colors hover:bg-white"
+              title="יצירת ספר חדש ומעבר מיידי לצילומו"
+            >
+              <BookPlus className="size-4" />
+              ספר חדש
+            </button>
+          )}
           <StudioIcon onClick={() => setScanOpen(true)} title="פתיחת ספר בסריקת ברקוד">
             <ScanLine />
           </StudioIcon>
@@ -1244,9 +1280,32 @@ export function CaptureStudio({
           <Button variant="primary" loading={completing} onClick={completeLot} autoFocus>
             {ctx.next && prefs.continuous ? "סיום ומעבר לפריט הבא" : "סיום הפריט"}
           </Button>
+          {user.canCreate && (
+            <Button
+              onClick={() => {
+                setAdvanceOpen(false);
+                setNewBook("finish");
+              }}
+            >
+              סיים ספר וצור חדש
+            </Button>
+          )}
           <Button onClick={() => setAdvanceOpen(false)}>ביטול</Button>
         </div>
       </Dialog>
+
+      <NewBookDialog
+        open={newBook !== null}
+        onClose={() => setNewBook(null)}
+        target={ctx.target === "lot" ? { kind: "catalog", catalogId: ctx.catalog.id, catalogLabel: `${ctx.catalog.number} · ${ctx.catalog.name}` } : { kind: "inventory" }}
+        finishing={newBook === "finish" ? { label: ctx.target === "item" ? ctx.item.inventoryNumber : `פריט ${ctx.lot.lotNumber}`, statusLabel: t.lotStatus[prefs.completeStatus] } : null}
+        waitDurable={waitDurable}
+        onFinish={newBook === "finish" ? markComplete : undefined}
+        onCreated={async (id) => {
+          await switchLot(id, "COVER");
+          toast.success("עברנו לספר החדש", { detail: "קטגוריה: כריכה" });
+        }}
+      />
 
       {viewerIndex !== null && <ImageViewer items={viewerItems} index={viewerIndex} onIndex={setViewerIndex} onClose={() => setViewerIndex(null)} />}
     </div>
