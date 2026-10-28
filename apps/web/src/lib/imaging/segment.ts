@@ -296,6 +296,16 @@ export function hsvToRgb(h: number, s: number, v: number): [number, number, numb
  * `u`, `t` are the pixel's position in 0..1 (the background brightness varies across the frame).
  */
 export function scoreColor(h: number, s: number, v: number, u: number, t: number, m: BgModel): number {
+  const d = scoreParts(h, s, v, u, t, m);
+  return Math.max(d.core, d.dark);
+}
+
+/**
+ * `core` = the colour leaves the backdrop's hue/saturation/brightness-from-above; `dark` = the pixel is much darker than
+ * the backdrop. A dark pixel with the backdrop's chroma is either the book's dark cover or the backdrop in the book's
+ * shadow — colour cannot tell them apart, so segmentSteps decides that from the shape (see `shadowComponents`).
+ */
+export function scoreParts(h: number, s: number, v: number, u: number, t: number, m: BgModel): { core: number; dark: number } {
   const dh = circDist(h, m.h);
   const hueFg = smoothstep(m.hueTol, m.hueTol * 1.7, dh);
   const satFg = 1 - smoothstep(m.satLow * 0.6, m.satLow, s);
@@ -305,7 +315,63 @@ export function scoreColor(h: number, s: number, v: number, u: number, t: number
   const ratio = v / vfit;
   const bright = smoothstep(m.brightMax, m.brightMax * 1.35, ratio);
   const dark = Math.max(1 - smoothstep(0.035, 0.09, v), 1 - smoothstep(m.shadowMin * 0.85, m.shadowMin * 1.2, ratio));
-  return Math.max(hueFg, satFg, satDev, bright, dark);
+  return { core: Math.max(hueFg, satFg, satDev, bright), dark };
+}
+
+/**
+ * Backdrop in the book's shadow vs. a dark cover of the same green: both are dark with the backdrop's chroma. A shadow
+ * fades into the lit backdrop gradually; a cover ends in a sharp step. Components of "dark with backdrop chroma" whose
+ * border towards the lit backdrop is a gentle ramp are shadow. Returns the pixels to treat as backdrop.
+ */
+function shadowComponents(core: Float32Array, dark: Float32Array, V: Float32Array, w: number, h: number): Uint8Array {
+  const n = w * h;
+  const cand = new Uint8Array(n);
+  let any = false;
+  for (let i = 0; i < n; i++) {
+    if (core[i]! < 0.35 && dark[i]! > 0.05 && V[i]! >= 0.06) {
+      cand[i] = 1;
+      any = true;
+    }
+  }
+  const out = new Uint8Array(n);
+  if (!any) return out;
+  const comps = labelComponents(cand, w, h);
+  const BINS = 24;
+  const MAX_STEP = 0.4;
+  const hist = new Uint32Array((comps.count + 1) * BINS);
+  const border = new Uint32Array(comps.count + 1);
+  const bump = (c: number, p: number, q: number) => {
+    // q: a pixel with the backdrop's chroma that is not darkness-driven → the lit backdrop
+    if (cand[q] || core[q]! >= 0.35) return;
+    const step = Math.abs(V[p]! - V[q]!);
+    hist[c * BINS + Math.min(BINS - 1, Math.floor((step / MAX_STEP) * BINS))]!++;
+    border[c]!++;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      if (!cand[p]) continue;
+      const c = comps.labels[p]!;
+      if (x > 0) bump(c, p, p - 1);
+      if (x < w - 1) bump(c, p, p + 1);
+      if (y > 0) bump(c, p, p - w);
+      if (y < h - 1) bump(c, p, p + w);
+    }
+  }
+  const isShadow = new Uint8Array(comps.count + 1);
+  for (let c = 1; c <= comps.count; c++) {
+    if (border[c]! < 8) continue; // no lit backdrop beside it: leave it to the other rules
+    let acc = 0;
+    let bin = 0;
+    for (; bin < BINS; bin++) {
+      acc += hist[c * BINS + bin]!;
+      if (acc >= border[c]! / 2) break;
+    }
+    const medianStep = ((bin + 1) / BINS) * MAX_STEP;
+    if (medianStep <= 0.06) isShadow[c] = 1;
+  }
+  for (let i = 0; i < n; i++) if (cand[i] && isShadow[comps.labels[i]!]) out[i] = 1;
+  return out;
 }
 
 function rasterizeStrokes(strokes: NonNullable<ManualEdits["strokes"]>, w: number, h: number): Uint8Array {
@@ -394,11 +460,23 @@ export function* segmentSteps(img: RgbImage, opts: SegmentOptions): Generator<vo
   const m1 = boxBlur(planes.L, w, h, texR);
   const m2 = boxBlur(l2, w, h, texR);
 
-  const score = new Float32Array(n);
+  const core = new Float32Array(n);
+  const darkTerm = new Float32Array(n);
   for (let y = 0, i = 0; y < h; y++) {
     const t = y / h;
     for (let x = 0; x < w; x++, i++) {
-      let sc = scoreColor(planes.H[i]!, planes.S[i]!, planes.V[i]!, x / w, t, model);
+      const parts = scoreParts(planes.H[i]!, planes.S[i]!, planes.V[i]!, x / w, t, model);
+      core[i] = parts.core;
+      darkTerm[i] = parts.dark;
+    }
+  }
+  const shadow = shadowComponents(core, darkTerm, planes.V, w, h);
+  yield;
+
+  const score = new Float32Array(n);
+  for (let y = 0, i = 0; y < h; y++) {
+    for (let x = 0; x < w; x++, i++) {
+      let sc = shadow[i] ? core[i]! : Math.max(core[i]!, darkTerm[i]!);
       const std = Math.sqrt(Math.max(0, m2[i]! - m1[i]! * m1[i]!));
       const tex = 0.7 * smoothstep(0.06, 0.14, std);
       if (tex > sc) sc = tex;

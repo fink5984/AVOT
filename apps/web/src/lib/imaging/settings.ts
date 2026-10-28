@@ -11,5 +11,5 @@ export {
   exifRotation,
   residualRotation,
 } from "@avot/shared";
-export type { Rotation, BgSample, ProcessingSettings, ManualEdits, PhotoProcessing } from "@avot/shared";
+export type { Rotation, EdgeQuality, BgSample, ProcessingSettings, ManualEdits, PhotoProcessing } from "@avot/shared";
 

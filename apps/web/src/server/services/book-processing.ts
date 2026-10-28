@@ -140,13 +140,13 @@ export async function reprocessAsset(user: UserPrincipal, assetId: string, input
 }
 
 /** Rotated working copy of the original for the correction editor (same orientation the server will process). */
-export async function editSource(orgId: string, assetId: string, rotation?: Rotation): Promise<Buffer> {
+export async function editSource(orgId: string, assetId: string, rotation?: Rotation, longEdge?: number): Promise<Buffer> {
   const loaded = await loadWithOriginal(assetId);
   if (!loaded || loaded.asset.organizationId !== orgId) throw notFound("התמונה");
   const processing = parseProcessing(loaded.asset.processing);
   const rot = rotation ?? processing?.settings.rotation ?? (await defaultProcessing(orgId))?.rotation ?? DEFAULT_PROCESSING.rotation;
   try {
-    return await editSourceJpeg(await storage().getBuffer(loaded.primary.storageKey), rot);
+    return await editSourceJpeg(await storage().getBuffer(loaded.primary.storageKey), rot, longEdge);
   } catch (err) {
     log.warn("edit source failed", { assetId, err });
     throw new AppError("INTERNAL", "לא ניתן לטעון את התמונה לעריכה");

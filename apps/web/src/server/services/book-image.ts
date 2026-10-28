@@ -180,7 +180,9 @@ async function processBookNow(input: Buffer, processing: PhotoProcessing, stage:
     const crop = pickCrop(edits, s, seg.bbox!, W, H);
     const rgb = { rgb: working.data, width: W, height: H, channels: 3 as const };
     if (s.removeBackground) {
-      const out = await runAsync(composeOutputSteps({ ...rgb, alpha: seg.alpha, edge: seg.edge, model: seg.model, background, crop }));
+      // the same matte as the full stage, at working resolution, so the preview shows what the final file will look like
+      const alpha = await runAsync(refineAlphaSteps(rgb, seg.alpha, edits.strokes?.length ? seg.forced : null, seg.model, { edge: seg.edge, quality: s.edgeQuality }));
+      const out = await runAsync(composeOutputSteps({ ...rgb, alpha, edge: seg.edge, model: seg.model, background, crop, quality: s.edgeQuality }));
       const enc = await encode(out.data, out.width, out.height, out.channels, s, stage);
       return result(enc, out.width, out.height, out.channels === 4, crop.w !== W || crop.h !== H);
     }
@@ -208,7 +210,8 @@ async function processBookNow(input: Buffer, processing: PhotoProcessing, stage:
   const alphaUp = await upscale(seg.alpha, seg.width, seg.height, W, H, "cubic");
   const forcedUp = edits.strokes?.length ? await upscale(seg.forced, seg.width, seg.height, W, H, "nearest") : null;
   const fullImg = { rgb: full.data, width: W, height: H, channels: 3 as const };
-  const alpha = await runAsync(refineAlphaSteps(fullImg, alphaUp, forcedUp, seg.model));
+  const edgeUp = await upscale(seg.edge, seg.width, seg.height, W, H, "cubic");
+  const alpha = await runAsync(refineAlphaSteps(fullImg, alphaUp, forcedUp, seg.model, { edge: edgeUp, quality: s.edgeQuality }));
   const tight = alphaBounds(alpha, W, H, region) ?? { x0: region.x, y0: region.y, x1: region.x + region.w, y1: region.y + region.h };
   const crop = pickCrop(edits, s, tight, W, H);
 
@@ -217,8 +220,7 @@ async function processBookNow(input: Buffer, processing: PhotoProcessing, stage:
     const enc = await encode(sub, crop.w, crop.h, 3, s, stage);
     return result(enc, crop.w, crop.h, false, crop.w !== W || crop.h !== H);
   }
-  const edgeUp = await upscale(seg.edge, seg.width, seg.height, W, H, "cubic");
-  const out = await runAsync(composeOutputSteps({ ...fullImg, alpha, edge: edgeUp, model: seg.model, background, crop }));
+  const out = await runAsync(composeOutputSteps({ ...fullImg, alpha, edge: edgeUp, model: seg.model, background, crop, quality: s.edgeQuality }));
   const enc = await encode(out.data, out.width, out.height, out.channels, s, stage);
   return result(enc, out.width, out.height, out.channels === 4, crop.w !== W || crop.h !== H);
 }

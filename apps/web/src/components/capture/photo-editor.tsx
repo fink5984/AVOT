@@ -9,6 +9,7 @@ import { useToast } from "@/components/ui/toast";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { segmentBook } from "@/lib/imaging/segment";
+import { EdgeCompare } from "./edge-compare";
 import type { AssetDto } from "@/server/services/asset-dto";
 
 type Tool = "erase" | "keep" | "crop";
@@ -16,6 +17,12 @@ type Strokes = NonNullable<ManualEdits["strokes"]>;
 type Crop = NonNullable<ManualEdits["crop"]>;
 
 const WORK = 640;
+
+const EDGE_LABELS: { id: ProcessingSettings["edgeQuality"]; label: string; hint: string }[] = [
+  { id: "precise", label: "מדויק", hint: "קצה חד ונקי" },
+  { id: "natural", label: "טבעי", hint: "קצה רך ללא ירוק — ברירת המחדל" },
+  { id: "soft", label: "רך", hint: "מעבר רחב יותר — פינות שחוקות, בד" },
+];
 
 /**
  * Quick correction of one processed photo — not a photo editor. The estimate on screen is computed
@@ -31,6 +38,7 @@ export function PhotoEditorDialog({ asset, onClose, onSaved }: { asset: AssetDto
   const [tool, setTool] = useState<Tool>("erase");
   const [brush, setBrush] = useState(0.025);
   const [showOriginal, setShowOriginal] = useState(false);
+  const [compare, setCompare] = useState(false);
   const [img, setImg] = useState<HTMLImageElement | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -49,6 +57,7 @@ export function PhotoEditorDialog({ asset, onClose, onSaved }: { asset: AssetDto
     setStrokes(asset.processed?.edits?.strokes ?? []);
     setCrop(asset.processed?.edits?.crop ?? null);
     setShowOriginal(false);
+    setCompare(false);
     setTool("erase");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assetId]);
@@ -190,6 +199,7 @@ export function PhotoEditorDialog({ asset, onClose, onSaved }: { asset: AssetDto
           settings: {
             rotation: settings.rotation,
             sensitivity: settings.sensitivity,
+            edgeQuality: settings.edgeQuality,
             marginPct: settings.marginPct,
             background: settings.background,
             removeBackground: settings.removeBackground,
@@ -256,7 +266,10 @@ export function PhotoEditorDialog({ asset, onClose, onSaved }: { asset: AssetDto
             </span>
           </div>
 
-          <div className="checker relative flex max-h-[56vh] min-h-[240px] items-center justify-center overflow-hidden rounded-lg bg-stone">
+          {compare && work && (
+            <EdgeCompare assetId={asset.id} settings={settings} result={result} workW={work.w} workH={work.h} />
+          )}
+          <div className={cn("checker relative flex max-h-[56vh] min-h-[240px] items-center justify-center overflow-hidden rounded-lg bg-stone", compare && "hidden")}>
             {loadError ? (
               <p className="p-8 text-danger">{loadError}</p>
             ) : !work ? (
@@ -283,6 +296,18 @@ export function PhotoEditorDialog({ asset, onClose, onSaved }: { asset: AssetDto
               <span className="mb-1 flex justify-between"><span>שוליים</span><span className="num text-muted">{settings.marginPct}%</span></span>
               <input type="range" min={0} max={15} step={0.5} value={settings.marginPct} onChange={(e) => { setSettings((s) => ({ ...s, marginPct: Number(e.target.value) })); setCrop(null); }} className="w-full accent-[var(--color-ink)]" dir="ltr" />
             </label>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="איכות הקצה">
+            <span className="me-1 text-muted">איכות הקצה</span>
+            {EDGE_LABELS.map((q) => (
+              <Button key={q.id} size="sm" variant={settings.edgeQuality === q.id ? "primary" : "secondary"} aria-pressed={settings.edgeQuality === q.id} title={q.hint} onClick={() => setSettings((st) => ({ ...st, edgeQuality: q.id }))}>
+                {q.label}
+              </Button>
+            ))}
+            <Button size="sm" className="ms-auto" variant={compare ? "primary" : "secondary"} aria-pressed={compare} onClick={() => setCompare((c) => !c)} disabled={!work}>
+              {compare ? "חזרה לעריכה" : "השוואה לפני / אחרי"}
+            </Button>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">

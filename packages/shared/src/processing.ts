@@ -30,6 +30,11 @@ export const processingSettingsSchema = z.object({
   autoCrop: z.boolean().default(true),
   /** 0..100 — higher treats more green-ish pixels as background */
   sensitivity: z.number().int().min(0).max(100).default(50),
+  /**
+   * Edge quality of the cut-out. precise = crisp edge, natural = soft matte with the green removed (default),
+   * soft = wider feather (worn corners, fabric).
+   */
+  edgeQuality: z.enum(["precise", "natural", "soft"]).default("natural"),
   /** margin around the book, % of the book's longer side */
   marginPct: z.number().min(0).max(25).default(2),
   /** "transparent" or a #rrggbb colour. Transparent always produces PNG. */
@@ -43,6 +48,7 @@ export const processingSettingsSchema = z.object({
   liveMode: z.enum(["processed", "frame", "full"]).default("processed"),
 });
 export type ProcessingSettings = z.infer<typeof processingSettingsSchema>;
+export type EdgeQuality = ProcessingSettings["edgeQuality"];
 
 export const DEFAULT_PROCESSING: ProcessingSettings = processingSettingsSchema.parse({});
 

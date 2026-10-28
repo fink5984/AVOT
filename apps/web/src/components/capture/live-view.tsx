@@ -10,6 +10,19 @@ function intrinsicSize(el: Preview): { w: number; h: number } | null {
   return el.naturalWidth ? { w: el.naturalWidth, h: el.naturalHeight } : null;
 }
 
+/** What the browser really shows, for the sharpness diagnostics. Scale > 1 means the picture is enlarged (soft by nature). */
+export interface LiveMetrics {
+  srcW: number;
+  srcH: number;
+  /** on-screen size of the picture in CSS px (including the software zoom) */
+  shownW: number;
+  shownH: number;
+  dpr: number;
+  /** device pixels per source pixel: 1 = every source pixel is one screen pixel */
+  scale: number;
+  swZoom: number;
+}
+
 /**
  * Live view surface. Overlays (grid, alignment lines, focus peaking) are drawn
  * on top of the displayed image only — they are never part of the saved file.
@@ -26,6 +39,8 @@ export function LiveView({
   onPeakingUnavailable,
   flashKey,
   layer,
+  oneToOne = false,
+  onMetrics,
   children,
 }: {
   preview: Preview | null;
@@ -38,6 +53,9 @@ export function LiveView({
   flashKey: number;
   /** drawn inside the rotated / zoomed layer, aligned with the picture (e.g. the processed estimate) */
   layer?: React.ReactNode;
+  /** show every source pixel as exactly one screen pixel (pan by dragging) instead of fitting the frame */
+  oneToOne?: boolean;
+  onMetrics?: (m: LiveMetrics) => void;
   children?: React.ReactNode;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -45,6 +63,9 @@ export function LiveView({
   const slot = useRef<HTMLDivElement>(null);
   const peakCanvas = useRef<HTMLCanvasElement>(null);
   const [rect, setRect] = useState<{ w: number; h: number } | null>(null);
+  const [dpr, setDpr] = useState(1);
+  const metricsRef = useRef(onMetrics);
+  metricsRef.current = onMetrics;
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
 
@@ -78,7 +99,9 @@ export function LiveView({
       const iw = swap ? size.h : size.w;
       const ih = swap ? size.w : size.h;
       // rect = the on-screen (rotated) frame; the inner layer keeps the unrotated size
-      const scale = Math.min(box.width / iw, box.height / ih);
+      const ratio = window.devicePixelRatio || 1;
+      setDpr((d) => (d === ratio ? d : ratio));
+      const scale = oneToOne ? 1 / ratio : Math.min(box.width / iw, box.height / ih);
       const w = iw * scale;
       const h = ih * scale;
       setRect((r) => (r && Math.abs(r.w - w) < 0.5 && Math.abs(r.h - h) < 0.5 ? r : { w, h }));
@@ -95,11 +118,34 @@ export function LiveView({
       preview.removeEventListener("loadedmetadata", compute);
       preview.removeEventListener("load", compute);
     };
-  }, [preview, rotation]);
+  }, [preview, rotation, oneToOne]);
 
   useEffect(() => {
-    if (zoom === 1) setPan({ x: 0, y: 0 });
-  }, [zoom]);
+    if (zoom === 1 && !oneToOne) setPan({ x: 0, y: 0 });
+  }, [zoom, oneToOne]);
+
+  // measured, not assumed: the picture's own size, what is drawn, and the ratio between them
+  useEffect(() => {
+    if (!preview || !rect) return;
+    const report = () => {
+      const size = intrinsicSize(preview);
+      if (!size) return;
+      const swap = rotation % 180 !== 0;
+      const innerW = swap ? rect.h : rect.w;
+      metricsRef.current?.({
+        srcW: size.w,
+        srcH: size.h,
+        shownW: Math.round(innerW * zoom),
+        shownH: Math.round((swap ? rect.w : rect.h) * zoom),
+        dpr,
+        scale: (innerW * zoom * dpr) / size.w,
+        swZoom: zoom,
+      });
+    };
+    report();
+    const id = setInterval(report, 1000);
+    return () => clearInterval(id);
+  }, [preview, rect, zoom, rotation, dpr]);
 
   // focus peaking: Sobel edge magnitude on a downscaled copy, ~8 fps
   useEffect(() => {
@@ -163,15 +209,16 @@ export function LiveView({
   }, [peaking, preview, onPeakingUnavailable]);
 
   const onPointerDown = (e: React.PointerEvent) => {
-    if (zoom === 1) return;
+    if (zoom === 1 && !oneToOne) return;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     drag.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drag.current;
     if (!d || !rect) return;
-    const limX = (rect.w * (zoom - 1)) / 2;
-    const limY = (rect.h * (zoom - 1)) / 2;
+    const box = host.current?.getBoundingClientRect();
+    const limX = Math.max(0, (rect.w * zoom - (box?.width ?? rect.w)) / 2);
+    const limY = Math.max(0, (rect.h * zoom - (box?.height ?? rect.h)) / 2);
     setPan({
       x: Math.max(-limX, Math.min(limX, d.px + (e.clientX - d.x))),
       y: Math.max(-limY, Math.min(limY, d.py + (e.clientY - d.y))),
@@ -184,7 +231,7 @@ export function LiveView({
         <div
           ref={frame}
           className="relative shrink-0 overflow-hidden"
-          style={{ width: rect.w, height: rect.h, cursor: zoom > 1 ? (drag.current ? "grabbing" : "grab") : "default" }}
+          style={{ width: rect.w, height: rect.h, cursor: zoom > 1 || oneToOne ? (drag.current ? "grabbing" : "grab") : "default" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={() => (drag.current = null)}
@@ -194,7 +241,7 @@ export function LiveView({
             style={{
               width: rotation % 180 ? rect.h : rect.w,
               height: rotation % 180 ? rect.w : rect.h,
-              transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px) scale(${zoom}) rotate(${rotation}deg)`,
+              transform: `translate(-50%, -50%) translate(${Math.round(pan.x * dpr) / dpr}px, ${Math.round(pan.y * dpr) / dpr}px) scale(${zoom}) rotate(${rotation}deg)`,
               transformOrigin: "center",
             }}
           >

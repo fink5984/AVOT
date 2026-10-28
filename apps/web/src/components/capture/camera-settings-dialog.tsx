@@ -191,6 +191,17 @@ export function CameraSettingsDialog({
           <Switch label="הסרת רקע ירוק" checked={settings.removeBackground} onChange={(e) => onPatch({ removeBackground: e.target.checked })} />
           <Switch label="חיתוך אוטומטי לפי הספר" checked={settings.autoCrop} onChange={(e) => onPatch({ autoCrop: e.target.checked })} />
           <Slider label="רגישות זיהוי הרקע" value={settings.sensitivity} min={0} max={100} step={5} onChange={(v) => onPatch({ sensitivity: v })} hint="גבוה: יותר גוונים ירקרקים נחשבים רקע. נמוך: יותר פרטים נשמרים." />
+          <Seg
+            label="איכות הקצה"
+            value={settings.edgeQuality}
+            onChange={(v) => onPatch({ edgeQuality: v })}
+            options={[
+              { value: "precise" as const, label: "מדויק" },
+              { value: "natural" as const, label: "טבעי" },
+              { value: "soft" as const, label: "רך" },
+            ]}
+          />
+          <p className="-mt-1 text-[12px] text-muted">מדויק: קצה חד. טבעי: קצה רך ללא שאריות ירוק (ברירת מחדל). רך: מעבר רחב — פינות שחוקות.</p>
           <Slider label="שוליים סביב הספר" value={settings.marginPct} min={0} max={15} step={0.5} unit="%" onChange={(v) => onPatch({ marginPct: v })} />
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" icon={<Crosshair />} onClick={onCalibrate} disabled={!connected}>

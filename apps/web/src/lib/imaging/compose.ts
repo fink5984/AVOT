@@ -1,12 +1,16 @@
 import { runSync, smoothstep, type Pixels } from "./raster";
 import { rgbToHsv, scoreColor, type BgModel, type Bbox } from "./segment";
+import type { EdgeQuality } from "./settings";
 
 /**
  * Full-resolution stage. The coarse mask comes from the (small) working image
- * and is upscaled to the original size; here every pixel in the narrow band
- * around the boundary is re-decided from its own colour, so the edge is
- * placed with full-resolution precision while the interior and exterior stay
- * exactly what the robust coarse mask decided.
+ * and is upscaled to the original size. Around the boundary every pixel is
+ * re-decided from its own colour with a colour-difference matte (the "green
+ * key" of video work): a pixel that is a mix of book and backdrop has a
+ * proportional amount of green excess, so its alpha is the share of the
+ * backdrop in it — a real soft edge at the original resolution instead of a
+ * staircase upscaled from the working copy. Interior and exterior stay exactly
+ * what the robust coarse mask decided.
  */
 
 export interface PlaneInput {
@@ -18,17 +22,47 @@ export interface PlaneInput {
 
 const BAND_LO = 8;
 const BAND_HI = 247;
+/** edge-proximity (0..255) above which a pixel is re-decided although the coarse alpha is already solid */
+const EDGE_BAND = 205;
+
+/** How each preset shapes the matte and removes the backdrop colour from the edge. */
+export const EDGE_PRESETS: Record<EdgeQuality, { lo: number; hi: number; soften: number; spill: number }> = {
+  precise: { lo: 0.3, hi: 0.7, soften: 0, spill: 1 },
+  natural: { lo: 0.06, hi: 0.94, soften: 1, spill: 0.92 },
+  soft: { lo: 0, hi: 1, soften: 2, spill: 0.75 },
+};
+
+export interface RefineOptions {
+  /** boundary proximity map of the same size as the image (0..255); widens the re-decided band */
+  edge?: Uint8Array | null;
+  quality?: EdgeQuality;
+}
 
 /** Re-decides band pixels of an upscaled coarse alpha from full-resolution colour. */
-export function refineAlpha(img: PlaneInput, alphaUp: Uint8Array, forcedUp: Uint8Array | null, model: BgModel): Uint8Array {
-  return runSync(refineAlphaSteps(img, alphaUp, forcedUp, model));
+export function refineAlpha(img: PlaneInput, alphaUp: Uint8Array, forcedUp: Uint8Array | null, model: BgModel, opts: RefineOptions = {}): Uint8Array {
+  return runSync(refineAlphaSteps(img, alphaUp, forcedUp, model, opts));
 }
 
 const ROWS_PER_STEP = 96;
 
-export function* refineAlphaSteps(img: PlaneInput, alphaUp: Uint8Array, forcedUp: Uint8Array | null, model: BgModel): Generator<void, Uint8Array, void> {
+export function* refineAlphaSteps(
+  img: PlaneInput,
+  alphaUp: Uint8Array,
+  forcedUp: Uint8Array | null,
+  model: BgModel,
+  opts: RefineOptions = {},
+): Generator<void, Uint8Array, void> {
   const { width: w, height: h, channels: ch, rgb } = img;
+  const preset = EDGE_PRESETS[opts.quality ?? "natural"];
+  const edge = opts.edge ?? null;
   const out = new Uint8Array(alphaUp.length);
+
+  // the backdrop's green excess (g − max(r, b)) and chroma ratio, at the model's reference brightness
+  const eB0 = model.rgb[1] - Math.max(model.rgb[0], model.rgb[2]);
+  const keyUsable = eB0 >= 12 && model.rgb[1] > 20;
+  const ratioB = keyUsable ? eB0 / model.rgb[1] : 0;
+  const vMean = Math.max(0.05, model.v);
+
   for (let y = 0; y < h; y++) {
     if (y % ROWS_PER_STEP === 0) yield;
     const t = y / h;
@@ -39,13 +73,31 @@ export function* refineAlphaSteps(img: PlaneInput, alphaUp: Uint8Array, forcedUp
         out[i] = forcedUp[i] === 2 ? 255 : 0;
         continue;
       }
-      if (a <= BAND_LO) continue;
-      if (a >= BAND_HI) {
+      const nearEdge = edge !== null && edge[i]! >= EDGE_BAND;
+      if (a <= BAND_LO && !nearEdge) continue;
+      if (a >= BAND_HI && !nearEdge) {
         out[i] = 255;
         continue;
       }
       const o = i * ch;
-      const [hh, ss, vv] = rgbToHsv(rgb[o]!, rgb[o + 1]!, rgb[o + 2]!);
+      const r = rgb[o]!;
+      const g = rgb[o + 1]!;
+      const b = rgb[o + 2]!;
+
+      if (keyUsable) {
+        const vfit = Math.min(1.6, Math.max(0.3, (model.vFit[0] + model.vFit[1] * (x / w) + model.vFit[2] * t) / vMean));
+        const e = g - Math.max(r, b);
+        let key = e <= 0 ? 1 : Math.max(0, 1 - e / (eB0 * vfit));
+        // a shadowed backdrop is darker but keeps its chroma ratio: it is background, not a half-covered edge pixel
+        const q = e > 0 ? e / Math.max(g, 1) : 0;
+        key = Math.min(key, 1 - smoothstep(0.7 * ratioB, 0.9 * ratioB, q));
+        if (a >= BAND_HI && q < 0.9 * ratioB) key = 1; // solid book near the edge: only clear backdrop chroma overrules it
+        if (a <= BAND_LO && key > 0.9 && !(q < 0.5 * ratioB)) key = 0; // clear backdrop next to the book stays backdrop
+        out[i] = Math.round(255 * smoothstep(preset.lo, Math.max(preset.hi, preset.lo + 0.01), key));
+        continue;
+      }
+      // backdrop that is not clearly green (calibrated other colour): decide from hue/saturation/brightness
+      const [hh, ss, vv] = rgbToHsv(r, g, b);
       const fg = scoreColor(hh, ss, vv, x / w, t, model);
       const colorAlpha = smoothstep(0.3, 0.7, fg);
       const coarse = smoothstep(60 / 255, 195 / 255, a / 255);
@@ -54,18 +106,21 @@ export function* refineAlphaSteps(img: PlaneInput, alphaUp: Uint8Array, forcedUp
       out[i] = Math.round(255 * (wgt * colorAlpha + (1 - wgt) * coarse));
     }
   }
-  return yield* softenBand(out, alphaUp, forcedUp, w, h);
+  let cur: Uint8Array = out;
+  for (let pass = 0; pass < preset.soften; pass++) cur = yield* softenBand(cur, alphaUp, forcedUp, edge, w, h);
+  return cur;
 }
 
 /** 3×3 average inside the band only — anti-aliases the decided edge without moving it. */
-function* softenBand(alpha: Uint8Array, alphaUp: Uint8Array, forcedUp: Uint8Array | null, w: number, h: number): Generator<void, Uint8Array, void> {
+function* softenBand(alpha: Uint8Array, alphaUp: Uint8Array, forcedUp: Uint8Array | null, edge: Uint8Array | null, w: number, h: number): Generator<void, Uint8Array, void> {
   const out = alpha.slice();
   for (let y = 1; y < h - 1; y++) {
     if (y % (ROWS_PER_STEP * 2) === 0) yield;
     for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
       const a = alphaUp[i]!;
-      if (a <= BAND_LO || a >= BAND_HI || (forcedUp && forcedUp[i])) continue;
+      const inBand = (a > BAND_LO && a < BAND_HI) || (edge !== null && edge[i]! >= EDGE_BAND);
+      if (!inBand || (forcedUp && forcedUp[i])) continue;
       const s =
         alpha[i - w - 1]! + alpha[i - w]! + alpha[i - w + 1]! + alpha[i - 1]! + alpha[i]! + alpha[i + 1]! + alpha[i + w - 1]! + alpha[i + w]! + alpha[i + w + 1]!;
       out[i] = Math.round(s / 9);
@@ -81,6 +136,8 @@ export interface ComposeInput extends PlaneInput {
   model: BgModel;
   /** null → transparent output (RGBA) */
   background: [number, number, number] | null;
+  /** edge preset: how strongly the backdrop green is removed from the edge */
+  quality?: EdgeQuality;
   /** region of the image to output */
   crop: { x: number; y: number; w: number; h: number };
 }
@@ -95,6 +152,7 @@ export function* composeOutputSteps(input: ComposeInput): Generator<void, { data
   const oc = background ? 3 : 4;
   const out = new Uint8Array(crop.w * crop.h * oc);
   const [br, bg, bb] = model.rgb;
+  const spillStrength = EDGE_PRESETS[input.quality ?? "natural"].spill;
   for (let cy = 0; cy < crop.h; cy++) {
     if (cy % ROWS_PER_STEP === 0) yield;
     for (let cx = 0; cx < crop.w; cx++) {
@@ -126,7 +184,7 @@ export function* composeOutputSteps(input: ComposeInput): Generator<void, { data
         const [hh, ss] = rgbToHsv(r, g, b);
         const dh = Math.abs(((hh - model.h + 540) % 360) - 180);
         const greenness = ss < 0.1 ? 0 : 1 - smoothstep(model.hueTol, model.hueTol * 1.8, dh);
-        const wgt = prox * greenness;
+        const wgt = prox * greenness * spillStrength;
         if (wgt > 0) {
           const limit = (r + b) / 2;
           if (g > limit) g -= (g - limit) * wgt;

@@ -46,7 +46,8 @@ import type { AssetDto } from "@/server/services/asset-dto";
 import type { CaptureLotContext } from "@/server/services/capture-context";
 import { CameraPicker, type CameraChoice } from "./camera-picker";
 import { Filmstrip, type StripItem } from "./filmstrip";
-import { LiveView } from "./live-view";
+import { LiveView, type LiveMetrics } from "./live-view";
+import { LiveDiagnostics } from "./live-diagnostics";
 import { LiveSegmentation, type LiveSegStatus } from "./live-segmentation";
 import { CameraSettingsDialog } from "./camera-settings-dialog";
 import { PhotoEditorDialog, warningLabel } from "./photo-editor";
@@ -165,6 +166,11 @@ export function CaptureStudio({
 
   // ── view ───────────────────────────────────────────────────────
   const [zoom, setZoom] = useState(1);
+  // 1 source pixel = 1 screen pixel, and the sharpness diagnostics (measured from the live element)
+  const [oneToOne, setOneToOne] = useState(false);
+  const [diagOpen, setDiagOpen] = useState(false);
+  const [metrics, setMetrics] = useState<LiveMetrics | null>(null);
+  const evfCtl = controls.find((c) => c.id === "evfZoom");
   // rotation belongs to the profile: it turns the live view and the saved (processed) pixels alike
   const rotation = processing.rotation;
   const [peaking, setPeaking] = useState(false);
@@ -1039,6 +1045,8 @@ export function CaptureStudio({
               centerLines={prefs.centerLines}
               zoom={zoom}
               rotation={rotation}
+              oneToOne={oneToOne}
+              onMetrics={setMetrics}
               peaking={peaking}
               onPeakingUnavailable={() => {
                 setPeaking(false);
@@ -1084,6 +1092,18 @@ export function CaptureStudio({
               )}
             </LiveView>
 
+            {diagOpen && (
+              <div className="absolute bottom-3 start-3">
+                <LiveDiagnostics
+                  metrics={metrics}
+                  driverKind={info?.kind}
+                  evfZoom={controls.find((c) => c.id === "evfZoom")?.value as string | undefined}
+                  processing={liveStatus ? ({ processed: "מעובדת", frame: "מסגרת", full: "מלאה", unavailable: "לא זמינה" } as const)[liveStatus.effective] : undefined}
+                  onClose={() => setDiagOpen(false)}
+                />
+              </div>
+            )}
+
             {/* view tools — display only, never written into the file */}
             <div className="absolute inset-x-0 top-3 flex justify-center px-3" role="toolbar" aria-label="כלי תצוגה (לא נשמרים בקובץ)">
               <div className="flex items-center gap-0.5 rounded-xl bg-black/55 p-1 ring-1 ring-white/10 backdrop-blur-md">
@@ -1115,10 +1135,31 @@ export function CaptureStudio({
                 ))}
                 <span className="mx-1 h-5 w-px bg-white/15" aria-hidden />
                 {[1, 2, 4].map((z) => (
-                  <ToolButton key={z} active={zoom === z} onClick={() => setZoom(z)} title="הגדלה לבדיקת פוקוס (Z)">
+                  <ToolButton key={z} active={zoom === z && !oneToOne} onClick={() => { setOneToOne(false); setZoom(z); }} title="הגדלה לבדיקת פוקוס (Z)">
                     <span className="num">{z}×</span>
                   </ToolButton>
                 ))}
+                {evfCtl && evfCtl.options && evfCtl.options.length > 1 && (
+                  <ToolButton
+                    active={String(evfCtl.value) !== "1"}
+                    onClick={() => {
+                      const opts = evfCtl.options!;
+                      const i = opts.findIndex((o) => o.value === String(evfCtl.value));
+                      const next = opts[(i + 1) % opts.length]!;
+                      setZoom(1);
+                      void driverRef.current?.setControl?.("evfZoom", next.value).catch((e) => toast.error(e instanceof Error ? e.message : "ההגדלה במצלמה נכשלה"));
+                    }}
+                    title="הגדלה במצלמה (EVF): אזור מהחיישן בפרטים אמיתיים — חד יותר מהגדלה בתוכנה"
+                  >
+                    <span>מצלמה{String(evfCtl.value) === "1" ? "" : ` ${evfCtl.options.find((o) => o.value === String(evfCtl.value))?.label ?? ""}`}</span>
+                  </ToolButton>
+                )}
+                <ToolButton active={oneToOne} onClick={() => { setOneToOne((v) => !v); setZoom(1); }} title="1:1 — כל פיקסל של המקור הוא פיקסל במסך (גררו להזזה)">
+                  <span className="num">1:1</span>
+                </ToolButton>
+                <ToolButton active={diagOpen} onClick={() => setDiagOpen((v) => !v)} title="אבחון חדות: רזולוציית המקור, גודל התצוגה ויחס ההגדלה">
+                  <span>אבחון</span>
+                </ToolButton>
                 {choice?.kind === "DIGICAM" && (
                   <ToolButton active={focusZoom} onClick={toggleFocusZoom} title="הגדלת פוקוס במצלמה — אזור מהחיישן בחדות מלאה לבדיקת פוקוס">
                     <Focus />

@@ -64,12 +64,10 @@ export function LiveSegmentation({
     const wc = work.current;
     const wctx = wc.getContext("2d", { willReadFrequently: true });
     const octx = canvas.getContext("2d");
-    // the mask is computed small (fast) but the picture is drawn at display resolution (sharp)
-    const fgCanvas = document.createElement("canvas");
-    const fgCtx = fgCanvas.getContext("2d");
+    // the mask is computed small (fast); the sharp live picture is not part of this layer
     const maskCanvas = document.createElement("canvas");
     const maskCtx = maskCanvas.getContext("2d");
-    if (!wctx || !octx || !fgCtx || !maskCtx) return;
+    if (!wctx || !octx || !maskCtx) return;
     const DISPLAY_MAX = 1280;
     const checker = document.createElement("canvas");
     checker.width = checker.height = 16;
@@ -172,18 +170,8 @@ export function LiveSegmentation({
           mk.data[p + 3] = result.alpha[i]!;
         }
         maskCtx.putImageData(mk, 0, 0);
-        // sharp picture (drawn at display size) knocked out by the upscaled soft mask
-        if (fgCanvas.width !== OW || fgCanvas.height !== OH) {
-          fgCanvas.width = OW;
-          fgCanvas.height = OH;
-        }
-        fgCtx.globalCompositeOperation = "source-over";
-        fgCtx.imageSmoothingEnabled = true;
-        fgCtx.clearRect(0, 0, OW, OH);
-        fgCtx.drawImage(preview, 0, 0, OW, OH);
-        fgCtx.globalCompositeOperation = "destination-in";
-        fgCtx.drawImage(maskCanvas, 0, 0, W, H, 0, 0, OW, OH);
-        fgCtx.globalCompositeOperation = "source-over";
+        // The picture itself is never redrawn here: the live camera stream (full resolution, full frame rate) stays
+        // visible underneath. This canvas only paints the backdrop where the mask says "not the book".
         if (fillRgb) {
           octx.fillStyle = `rgb(${fillRgb[0]},${fillRgb[1]},${fillRgb[2]})`;
           octx.fillRect(0, 0, OW, OH);
@@ -192,7 +180,9 @@ export function LiveSegmentation({
           octx.fillRect(0, 0, OW, OH);
         }
         octx.imageSmoothingEnabled = true;
-        octx.drawImage(fgCanvas, 0, 0);
+        octx.globalCompositeOperation = "destination-out";
+        octx.drawImage(maskCanvas, 0, 0, W, H, 0, 0, OW, OH);
+        octx.globalCompositeOperation = "source-over";
       }
       if (smooth && (m === "frame" || degraded || showProcessed)) {
         // crop frame = book bounds + margin, exactly what Auto Crop will cut
