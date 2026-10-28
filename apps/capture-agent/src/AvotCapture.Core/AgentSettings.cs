@@ -40,6 +40,17 @@ public sealed class AgentSettings
     /// <summary>Check for / download / apply AVOT Capture Desktop updates automatically.</summary>
     public bool AutoUpdate { get; set; } = true;
 
+    // ── label printer (the printer is plugged into this computer; every user prints to it through the website) ──
+    /// <summary>The label-printing service runs whenever the station is paired. Independent of the camera.</summary>
+    public bool PrintEnabled { get; set; } = true;
+    /// <summary>Server id of the printer record this station registered.</summary>
+    public string? PrinterId { get; set; }
+    /// <summary>The printer's name in Windows.</summary>
+    public string? PrinterWindowsName { get; set; }
+    public string PrinterLabelSize { get; set; } = "57x32";
+    /// <summary>GDI = draw through the Windows driver (any printer); ZPL = raw ZPL through the spooler.</summary>
+    public string PrinterLanguage { get; set; } = "GDI";
+
     public bool IsPaired => DeviceId is not null && DeviceTokenProtected is not null && DeviceSecretProtected is not null && ServerUrl is not null;
 
     /// <summary>Origin of the paired web app ("https://studio.example.com").</summary>

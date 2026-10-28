@@ -50,6 +50,7 @@ public sealed class MainForm : Form
                      ("camera", "מצלמה"), ("usb", "חיבור USB"), ("edsdk", "Canon EDSDK"), ("server", "חיבור לשרת"), ("pair", "צימוד"),
                      ("queue", "תמונות שממתינות להעלאה"), ("errors", "שגיאות העלאה"), ("disk", "מקום פנוי בדיסק"), ("storage", "תיקיית תמונות"),
                      ("version", "גרסת התוכנה"), ("update", "עדכונים"),
+                     ("printer", "מדפסת תוויות"), ("printstate", "מצב ההדפסה"), ("printqueue", "תור הדפסות"),
                  })
         {
             grid.Controls.Add(new Label { Text = title, AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(3, 6, 3, 6) });
@@ -110,6 +111,22 @@ public sealed class MainForm : Form
             var r = SdkImporter.Import(dlg.FileName, _host.Settings);
             Info(r.Message);
             if (r.Ok) await _host.ReconnectCameraAsync();
+        });
+        Add("בחירת מדפסת תוויות…", () =>
+        {
+            ChoosePrinter();
+            return Task.CompletedTask;
+        });
+        Add("הדפסת ניסיון (תווית)", async () =>
+        {
+            await _host.Printing.TestPrintAsync(CancellationToken.None);
+            Info("הדפסת הניסיון נשלחה לתור. היא תצא במדפסת תוך כמה שניות.");
+        });
+        Add("חיבור מחדש למדפסת", () =>
+        {
+            _host.Printing.Poke();
+            Info("שירות ההדפסה בודק את המדפסת והשרת מחדש.");
+            return Task.CompletedTask;
         });
         Add("בדיקת עדכונים", async () =>
         {
@@ -215,7 +232,59 @@ public sealed class MainForm : Form
         Set("storage", _host.Settings.StorageRoot);
         Set("version", AgentHost.Version);
         Set("update", _host.Updates.Status, _host.Updates.Available is null ? null : false);
+        var s2 = _host.Settings;
+        Set("printer", string.IsNullOrEmpty(s2.PrinterWindowsName) ? "לא נבחרה מדפסת" : $"{s2.PrinterWindowsName} · USB / Windows · מדבקה {s2.PrinterLabelSize.Replace("x", "×")} מ״מ · {(s2.PrinterLanguage == "GDI" ? "דרייבר Windows" : "ZPL")}", !string.IsNullOrEmpty(s2.PrinterWindowsName));
+        var ps = _host.Printing;
+        Set("printstate", $"{ps.Status}" + (ps.PrinterState is { } st && st != "OK" ? $" · {ps.PrinterDetail ?? st}" : ""), ps.PrinterState is null or "OK" ? null : false);
+        var recent = ps.RecentJobs();
+        var printFailed = recent.Count(j => j.State == "failed");
+        Set("printqueue", $"בשרת ממתינות: {ps.Queue.Pending} · נכשלו היום: {ps.Queue.FailedToday} · במחשב זה נשלחו לאחרונה: {recent.Count(j => j.State == "sent")}" + (printFailed > 0 ? $" · נכשלו: {printFailed}" : ""), ps.Queue.FailedToday == 0 ? null : false);
         _updateNow.Visible = _host.Updates.ReadyToInstall;
+    }
+
+    /// <summary>Pick one of the printers Windows knows, the label size and the print mode; it becomes the system's primary label printer.</summary>
+    private void ChoosePrinter()
+    {
+        using var dlg = new Form
+        {
+            Text = "מדפסת תוויות",
+            RightToLeft = RightToLeft.Yes,
+            RightToLeftLayout = true,
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false,
+            ClientSize = new Size(520, 300),
+            Font = Font,
+        };
+        var printers = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+        printers.Items.AddRange(WindowsPrinting.InstalledPrinters().Cast<object>().ToArray());
+        printers.SelectedItem = _host.Settings.PrinterWindowsName ?? printers.Items.Cast<string>().FirstOrDefault(n => n.Contains("zebra", StringComparison.OrdinalIgnoreCase) || n.Contains("label", StringComparison.OrdinalIgnoreCase) || n.Contains("tsc", StringComparison.OrdinalIgnoreCase));
+        var sizes = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+        foreach (var sz in new[] { "50x25", "57x32", "70x40", "100x50" }) sizes.Items.Add(sz);
+        sizes.SelectedItem = _host.Settings.PrinterLabelSize;
+        var mode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Top };
+        mode.Items.AddRange(["דרייבר Windows (מומלץ — כל מדפסת)", "ZPL ישיר (Zebra ותואמות)"]);
+        mode.SelectedIndex = _host.Settings.PrinterLanguage == "ZPL" ? 1 : 0;
+        var ok = new Button { Text = "הגדרה כמדפסת אבות הראשית", AutoSize = true, DialogResult = DialogResult.OK, Dock = DockStyle.Bottom, Padding = new Padding(8, 6, 8, 6) };
+        var hint = new Label { Text = "המדפסת משמשת את כל המשתמשים באתר. אינה חייבת להיות מדפסת ברירת המחדל של Windows.", AutoSize = false, Height = 38, Dock = DockStyle.Top, ForeColor = Color.DimGray };
+        foreach (var (text, c) in new (string, Control)[] { ("אופן הדפסה", mode), ("גודל מדבקה (מ״מ)", sizes), ("מדפסת מתוך Windows", printers) })
+        {
+            dlg.Controls.Add(c);
+            dlg.Controls.Add(new Label { Text = text, Dock = DockStyle.Top, Height = 24, Padding = new Padding(0, 6, 0, 0) });
+        }
+        dlg.Controls.Add(hint);
+        dlg.Controls.Add(ok);
+        dlg.AcceptButton = ok;
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        if (printers.SelectedItem is not string name) { Info("לא נבחרה מדפסת."); return; }
+        var size = (string)sizes.SelectedItem!;
+        var lang = mode.SelectedIndex == 1 ? "ZPL" : "GDI";
+        _ = Guard(ok, async () =>
+        {
+            await _host.Printing.ConfigureAsync(name, size, lang, CancellationToken.None);
+            Info($"המדפסת \"{name}\" הוגדרה כמדפסת הראשית. אפשר להדפיס תווית ניסיון.");
+        });
     }
 
     private void ShowErrors()

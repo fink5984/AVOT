@@ -17,6 +17,7 @@ public sealed class AgentHost : IAsyncDisposable
     public LeaseManager Leases { get; } = new();
     public UpdateService Updates { get; }
     public DeletedCapturesService Deletions { get; }
+    public PrintService Printing { get; }
     /// <summary>Authenticated client for the paired server; null while the station is not paired.</summary>
     public ServerClient? ServerClientOrNull => _client;
     public ICameraDevice? Camera { get; private set; }
@@ -46,6 +47,7 @@ public sealed class AgentHost : IAsyncDisposable
         Uploads = new UploadQueue(Store, Feed, () => _client, logs.CreateLogger("Upload")) { RetentionDays = settings.LocalRetentionDays };
         Updates = new UpdateService(this, logs.CreateLogger("Update"));
         Deletions = new DeletedCapturesService(this, logs.CreateLogger("Deletions"));
+        Printing = new PrintService(this, logs.CreateLogger("Print"));
         Coordinator.CaptureSaved += _ =>
         {
             Updates.NoteShutter();
@@ -69,6 +71,7 @@ public sealed class AgentHost : IAsyncDisposable
         Uploads.Start();
         Updates.Start();
         Deletions.Start();
+        Printing.Start();
         _cameraLoop = Task.Run(() => CameraLoopAsync(_cts.Token));
         _heartbeatLoop = Task.Run(() => HeartbeatLoopAsync(_cts.Token));
     }
@@ -267,6 +270,7 @@ public sealed class AgentHost : IAsyncDisposable
         _cts.Cancel();
         Updates.Dispose();
         Deletions.Dispose();
+        Printing.Dispose();
         await Uploads.DisposeAsync();
         if (Camera is not null) await Camera.DisposeAsync();
         Coordinator.Dispose();

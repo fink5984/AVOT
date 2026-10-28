@@ -96,6 +96,13 @@ public sealed class ServerClient : IDisposable
         }
     }
 
+    /// <summary>POST with explicit nulls (the server schemas are strict about them).</summary>
+    public async Task<T> PostAsync<T>(string path, object body, CancellationToken ct)
+    {
+        using var res = await _http.PostAsJsonAsync(path.TrimStart('/'), body, JsonKeepNulls, ct);
+        return await Read<T>(res, ct);
+    }
+
     public async Task<JsonElement> HeartbeatAsync(object body, CancellationToken ct)
     {
         using var res = await _http.PostAsJsonAsync("api/agent/heartbeat", body, JsonKeepNulls, ct); // the server schema wants explicit nulls

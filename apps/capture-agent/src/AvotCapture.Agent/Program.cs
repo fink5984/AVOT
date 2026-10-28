@@ -54,7 +54,36 @@ internal static class Program
             Emit(args, r.Message);
             return r.Ok ? 0 : 1;
         }
-        if (args.Contains("--check"))
+        if (Arg(args, "--label-preview") is { } previewPng)
+        {
+            // draws sample labels exactly as the Windows-driver mode would, at 203 dpi, to a PNG (no printer needed)
+            var stock = new PrintStock(57, 32);
+            var samples = new List<PrintLabelDto>
+            {
+                new("BOOK", "10000035", "10000035", "מגילת אסתר — מהדורת וילנא (Vilna 1890) כרך ראשון", null, null, null, null, null),
+                new("LOCATION", "LOC-C5-05-01", null, null, "מחסן 1 · עמודה 5", "מדף 5", null, null, null),
+                new("ZONE", "COL-C5", null, null, null, null, "עמודה 5", "מחסן 1", null),
+            };
+            var dpi = 203f;
+            var wpx = (int)Math.Round(stock.WidthMm / 25.4 * dpi);
+            var hpx = (int)Math.Round(stock.HeightMm / 25.4 * dpi);
+            using var sheet = new System.Drawing.Bitmap(wpx * samples.Count + 8 * (samples.Count - 1), hpx);
+            using (var sg = System.Drawing.Graphics.FromImage(sheet))
+            {
+                sg.Clear(System.Drawing.Color.Gray);
+                for (var i = 0; i < samples.Count; i++)
+                {
+                    using var one = new System.Drawing.Bitmap(wpx, hpx);
+                    one.SetResolution(dpi, dpi);
+                    using var g1 = System.Drawing.Graphics.FromImage(one);
+                    g1.PageUnit = System.Drawing.GraphicsUnit.Pixel;
+                    LabelDrawer.Draw(g1, stock, samples[i]);
+                    sg.DrawImageUnscaled(one, i * (wpx + 8), 0);
+                }
+            }
+            sheet.Save(previewPng, System.Drawing.Imaging.ImageFormat.Png);
+            return 0;
+        }        if (args.Contains("--check"))
         {
             // used by the installer wizard: one JSON document, exit code 0 only when every line is OK
             var lines = SystemCheck.RunAsync(settings, null, logs, CancellationToken.None).GetAwaiter().GetResult();
