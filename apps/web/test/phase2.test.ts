@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyCode, formatInventoryNumber, formatLocationCode, registerCaptureSchema, scanOpSchema } from "@avot/shared";
+import { classifyCode, formatInventoryNumber, formatLegacyInventoryNumber, formatLocationCode, registerCaptureSchema, scanOpSchema } from "@avot/shared";
 import { code128Modules, code128Svg, encodeCode128 } from "@/lib/barcode/code128";
 import { can } from "@/server/auth/permissions";
 import { canSeeHouse, catalogScope } from "@/server/auth/houses";
@@ -9,9 +9,17 @@ import { lotIdFromCode } from "@/server/services/search";
 import { createDebouncer } from "@/lib/scanner/input";
 
 describe("inventory and location codes", () => {
-  it("formats brand-neutral inventory numbers", () => {
-    expect(formatInventoryNumber(184)).toBe("ITM-000184");
-    expect(formatInventoryNumber(1234567)).toBe("ITM-1234567");
+  it("formats numeric-only inventory numbers (no prefix, no length ceiling)", () => {
+    expect(formatInventoryNumber(1)).toBe("10000001");
+    expect(formatInventoryNumber(35)).toBe("10000035");
+    expect(formatInventoryNumber(1234567)).toBe("11234567");
+    // far beyond 8 digits and beyond 32-bit: BIGINT range, still digits only
+    expect(formatInventoryNumber(90_000_000)).toBe("100000000");
+    expect(formatInventoryNumber(5_000_000_000n)).toBe("5010000000");
+    expect(formatInventoryNumber(35)).toMatch(/^\d+$/);
+  });
+  it("keeps the legacy tag format for printed labels", () => {
+    expect(formatLegacyInventoryNumber(35)).toBe("ITM-000035");
   });
   it("builds location codes from the hierarchy", () => {
     expect(formatLocationCode({ zone: "a", shelf: "03", cell: "02" })).toBe("LOC-A-03-02");
@@ -21,8 +29,13 @@ describe("inventory and location codes", () => {
 
 describe("scanned code classification", () => {
   it("normalises keyboard-wedge input (case, whitespace, control characters, short numbers)", () => {
+    // legacy printed tags still classify as a book (resolved through the alias table)
     expect(classifyCode(" itm-000184\r\n")).toEqual({ type: "ITEM", value: "ITM-000184" });
     expect(classifyCode("ITM-184")).toEqual({ type: "ITEM", value: "ITM-000184" });
+    // new numeric numbers, with wedge noise
+    expect(classifyCode("10000184")).toEqual({ type: "ITEM", value: "10000184" });
+    expect(classifyCode("\u000210000184\r\n")).toEqual({ type: "ITEM", value: "10000184" });
+    expect(classifyCode("1000018412345")).toEqual({ type: "ITEM", value: "1000018412345" });
     expect(classifyCode("\u0002LOC-A-03-02\u0003")).toEqual({ type: "LOCATION", value: "LOC-A-03-02" });
   });
   it("recognises command barcodes and legacy catalog labels", () => {
@@ -33,7 +46,10 @@ describe("scanned code classification", () => {
     expect(lotIdFromCode(`AVOT-LOT:${id}`)).toBe(id);
   });
   it("leaves anything else as UNKNOWN (an external barcode registered on a book)", () => {
-    expect(classifyCode("9781234567897").type).toBe("UNKNOWN");
+    // a long digit string is looked up as a number / registered barcode (same lookup), anything alphanumeric stays unknown
+    expect(classifyCode("9781234567897").type).toBe("ITEM");
+    expect(classifyCode("AB-12-XYZ").type).toBe("UNKNOWN");
+    expect(classifyCode("12345").type).toBe("UNKNOWN"); // too short to be an inventory number
     expect(classifyCode("LOC-").type).toBe("UNKNOWN");
   });
 });

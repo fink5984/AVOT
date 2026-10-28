@@ -49,7 +49,7 @@ export async function globalSearch(user: UserPrincipal, raw: string) {
           { title: { contains: q, mode: "insensitive" } },
           { author: { contains: q, mode: "insensitive" } },
           { inventoryNumber: { contains: q.toUpperCase() } },
-          ...(asNumber !== undefined ? [{ serial: asNumber }] : []),
+          ...(asNumber !== undefined && q.length <= 7 ? [{ serial: BigInt(q) }] : []),
         ],
       },
       select: { id: true, inventoryNumber: true, title: true, author: true, photoStatus: true, physicalStatus: true, photoCount: true },

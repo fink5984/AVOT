@@ -142,7 +142,7 @@ async function collect(orgId: string, p: ExportRequest): Promise<ExportRow[]> {
     books = lots.map(lotCtx);
   } else if (p.scope === "item" || p.scope === "category") {
     const item = await db.inventoryItem.findFirst({ where: { id: p.inventoryItemId!, organizationId: orgId } });
-    if (item) books = [{ itemId: item.id, inventoryNumber: item.inventoryNumber, catalogNumber: INVENTORY_CATALOG_NUMBER, catalogName: "מלאי", lotNumber: item.serial, title: item.title, lotId: null }];
+    if (item) books = [{ itemId: item.id, inventoryNumber: item.inventoryNumber, catalogNumber: INVENTORY_CATALOG_NUMBER, catalogName: "מלאי", lotNumber: Number(item.serial), title: item.title, lotId: null }];
   } else {
     only = new Set(p.assetIds!);
     const picked = await db.photoAsset.findMany({
@@ -157,7 +157,7 @@ async function collect(orgId: string, p: ExportRequest): Promise<ExportRow[]> {
       books.push(
         active
           ? { ...lotCtx(active), lotId: null }
-          : { itemId: a.inventoryItemId, inventoryNumber: a.item.inventoryNumber, catalogNumber: INVENTORY_CATALOG_NUMBER, catalogName: "מלאי", lotNumber: a.item.serial, title: a.item.title, lotId: null },
+          : { itemId: a.inventoryItemId, inventoryNumber: a.item.inventoryNumber, catalogNumber: INVENTORY_CATALOG_NUMBER, catalogName: "מלאי", lotNumber: Number(a.item.serial), title: a.item.title, lotId: null },
       );
     }
   }

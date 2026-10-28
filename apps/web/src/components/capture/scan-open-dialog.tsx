@@ -73,7 +73,7 @@ export function ScanOpenDialog({
           autoComplete="off"
           spellCheck={false}
           aria-label="ברקוד ספר"
-          placeholder="ITM-000184"
+          placeholder="10000184"
           className="h-10 min-w-0 flex-1 rounded-md border border-rule-strong bg-paper px-3 font-mono text-[15px] focus:outline-none focus:ring-[3px] focus:ring-ink/10"
         />
         <Button type="submit" variant="primary" loading={busy} icon={<ScanLine />}>

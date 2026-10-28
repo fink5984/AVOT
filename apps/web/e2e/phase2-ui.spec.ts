@@ -48,7 +48,7 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   const row = page.locator("tbody tr", { hasText: `ספר UI ${RUN}` });
   await expect(row).toHaveCount(1, { timeout: 15_000 });
   const inventoryNumber = (await row.locator(".font-mono").first().textContent())!.trim();
-  expect(inventoryNumber).toMatch(/^ITM-\d{6}$/);
+  expect(inventoryNumber).toMatch(/^\d{8,}$/);
   const itemId = (await row.getByRole("link", { name: `ספר UI ${RUN}` }).getAttribute("href"))!.split("/inventory/")[1]!;
   // a double Enter on the same text never makes two books
   await add.fill(`כפול ${RUN}`);

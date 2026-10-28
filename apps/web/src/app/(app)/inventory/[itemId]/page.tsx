@@ -158,7 +158,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
 
       <div className="grid items-start gap-6 px-4 pb-10 lg:px-8 xl:grid-cols-[minmax(0,1fr)_360px]">
         <Gallery
-          lot={{ id: item.id, lotNumber: item.serial, catalogId: item.id, catalogNumber: "INV", title: item.title, name: item.inventoryNumber }}
+          lot={{ id: item.id, lotNumber: Number(item.serial), catalogId: item.id, catalogNumber: "INV", title: item.title, name: item.inventoryNumber }}
           initialAssets={assets.map(toAssetDto)}
           initialCategory="ALL"
           progress={progress}

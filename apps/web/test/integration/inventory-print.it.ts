@@ -31,7 +31,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
     it("gives it an inventory number, barcode and the 'awaiting photography / no location / no catalog' defaults", async () => {
       const { item, existing } = await createItem(ctx.photographer, { title: "מגילת אסתר", opId: randomUUID() });
       expect(existing).toBe(false);
-      expect(item.inventoryNumber).toMatch(/^ITM-\d{6}$/);
+      expect(item.inventoryNumber).toMatch(/^\d{8,}$/);
       expect(item.barcode).toBe(item.inventoryNumber);
       expect(item.photoStatus).toBe("NOT_STARTED");
       expect(item.currentLocationId).toBeNull();

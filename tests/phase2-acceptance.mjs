@@ -150,7 +150,7 @@ async function main() {
   const created = await admin.post("/api/inventory", { title: `ספר בדיקה ${RUN}`, author: "מחבר בדיקה", heightMm: 240, widthMm: 170 });
   check("נוצר ספר מלאי (201)", created.status === 201, created.data);
   const book = created.data.item;
-  check("מספר מלאי בפורמט ITM-000000", /^ITM-\d{6}$/.test(book.inventoryNumber), book.inventoryNumber);
+  check("מספר מלאי מספרי בלבד", /^\d{8,}$/.test(book.inventoryNumber), book.inventoryNumber);
   check("ברקוד = מספר המלאי", book.barcode === book.inventoryNumber);
   check("קטגוריית גודל הוצעה מהמידות (MEDIUM)", book.sizeCategory === "MEDIUM", book.sizeCategory);
   const label = await admin.get(`/api/labels/zpl?items=${book.id}`);
@@ -192,7 +192,7 @@ async function main() {
   check("סריקה כפולה מהירה של אותו ספר — NOOP ולא תנועה נוספת", r.data?.result === "NOOP", r.data);
   const moves2 = (await admin.get(`/api/inventory/${book2.id}`)).data;
   void moves2;
-  r = await worker.post("/api/scan", op("STORE", "ITM-999999", { contextLocationId: l2.id }));
+  r = await worker.post("/api/scan", op("STORE", "99999999999", { contextLocationId: l2.id }));
   check("ברקוד ספר לא קיים → שגיאה", r.data?.result === "ERROR", r.data);
   r = await worker.post("/api/scan", op("STORE", "XYZ-NOT-A-CODE", { contextLocationId: l2.id }));
   check("ברקוד לא מוכר → שגיאה", r.data?.result === "ERROR", r.data);

@@ -100,11 +100,20 @@ export type ScanMode = (typeof SCAN_MODES)[number];
 export const PICK_STATUSES = ["OPEN", "PICKED", "PACKED", "SHIPPED", "CANCELLED"] as const;
 export type PickStatus = (typeof PICK_STATUSES)[number];
 
-export const INVENTORY_PREFIX = "ITM-";
-/** 184 → "ITM-000184". Brand-neutral; never changes when the book moves between houses. */
-export function formatInventoryNumber(serial: number): string {
-  return `${INVENTORY_PREFIX}${String(serial).padStart(6, "0")}`;
+/** The numbering scheme: the public inventory number is INVENTORY_BASE + serial (1 → 10000001). Digits only, any length. */
+export const INVENTORY_BASE = 10_000_000n;
+/** 35 → "10000035". Digits only, brand-neutral, never changes when the book moves between houses or catalogs. */
+export function formatInventoryNumber(serial: number | bigint): string {
+  return String(INVENTORY_BASE + BigInt(serial));
 }
+
+/** Pre-numeric tag format ("ITM-000035"); kept so printed tags keep working (aliases in the database). */
+export const LEGACY_INVENTORY_PREFIX = "ITM-";
+export function formatLegacyInventoryNumber(serial: number | bigint): string {
+  return `${LEGACY_INVENTORY_PREFIX}${String(serial).padStart(6, "0")}`;
+}
+/** True for the current numeric format. */
+export const isInventoryNumber = (v: string) => /^\d{8,19}$/.test(v);
 
 /** Location code from its hierarchy: zone A, shelf 03, cell 02 → "LOC-A-03-02" (non-default warehouses are prefixed). */
 export function formatLocationCode(parts: { warehouse?: string | null; zone: string; shelf: string; cell: string }): string {
@@ -152,7 +161,10 @@ export function classifyCode(raw: string): ScannedCode {
   const v = raw.replace(/[\u0000-\u001f\u007f]/g, "").trim();
   const up = v.toUpperCase();
   if (up in COMMAND_CODES) return { type: "COMMAND", value: up as CommandCode, mode: COMMAND_CODES[up as CommandCode] };
-  if (/^ITM-\d{1,9}$/.test(up)) return { type: "ITEM", value: formatInventoryNumber(Number(up.slice(4))) };
+  // legacy printed tag "ITM-000035" (value normalised to 6 digits; resolved through the alias table)
+  if (/^ITM-\d{1,9}$/.test(up)) return { type: "ITEM", value: formatLegacyInventoryNumber(Number(up.slice(4))) };
+  // current numeric inventory number (also matches long external numeric barcodes: the lookup treats both alike)
+  if (/^\d{8,19}$/.test(v)) return { type: "ITEM", value: v };
   if (/^LOC(-[A-Z0-9]+){2,5}$/.test(up)) return { type: "LOCATION", value: up };
   if (/^COL(-[A-Z0-9]+){1,2}$/.test(up)) return { type: "ZONE", value: up };
   const lot = v.match(new RegExp(`(?:AVOT-LOT:|/l/)(${UUID})`, "i"));

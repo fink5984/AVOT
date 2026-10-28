@@ -230,13 +230,14 @@ model Organization {
   /// days a soft-deleted photo stays restorable before purge
   trashRetentionDays Int @default(30)
   /// last allocated InventoryItem.serial (allocated with UPDATE … RETURNING, never reused)
-  inventorySerialSeq Int @default(0)
+  inventorySerialSeq BigInt @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   users          User[]
   auctionHouses  AuctionHouse[]
   inventoryItems InventoryItem[]
+  numberAliases  InventoryNumberAlias[]
   warehouses     Warehouse[]
   catalogs       Catalog[]
   lots           Lot[]
@@ -319,7 +320,8 @@ model UserHouseAccess {
 model InventoryItem {
   id              String           @id @default(uuid()) @db.Uuid
   organizationId  String           @db.Uuid
-  serial          Int
+  /// sequence number; the public inventory number is 10000000 + serial and is never reused
+  serial          BigInt
   /// "ITM-000184" — brand-neutral, printed on the book's tag
   inventoryNumber String
   /// Code 128 payload; equals inventoryNumber unless an external tag was registered
@@ -371,6 +373,7 @@ model InventoryItem {
   movements       InventoryLocationMovement[]
   analyses        InventoryAnalysis[]
   pickTasks       PickTask[]
+  aliases         InventoryNumberAlias[]
 
   @@unique([organizationId, serial])
   @@unique([organizationId, inventoryNumber])
@@ -1141,4 +1144,21 @@ model PrintJob {
   @@unique([organizationId, idemKey])
   @@index([organizationId, status, createdAt])
   @@index([status, createdAt])
+}
+
+/// Former inventory numbers ("ITM-000035"). Printed tags keep working: scanning or searching an alias finds the same book.
+model InventoryNumberAlias {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @db.Uuid
+  inventoryItemId String   @db.Uuid
+  alias           String
+  /// LEGACY_ITM = the number printed before the numeric scheme
+  kind            String   @default("LEGACY_ITM")
+  createdAt       DateTime @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  item         InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, alias])
+  @@index([inventoryItemId])
 }

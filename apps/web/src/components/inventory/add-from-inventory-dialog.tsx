@@ -104,7 +104,7 @@ export function AddFromInventoryDialog({ open, onClose, catalogId, catalogLabel 
     <Dialog open={open} onClose={onClose} title="הוספת ספרים מהמלאי" description={`לקטלוג ${catalogLabel}. הספרים לא משוכפלים — הם מקבלים מספר פריט בקטלוג.`} width="lg">
       <div className="relative">
         <Search className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-faint" />
-        <Input autoFocus type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="שם ספר, מספר מלאי (ITM-…) או ברקוד" className="ps-9" aria-label="חיפוש במלאי" />
+        <Input autoFocus type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="שם ספר, מספר ספר או ברקוד" className="ps-9" aria-label="חיפוש במלאי" />
       </div>
       <ul className={cn("mt-3 max-h-[46vh] divide-y divide-rule overflow-y-auto rounded-md border border-rule", loading && "opacity-60")}>
         {rows.length === 0 && <li className="px-4 py-8 text-center text-[13px] text-muted">{loading ? "מחפש…" : "לא נמצאו ספרים"}</li>}

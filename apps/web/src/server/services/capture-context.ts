@@ -35,7 +35,7 @@ export async function loadCaptureContext(orgId: string, targetId: string): Promi
     ]);
     return {
       target: "lot",
-      item: { id: lot.item.id, inventoryNumber: lot.item.inventoryNumber, serial: lot.item.serial },
+      item: { id: lot.item.id, inventoryNumber: lot.item.inventoryNumber, serial: Number(lot.item.serial) },
       lot: { id: lot.id, lotNumber: lot.lotNumber, title: lot.title, subtitle: lot.subtitle, author: lot.author, status: lot.item.photoStatus, catalogId: lot.catalogId },
       catalog: { id: lot.catalog.id, number: lot.catalog.number, name: lot.catalog.name },
       prev,
@@ -50,11 +50,11 @@ export async function loadCaptureContext(orgId: string, targetId: string): Promi
     db.inventoryItem.findFirst({ where: { organizationId: orgId, deletionRequestedAt: null, serial: { gt: item.serial } }, orderBy: { serial: "asc" }, select: { id: true, serial: true, title: true } }),
     listAssets(orgId, item.id),
   ]);
-  const nav = (x: { id: string; serial: number; title: string } | null) => (x ? { id: x.id, lotNumber: x.serial, title: x.title } : null);
+  const nav = (x: { id: string; serial: bigint; title: string } | null) => (x ? { id: x.id, lotNumber: Number(x.serial), title: x.title } : null);
   return {
     target: "item",
-    item: { id: item.id, inventoryNumber: item.inventoryNumber, serial: item.serial },
-    lot: { id: item.id, lotNumber: item.serial, title: item.title, subtitle: item.subtitle, author: item.author, status: item.photoStatus, catalogId: item.id },
+    item: { id: item.id, inventoryNumber: item.inventoryNumber, serial: Number(item.serial) },
+    lot: { id: item.id, lotNumber: Number(item.serial), title: item.title, subtitle: item.subtitle, author: item.author, status: item.photoStatus, catalogId: item.id },
     catalog: { id: item.id, number: INVENTORY_CATALOG_NUMBER, name: "מלאי" },
     prev: nav(prev),
     next: nav(next),

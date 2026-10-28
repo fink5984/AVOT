@@ -40,10 +40,10 @@ export const itemPatchSchema = itemInputSchema.omit({ opId: true }).partial();
 export const LOT_COPY_FIELDS = ["title", "subtitle", "author", "printYear", "printPlace"] as const;
 
 /** Allocates the next inventory serial atomically. Never reused, gaps are fine. */
-export async function allocateSerial(tx: Tx, orgId: string): Promise<number> {
-  const rows = await tx.$queryRaw<{ seq: number }[]>`
+export async function allocateSerial(tx: Tx, orgId: string): Promise<bigint> {
+  const rows = await tx.$queryRaw<{ seq: bigint }[]>`
     UPDATE "Organization" SET "inventorySerialSeq" = "inventorySerialSeq" + 1 WHERE id = ${orgId}::uuid RETURNING "inventorySerialSeq" AS seq`;
-  return Number(rows[0]!.seq);
+  return BigInt(rows[0]!.seq);
 }
 
 /** Size class from known dimensions (height drives shelf choice); UNKNOWN without dimensions. */
@@ -209,11 +209,14 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
   const q = o.q?.trim();
   if (q) {
     const code = classifyCode(q);
-    const serial = /^\d{1,9}$/.test(q) ? Number(q) : undefined;
+    // "35" finds 10000035 (short numbers are sequence numbers); long digit strings match the number / barcode
+    const serial = /^\d{1,7}$/.test(q) ? BigInt(q) : undefined;
     and.push({
       OR: [
-        ...(code.type === "ITEM" ? [{ inventoryNumber: code.value }] : []),
+        ...(code.type === "ITEM" ? [{ inventoryNumber: code.value }, { aliases: { some: { alias: code.value } } }] : []),
         { barcode: q },
+        { aliases: { some: { alias: q.toUpperCase() } } },
+        ...(/^\d{3,}$/.test(q) ? [{ inventoryNumber: { contains: q } }] : []),
         ...(serial !== undefined ? [{ serial }] : []),
         { title: { contains: q, mode: "insensitive" } },
         { subtitle: { contains: q, mode: "insensitive" } },
@@ -288,7 +291,7 @@ export async function listInventory(user: UserPrincipal, o: InventoryListOptions
       const visible = lot ? canSeeHouse(user, lot.catalog.auctionHouse.id) : false;
       return {
         id: r.id,
-        serial: r.serial,
+        serial: Number(r.serial),
         inventoryNumber: r.inventoryNumber,
         barcode: r.barcode,
         title: r.title,
@@ -335,7 +338,10 @@ export async function findItemByCode(orgId: string, raw: string, tx: Tx = db) {
   }
   const value = code.type === "ITEM" ? code.value : code.value.trim();
   if (!value) return null;
-  return tx.inventoryItem.findFirst({ where: { organizationId: orgId, deletionRequestedAt: null, OR: [{ inventoryNumber: value }, { barcode: value }] } });
+  // current number, registered external barcode, or a former number kept as an alias (printed "ITM-000035" tags)
+  return tx.inventoryItem.findFirst({
+    where: { organizationId: orgId, deletionRequestedAt: null, OR: [{ inventoryNumber: value }, { barcode: value }, { aliases: { some: { alias: value.toUpperCase() } } }] },
+  });
 }
 
 /* ───────────────────────── detail & history ───────────────────────── */

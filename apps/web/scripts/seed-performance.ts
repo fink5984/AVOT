@@ -71,7 +71,7 @@ async function seed() {
       UPDATE "Organization" SET "inventorySerialSeq" = "inventorySerialSeq" + 100 WHERE id = ${org.id}::uuid RETURNING "inventorySerialSeq" AS seq`;
     const items = Array.from({ length: 100 }, (_, i) => {
       const serial = Number(row!.seq) - 99 + i;
-      const number = `ITM-${String(serial).padStart(6, "0")}`;
+      const number = String(10_000_000 + serial);
       return {
         id: randomUUID(),
         organizationId: org.id,

@@ -90,7 +90,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
               type="search"
               name="q"
               defaultValue={sp.q ?? ""}
-              placeholder="חיפוש: שם, מחבר, ITM-…, ברקוד"
+              placeholder="חיפוש: שם, מחבר, מספר ספר, ברקוד"
               aria-label="חיפוש במלאי"
               className="h-9 min-w-0 flex-1 rounded-md border border-rule-strong bg-paper px-3 text-[13.5px] shadow-card focus:border-ink/40 focus:outline-none focus:ring-[3px] focus:ring-ink/6 sm:w-64"
             />

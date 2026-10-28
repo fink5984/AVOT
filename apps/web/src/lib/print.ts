@@ -9,7 +9,7 @@ export interface PrintOptions {
   copies?: number;
   zoneId?: string;
   warehouseId?: string;
-  /** shown in the confirmation ("תווית ITM-000184") */
+  /** shown in the confirmation ("תווית 10000184") */
   what?: string;
 }
 

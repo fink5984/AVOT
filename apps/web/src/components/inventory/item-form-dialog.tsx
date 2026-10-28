@@ -99,7 +99,7 @@ export function ItemFormDialog({
       open={open}
       onClose={onClose}
       title={editing ? `עריכת ${initial?.inventoryNumber ?? "ספר"}` : "ספר חדש למלאי"}
-      description={editing ? undefined : "מספר מלאי (ITM-…) יוקצה אוטומטית. מידות אינן חובה — אם ידועות, הן משמשות להצעת מיקום במחסן."}
+      description={editing ? undefined : "מספר ספר יוקצה אוטומטית. מידות אינן חובה — אם ידועות, הן משמשות להצעת מיקום במחסן."}
       width="lg"
     >
       <form id="item-form" onSubmit={submit} className="grid grid-cols-6 gap-x-3 gap-y-4">
