@@ -22,6 +22,7 @@ export interface PrinterDto {
   windowsName: string | null;
   labelSize: string;
   dotsPerMm: number;
+  language: string;
   isPrimary: boolean;
   active: boolean;
   agentId: string | null;
@@ -34,6 +35,7 @@ export interface PrinterDto {
 export interface AgentDto {
   id: string;
   name: string;
+  kind?: string;
   machineName: string | null;
   agentVersion: string | null;
   online: boolean;
@@ -65,9 +67,9 @@ const PRINTER_STATE: Record<string, { text: string; tone: Tone }> = {
 
 /** What each job state means to a worker. "SENT" is deliberately not "printed". */
 const JOB_STATE: Record<JobDto["status"], { text: string; tone: Tone; hint?: string }> = {
-  PENDING: { text: "ממתין", tone: "neutral" },
-  CLAIMED: { text: "ממתין", tone: "neutral", hint: "סוכן ההדפסה קיבל את המשימה" },
-  SENT: { text: "נשלח למדפסת", tone: "info", hint: "המדפסת לא מדווחת על סיום — בדקו שהתווית יצאה" },
+  PENDING: { text: "התקבלה בשרת", tone: "neutral", hint: "ממתינה לעמדת ההדפסה" },
+  CLAIMED: { text: "התקבלה בעמדה", tone: "neutral", hint: "עמדת ההדפסה קיבלה אותה ומעבירה למדפסת" },
+  SENT: { text: "הועברה למדפסת", tone: "info", hint: "נמסרה ל-Windows / למדפסת. המדפסת לא מדווחת על סיום — בדקו שהתווית יצאה" },
   DONE: { text: "הושלם", tone: "green" },
   FAILED: { text: "נכשל", tone: "danger" },
   CANCELLED: { text: "בוטל", tone: "neutral" },
@@ -75,7 +77,7 @@ const JOB_STATE: Record<JobDto["status"], { text: string; tone: Tone; hint?: str
 
 const SIZES = ["50x25", "57x32", "70x40", "100x50"];
 
-export function PrinterAdmin({ printers, agents, jobs, serverUrl }: { printers: PrinterDto[]; agents: AgentDto[]; jobs: JobDto[]; serverUrl: string }) {
+export function PrinterAdmin({ printers, agents, jobs, serverUrl, queue }: { printers: PrinterDto[]; agents: AgentDto[]; jobs: JobDto[]; serverUrl: string; queue?: { pending: number; claimed: number; failedToday: number } }) {
   const router = useRouter();
   const toast = useToast();
   const [edit, setEdit] = useState<PrinterDto | "new" | null>(null);
@@ -107,6 +109,21 @@ export function PrinterAdmin({ printers, agents, jobs, serverUrl }: { printers: 
 
   return (
     <div className="space-y-5">
+      {queue && (queue.pending > 0 || queue.failedToday > 0) && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl bg-warn-soft px-4 py-3 text-[13.5px] text-warn" role="status">
+          {queue.pending > 0 && (
+            <span>
+              <span className="num font-semibold">{queue.pending}</span> משימות הדפסה ממתינות
+              {agents.length > 0 && !agents.some((a) => a.online) ? " — מחשב הצילום כבוי או לא מחובר. הן יודפסו כשיתחבר." : ""}
+            </span>
+          )}
+          {queue.failedToday > 0 && (
+            <span>
+              <span className="num font-semibold">{queue.failedToday}</span> נכשלו ב-24 השעות האחרונות
+            </span>
+          )}
+        </div>
+      )}
       <Panel
         title="מדפסות תוויות"
         actions={
@@ -133,6 +150,7 @@ export function PrinterAdmin({ printers, agents, jobs, serverUrl }: { printers: 
                     </div>
                     <div className="mt-0.5 text-[12.5px] text-muted">
                       {p.model && <>{p.model} · </>}
+                      {p.language === "GDI" ? "דרייבר Windows · " : "ZPL · "}
                       {p.connection === "NETWORK" ? <span className="num">{p.host}:{p.port}</span> : <>Windows: {p.windowsName}</>} · מדבקה <span className="num">{p.labelSize.replace("x", "×")}</span> מ״מ · <span className="num">{p.dotsPerMm === 12 ? 300 : 203}</span> dpi
                     </div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-2">
@@ -295,6 +313,7 @@ function PrinterDialog({ printer, agents, onClose }: { printer: PrinterDto | nul
       windowsName: connection === "WINDOWS" ? str("windowsName") : null,
       labelSize: str("labelSize") ?? "57x32",
       dotsPerMm: Number(str("dotsPerMm") ?? 8),
+      language: str("language") ?? "ZPL",
       agentId: str("agentId"),
     };
     setBusy(true);
@@ -341,6 +360,14 @@ function PrinterDialog({ printer, agents, onClose }: { printer: PrinterDto | nul
             {(p) => <Input {...p} name="windowsName" dir="ltr" defaultValue={printer?.windowsName ?? ""} className="font-mono" />}
           </Field>
         )}
+        <Field label="אופן הדפסה" hint="לא בטוחים בדגם? בחרו ״דרייבר Windows״ — עובד עם כל מדפסת שמותקן לה דרייבר, כולל עברית וברקוד.">
+          {(p) => (
+            <Select {...p} name="language" defaultValue={printer?.language ?? "ZPL"}>
+              <option value="ZPL">ZPL ישיר (Zebra ותואמות)</option>
+              <option value="GDI">דרייבר Windows (כל מדפסת, מעמדת הצילום)</option>
+            </Select>
+          )}
+        </Field>
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="גודל מדבקה (מ״מ)">
             {(p) => (

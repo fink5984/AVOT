@@ -87,6 +87,7 @@ export class PrintAgent {
 
   async deliver(job) {
     const p = job.printer;
+    if (job.format === "GDI" || !job.zpl) throw new Error("מצב ״דרייבר Windows״ נתמך רק ב-AVOT Capture Desktop. בחרו מצב ZPL או הדפיסו דרך עמדת הצילום.");
     if (p.connection === "NETWORK") return this.t.tcp({ host: p.host, port: p.port, data: job.zpl });
     if (p.connection === "WINDOWS") return this.t.windows({ printerName: p.windowsName, data: job.zpl });
     throw new Error(`סוג חיבור לא נתמך: ${p.connection}`);

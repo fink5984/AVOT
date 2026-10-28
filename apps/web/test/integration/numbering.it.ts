@@ -137,7 +137,7 @@ describe.skipIf(!hasDb)("numeric inventory numbers (real database)", () => {
       for (let i = 0; i < 20 && !zpl.includes(item.barcode); i++) {
         const c = await claimNextPrintJob(agent);
         if (!c) break;
-        zpl = c.zpl;
+        zpl = c.zpl ?? "";
       }
       expect(zpl).toContain(`^FD${item.barcode}^FS`);
       expect(zpl).not.toContain("ITM");

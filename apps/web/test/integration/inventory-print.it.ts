@@ -168,9 +168,12 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
       await expect(createPrintJobs(other.admin, { items: [{ type: "BOOK", id: item.id }] })).rejects.toThrow(/מדפסת ראשית/);
     });
 
-    it("a capture agent cannot use the print API, and vice versa", async () => {
+    it("a paired capture station may serve the queue (AVOT Capture Desktop runs the print service); a revoked device may not", async () => {
       const cam = await pairAgent(ctx.admin, "CAPTURE", "cam-pc");
-      await expect(claimNextPrintJob(cam)).rejects.toThrow(/סוכן הדפסה/);
+      await drain();
+      expect(await claimNextPrintJob(cam)).toBeNull(); // allowed, nothing queued
+      await db.device.update({ where: { id: cam.deviceId }, data: { revokedAt: new Date() } });
+      await expect(claimNextPrintJob(cam)).rejects.toThrow(/מורשית/);
     });
 
     it("one click → one job; a double click with the same key does not create or print twice", async () => {
@@ -192,8 +195,8 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
       expect(claimed).not.toBeNull();
       expect(claimed!.jobId).toBe(job!.id);
       expect(claimed!.printer).toMatchObject({ host: "192.168.1.50", port: 9100, connection: "NETWORK" });
-      expect(claimed!.zpl.match(/\^XA/g)).toHaveLength(2);
-      expect(claimed!.zpl).toContain(`^FD${item.barcode}^FS`);
+      expect(claimed!.zpl!.match(/\^XA/g)).toHaveLength(2);
+      expect(claimed!.zpl!).toContain(`^FD${item.barcode}^FS`);
       expect((await db.printJob.findUniqueOrThrow({ where: { id: job!.id } })).status).toBe("CLAIMED");
 
       // nobody else gets the same job
@@ -262,8 +265,8 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
       const t = await createTestPrint(ctx.admin, printerId);
       // drain both and look at the rendered ZPL
       const c1 = await claimNextPrintJob(agent);
-      expect(c1!.zpl).toContain("COL-W2-C1");
-      expect(c1!.zpl).toContain("LOC-W2-C1-01-01");
+      expect(c1!.zpl!).toContain("COL-W2-C1");
+      expect(c1!.zpl!).toContain("LOC-W2-C1-01-01");
       const c2 = await claimNextPrintJob(agent);
       expect(c2!.jobId).toBe(t.id);
       expect((await listPrintJobs(ctx.org.id)).length).toBeGreaterThan(5);

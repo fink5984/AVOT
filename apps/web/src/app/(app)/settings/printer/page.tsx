@@ -7,7 +7,7 @@ export const metadata = { title: "מדפסת תוויות" };
 
 export default async function PrinterSettingsPage() {
   const admin = await requirePageUser("print.manage");
-  const [{ printers, agents }, jobs] = await Promise.all([listPrinters(admin.organizationId), listPrintJobs(admin.organizationId, { limit: 30 })]);
+  const [{ printers, agents, queue }, jobs] = await Promise.all([listPrinters(admin.organizationId), listPrintJobs(admin.organizationId, { limit: 30 })]);
   return (
     <PrinterAdmin
       serverUrl={env().APP_URL}
@@ -21,6 +21,7 @@ export default async function PrinterSettingsPage() {
         windowsName: p.windowsName,
         labelSize: p.labelSize,
         dotsPerMm: p.dotsPerMm,
+        language: p.language,
         isPrimary: p.isPrimary,
         active: p.active,
         agentId: p.agentId,
@@ -30,6 +31,7 @@ export default async function PrinterSettingsPage() {
         agentOnline: p.agentOnline,
         agentName: p.agentName,
       }))}
+      queue={queue}
       agents={agents}
       jobs={jobs}
     />

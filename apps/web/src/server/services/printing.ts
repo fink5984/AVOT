@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { formatZoneCode } from "@avot/shared";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { AppError, notFound } from "../errors";
 import { audit } from "../audit";
@@ -58,6 +58,8 @@ export const printerSchema = z.object({
   windowsName: z.string().trim().max(200).nullish(),
   labelSize: z.enum(["50x25", "57x32", "70x40", "100x50"]).default("57x32"),
   dotsPerMm: z.union([z.literal(8), z.literal(12)]).default(8),
+  /** ZPL: raw ZPL (Zebra and compatibles). GDI: the station draws the label through the Windows driver — any printer that has one. */
+  language: z.enum(["ZPL", "GDI"]).default("ZPL"),
   agentId: z.string().uuid().nullish(),
   isPrimary: z.boolean().optional(),
   active: z.boolean().optional(),
@@ -74,10 +76,15 @@ function validateConnection(p: { connection?: string; host?: string | null; wind
 export async function listPrinters(orgId: string) {
   const [printers, agents] = await Promise.all([
     db.printer.findMany({ where: { organizationId: orgId }, orderBy: [{ isPrimary: "desc" }, { createdAt: "asc" }] }),
-    db.device.findMany({ where: { organizationId: orgId, kind: "PRINT", revokedAt: null }, orderBy: { name: "asc" } }),
+    db.device.findMany({ where: { organizationId: orgId, revokedAt: null, OR: [{ kind: "PRINT" }, { printStatus: { not: Prisma.DbNull } }] }, orderBy: { name: "asc" } }),
   ]);
+  const since = new Date(Date.now() - 24 * 3600 * 1000);
+  const jobStats = await db.printJob.groupBy({ by: ["status"], where: { organizationId: orgId, OR: [{ status: { in: ["PENDING", "CLAIMED"] } }, { status: "FAILED", createdAt: { gte: since } }] }, _count: { _all: true } });
+  const n = (st: string) => jobStats.find((x) => x.status === st)?._count._all ?? 0;
   return {
-    agents: agents.map((a) => ({ id: a.id, name: a.name, machineName: a.machineName, agentVersion: a.agentVersion, online: isOnline(a.lastSeenAt), lastSeenAt: a.lastSeenAt?.toISOString() ?? null })),
+    /** work waiting for the print station — visible to admins even when nobody is at the station's computer */
+    queue: { pending: n("PENDING"), claimed: n("CLAIMED"), failedToday: n("FAILED") },
+    agents: agents.map((a) => ({ id: a.id, name: a.name, kind: a.kind, machineName: a.machineName, agentVersion: a.agentVersion, online: isOnline(a.lastSeenAt), lastSeenAt: a.lastSeenAt?.toISOString() ?? null })),
     printers: printers.map((p) => {
       const agent = agents.find((a) => a.id === p.agentId) ?? (p.agentId ? undefined : agents.find((a) => isOnline(a.lastSeenAt)) ?? agents[0]);
       return { ...p, agentOnline: agent ? isOnline(agent.lastSeenAt) : false, agentName: agent?.name ?? null };
@@ -85,7 +92,8 @@ export async function listPrinters(orgId: string) {
   };
 }
 
-export async function createPrinter(user: UserPrincipal, input: z.infer<typeof printerSchema>) {
+export async function createPrinter(user: UserPrincipal, raw: z.input<typeof printerSchema>) {
+  const input = printerSchema.parse(raw);
   validateConnection(input);
   const count = await db.printer.count({ where: { organizationId: user.organizationId } });
   const makePrimary = input.isPrimary ?? count === 0;
@@ -102,6 +110,7 @@ export async function createPrinter(user: UserPrincipal, input: z.infer<typeof p
         windowsName: input.windowsName ?? null,
         labelSize: input.labelSize,
         dotsPerMm: input.dotsPerMm,
+        language: input.language,
         agentId: input.agentId ?? null,
         isPrimary: makePrimary,
         active: input.active ?? true,
@@ -325,7 +334,8 @@ export async function cancelPrintJob(user: UserPrincipal, id: string) {
 
 async function assertPrintAgent(device: DevicePrincipal) {
   const d = await db.device.findUnique({ where: { id: device.deviceId }, select: { kind: true, revokedAt: true } });
-  if (!d || d.revokedAt || d.kind !== "PRINT") throw new AppError("FORBIDDEN", "הרכיב אינו סוכן הדפסה מורשה");
+  // a dedicated print agent, or a capture station (AVOT Capture Desktop) that also runs the print service
+  if (!d || d.revokedAt || (d.kind !== "PRINT" && d.kind !== "CAPTURE")) throw new AppError("FORBIDDEN", "הרכיב אינו עמדת הדפסה מורשית");
 }
 
 /** Releases claims whose agent disappeared; gives up after MAX_ATTEMPTS. */
@@ -397,14 +407,19 @@ export async function claimNextPrintJob(device: DevicePrincipal) {
   try {
     const labels = await labelsFor(job.organizationId, job.items as never);
     if (!labels.length) throw new Error("התוויות להדפסה כבר לא קיימות");
-    const zpl = await renderZpl(labels, { stock: labelStock(printer.labelSize), dotsPerMm: printer.dotsPerMm, copies: job.copies });
-    return {
+    const stock = labelStock(printer.labelSize);
+    const head = {
       jobId: job.id,
       attempt: job.attempts,
       labelCount: job.labelCount,
       printer: { id: printer.id, name: printer.name, connection: printer.connection, host: printer.host, port: printer.port, windowsName: printer.windowsName, language: printer.language },
-      zpl,
     };
+    if (printer.language === "GDI") {
+      // the Windows driver prints whatever the station draws: no printer language is assumed
+      return { ...head, format: "GDI" as const, stock, copies: job.copies, labels, zpl: null as string | null };
+    }
+    const zpl = await renderZpl(labels, { stock, dotsPerMm: printer.dotsPerMm, copies: job.copies });
+    return { ...head, format: "ZPL" as const, stock, copies: 1, labels: null as PrintLabel[] | null, zpl: zpl as string | null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("print job render failed", { jobId: id, err });
@@ -464,10 +479,64 @@ export async function printAgentHeartbeat(device: DevicePrincipal, hb: z.infer<t
     });
   }
   const printers = await db.printer.findMany({ where: { organizationId: device.organizationId, active: true, OR: [{ agentId: null }, { agentId: device.deviceId }] } });
+  const mine = printers.map((p) => p.id);
+  const [pending, failed] = await Promise.all([
+    db.printJob.count({ where: { organizationId: device.organizationId, status: "PENDING", OR: [{ printerId: { in: mine } }, { printerId: null }] } }),
+    db.printJob.count({ where: { organizationId: device.organizationId, status: "FAILED", printerId: { in: mine }, createdAt: { gte: new Date(Date.now() - 24 * 3600 * 1000) } } }),
+  ]);
   return {
     serverTime: new Date().toISOString(),
-    printers: printers.map((p) => ({ id: p.id, name: p.name, connection: p.connection, host: p.host, port: p.port, windowsName: p.windowsName, language: p.language })),
+    queue: { pending, failedToday: failed },
+    printers: printers.map((p) => ({ id: p.id, name: p.name, connection: p.connection, host: p.host, port: p.port, windowsName: p.windowsName, language: p.language, labelSize: p.labelSize, isPrimary: p.isPrimary })),
   };
 }
 
 export const PRINTER_STATE_TEXT = STATE_TEXT;
+
+/* ───────────── printers defined from the station itself (AVOT Capture Desktop) ───────────── */
+
+export const agentPrinterSchema = z.object({
+  /** the printer's name in Windows — the identity of the printer on that station */
+  windowsName: z.string().trim().min(1).max(200),
+  name: z.string().trim().min(1).max(100).optional(),
+  model: z.string().trim().max(100).nullish(),
+  labelSize: z.enum(["50x25", "57x32", "70x40", "100x50"]).default("57x32"),
+  language: z.enum(["ZPL", "GDI"]).default("GDI"),
+  dotsPerMm: z.union([z.literal(8), z.literal(12)]).default(8),
+  /** make it the system's primary label printer */
+  primary: z.boolean().default(true),
+});
+
+/** "בוחרים את המדפסת מתוך המדפסות הזמינות ב-Windows": creates or updates the printer of this station. */
+export async function upsertAgentPrinter(device: DevicePrincipal, input: z.infer<typeof agentPrinterSchema>) {
+  await assertPrintAgent(device);
+  const existing = await db.printer.findFirst({ where: { organizationId: device.organizationId, agentId: device.deviceId, connection: "WINDOWS", windowsName: input.windowsName } });
+  const printer = await db.$transaction(async (tx) => {
+    if (input.primary) await tx.printer.updateMany({ where: { organizationId: device.organizationId, isPrimary: true, id: { not: existing?.id } }, data: { isPrimary: false } });
+    const data = {
+      name: input.name ?? existing?.name ?? input.windowsName,
+      model: input.model ?? existing?.model ?? null,
+      labelSize: input.labelSize,
+      language: input.language,
+      dotsPerMm: input.dotsPerMm,
+      isPrimary: input.primary || !!existing?.isPrimary,
+      active: true,
+    };
+    return existing
+      ? tx.printer.update({ where: { id: existing.id }, data })
+      : tx.printer.create({ data: { organizationId: device.organizationId, connection: "WINDOWS", windowsName: input.windowsName, agentId: device.deviceId, ...data } });
+  });
+  await db.auditLog.create({ data: { organizationId: device.organizationId, deviceId: device.deviceId, action: "printer.configured_by_station", entityType: "settings", entityId: printer.id, data: { windowsName: input.windowsName, language: input.language } } });
+  return { id: printer.id, name: printer.name, labelSize: printer.labelSize, language: printer.language, isPrimary: printer.isPrimary };
+}
+
+/** Test print requested from the station's own window (same queue, same path as every other job). */
+export async function agentTestPrint(device: DevicePrincipal, printerId: string) {
+  await assertPrintAgent(device);
+  const printer = await db.printer.findFirst({ where: { id: printerId, organizationId: device.organizationId, active: true, OR: [{ agentId: device.deviceId }, { agentId: null }] } });
+  if (!printer) throw notFound("המדפסת");
+  const job = await db.printJob.create({
+    data: { organizationId: device.organizationId, printerId: printer.id, kind: "TEST", items: [{ type: "TEST" }] as unknown as Prisma.InputJsonValue, copies: 1, labelCount: 1, summary: "הדפסת ניסיון (מהעמדה)" },
+  });
+  return { id: job.id };
+}
