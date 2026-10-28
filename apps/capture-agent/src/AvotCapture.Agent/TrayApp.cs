@@ -82,9 +82,8 @@ public sealed class TrayApp : IDisposable
         _modeSim.Checked = _host.Settings.CameraMode == "SIMULATOR";
         var tone = !_host.Settings.IsPaired || _host.ServerError is not null || failed > 0 ? Color.FromArgb(155, 59, 46)
             : s is { Connected: true } ? Color.FromArgb(56, 90, 76) : Color.FromArgb(146, 124, 93);
-        var old = _icon.Icon;
-        _icon.Icon = MakeIcon(tone);
-        old?.Dispose();
+        var next = MakeIcon(tone); // cached per colour: one Windows icon handle per state, never one per refresh
+        if (!ReferenceEquals(_icon.Icon, next)) _icon.Icon = next;
         var tip = $"AVOT Capture Agent — {(s is { Connected: true } ? "מצלמה מחוברת" : "אין מצלמה")} · {pending} ממתינות";
         _icon.Text = tip.Length > 63 ? tip[..63] : tip;
     }
@@ -120,9 +119,14 @@ public sealed class TrayApp : IDisposable
         Application.Exit();
     }
 
-    /// <summary>Small round "A" glyph tinted by state (generated, so no binary assets in the repo).</summary>
+        private static readonly Dictionary<int, Icon> IconCache = [];
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr handle);
+
     private static Icon MakeIcon(Color tone)
     {
+        if (IconCache.TryGetValue(tone.ToArgb(), out var cached)) return cached;
         using var bmp = new Bitmap(32, 32);
         using (var g = Graphics.FromImage(bmp))
         {
@@ -134,9 +138,20 @@ public sealed class TrayApp : IDisposable
             var sz = g.MeasureString("A", f);
             g.DrawString("A", f, Brushes.White, (32 - sz.Width) / 2 + 1, (32 - sz.Height) / 2 + 1);
         }
-        return Icon.FromHandle(bmp.GetHicon());
+        // Icon.FromHandle does not own the handle: clone it, then free the original (the old code leaked one handle every 2 s)
+        var h = bmp.GetHicon();
+        try
+        {
+            using var temp = Icon.FromHandle(h);
+            var icon = (Icon)temp.Clone();
+            IconCache[tone.ToArgb()] = icon;
+            return icon;
+        }
+        finally
+        {
+            DestroyIcon(h);
+        }
     }
-
     public void Dispose()
     {
         _refresh.Dispose();
