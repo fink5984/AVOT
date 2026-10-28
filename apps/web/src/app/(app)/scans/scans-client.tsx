@@ -20,7 +20,7 @@ interface Ev {
   receivedAt: string;
   deferred: boolean;
   userName: string | null;
-  item: { id: string; inventoryNumber: string; title: string; currentLocation: { code: string } | null } | null;
+  item: { id: string; inventoryNumber: string; title: string; currentLocation: string | null } | null;
   location: string | null;
   contextLocation: string | null;
   resolvedAt: string | null;
@@ -82,7 +82,7 @@ export function ScanLog({ events, filter, canResolve }: { events: Ev[]; filter: 
                   <td className="px-3 py-2">{t.scanMode[e.mode]}</td>
                   <td className="px-3 py-2">
                     <span className="num font-mono">{e.code}</span>
-                    {e.contextLocation && <div className="num font-mono text-[11.5px] text-muted">→ {e.contextLocation}</div>}
+                    {e.contextLocation && <div className="text-[11.5px] text-muted">→ {e.contextLocation}</div>}
                   </td>
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
@@ -91,7 +91,7 @@ export function ScanLog({ events, filter, canResolve }: { events: Ev[]; filter: 
                     </div>
                     {e.item && (
                       <Link href={`/inventory/${e.item.id}`} className="text-[12px] text-muted hover:underline">
-                        {e.item.inventoryNumber} · {e.item.title} · כעת: {e.item.currentLocation?.code ?? "ללא מיקום"}
+                        {e.item.inventoryNumber} · {e.item.title} · כעת: {e.item.currentLocation ?? "ללא מיקום"}
                       </Link>
                     )}
                     {e.resolvedAt && <div className="text-[11.5px] text-muted" suppressHydrationWarning>הוחלט: {e.resolution === "APPLIED" ? "בוצע" : "נדחה"} · {fmt.dateTime(e.resolvedAt)}</div>}

@@ -13,6 +13,35 @@ public sealed record PrintPrinterRef(
     [property: JsonPropertyName("windowsName")] string? WindowsName,
     [property: JsonPropertyName("language")] string Language);
 
+/// <summary>
+/// One box of a label layout, in millimetres from the label's top-left corner. The SERVER decides every position, size and
+/// alignment (label-layout.ts is the only design); the station only draws these. <c>Kind</c> = "text" | "barcode".
+/// </summary>
+public sealed record LayoutItemDto(
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("role")] string? Role,
+    [property: JsonPropertyName("text")] string? Text,
+    [property: JsonPropertyName("code")] string? Code,
+    [property: JsonPropertyName("x")] double X,
+    [property: JsonPropertyName("y")] double Y,
+    [property: JsonPropertyName("w")] double W,
+    [property: JsonPropertyName("h")] double H,
+    [property: JsonPropertyName("sizeMm")] double SizeMm,
+    [property: JsonPropertyName("minSizeMm")] double MinSizeMm,
+    [property: JsonPropertyName("bold")] bool Bold,
+    [property: JsonPropertyName("align")] string? Align,
+    [property: JsonPropertyName("valign")] string? VAlign,
+    [property: JsonPropertyName("maxLines")] int MaxLines,
+    [property: JsonPropertyName("moduleMmMin")] double ModuleMmMin,
+    [property: JsonPropertyName("moduleMmMax")] double ModuleMmMax,
+    [property: JsonPropertyName("quietModules")] int QuietModules);
+
+public sealed record LabelLayoutDto(
+    [property: JsonPropertyName("widthMm")] double WidthMm,
+    [property: JsonPropertyName("heightMm")] double HeightMm,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("items")] List<LayoutItemDto> Items);
+
 /// <summary>One label to draw (Windows-driver mode). Fields depend on <see cref="Type"/>: BOOK | LOCATION | ZONE | TEST.</summary>
 public sealed record PrintLabelDto(
     [property: JsonPropertyName("type")] string Type,
@@ -35,7 +64,12 @@ public sealed record ClaimedPrintJob(
     [property: JsonPropertyName("stock")] PrintStock Stock,
     [property: JsonPropertyName("copies")] int Copies,
     [property: JsonPropertyName("zpl")] string? Zpl,
-    [property: JsonPropertyName("labels")] List<PrintLabelDto>? Labels);
+    [property: JsonPropertyName("labels")] List<PrintLabelDto>? Labels,
+    [property: JsonPropertyName("layouts")] List<LabelLayoutDto>? Layouts = null,
+    [property: JsonPropertyName("assets")] PrintAssets? Assets = null);
+
+/// <summary>Pictures the layouts refer to, sent once per job: <c>Logo</c> = PNG, base64.</summary>
+public sealed record PrintAssets([property: JsonPropertyName("logo")] string? Logo);
 
 public sealed record PrintClaimResponse([property: JsonPropertyName("job")] ClaimedPrintJob? Job);
 

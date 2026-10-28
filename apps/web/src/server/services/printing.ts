@@ -7,7 +7,9 @@ import { AppError, notFound } from "../errors";
 import { audit } from "../audit";
 import { log } from "../log";
 import type { DevicePrincipal, UserPrincipal } from "../auth/principal";
-import { labelStock, renderZpl, type PrintLabel } from "../labels/zpl";
+import { labelStock, layoutFor, renderZpl, type PrintLabel } from "../labels/zpl";
+import { getLabelProfiles, sampleLabel } from "./label-templates";
+import { logoPngBase64 } from "../labels/render";
 import { locationInclude } from "./location-label";
 import { isOnline } from "./devices";
 
@@ -165,16 +167,16 @@ async function expandRequest(orgId: string, req: z.output<typeof printRequestSch
   if (req.zoneId) {
     const zone = await db.warehouseZone.findFirst({
       where: { id: req.zoneId, warehouse: { organizationId: orgId } },
-      include: { shelves: { orderBy: { sortOrder: "asc" }, include: { locations: { where: { active: true }, orderBy: { sortKey: "asc" } } } } },
+      include: { shelves: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { locations: { where: { active: true, mergedIntoId: null }, orderBy: { sortKey: "asc" } } } } },
     });
-    if (!zone) throw notFound("העמודה");
+    if (!zone || zone.deletedAt) throw notFound("העמודה");
     out.push({ type: "ZONE", id: zone.id });
     for (const s of zone.shelves) for (const l of s.locations) out.push({ type: "LOCATION", id: l.id });
   }
   if (req.warehouseId) {
     const wh = await db.warehouse.findFirst({
       where: { id: req.warehouseId, organizationId: orgId },
-      include: { zones: { orderBy: { sortOrder: "asc" }, include: { shelves: { orderBy: { sortOrder: "asc" }, include: { locations: { where: { active: true }, orderBy: { sortKey: "asc" } } } } } } },
+      include: { zones: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { shelves: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { locations: { where: { active: true, mergedIntoId: null }, orderBy: { sortKey: "asc" } } } } } } },
     });
     if (!wh) throw notFound("המחסן");
     for (const z of wh.zones) {
@@ -253,17 +255,18 @@ export async function createPrintJobs(user: UserPrincipal, input: z.input<typeof
   return jobs;
 }
 
-export async function createTestPrint(user: UserPrincipal, printerId: string) {
+/** "הדפסת ניסיון": the generic test label, or a sample of one label type with the saved calibration (kind BOOK / LOCATION / ZONE). */
+export async function createTestPrint(user: UserPrincipal, printerId: string, kind: "TEST" | "BOOK" | "LOCATION" | "ZONE" = "TEST") {
   const printer = await resolvePrinter(user.organizationId, printerId);
   const job = await db.printJob.create({
     data: {
       organizationId: user.organizationId,
       printerId: printer.id,
       kind: "TEST",
-      items: [{ type: "TEST" }] as unknown as Prisma.InputJsonValue,
+      items: [{ type: "TEST", sample: kind }] as unknown as Prisma.InputJsonValue,
       copies: 1,
       labelCount: 1,
-      summary: "הדפסת ניסיון",
+      summary: kind === "TEST" ? "הדפסת ניסיון" : `הדפסת ניסיון · ${{ BOOK: "תווית ספר", LOCATION: "תווית מדף", ZONE: "תווית עמודה" }[kind]}`,
       createdById: user.userId,
     },
   });
@@ -345,9 +348,14 @@ async function requeueStale(orgId: string) {
   await db.printJob.updateMany({ where: { organizationId: orgId, status: "CLAIMED", claimedAt: { lt: cutoff }, attempts: { gte: MAX_ATTEMPTS } }, data: { status: "FAILED", error: "סוכן ההדפסה לא דיווח על המשימה" } });
 }
 
-async function labelsFor(orgId: string, items: PrintItemRef[] | { type: "TEST" }[]): Promise<PrintLabel[]> {
+/** The content of ONE real label (book / shelf / column) — the single place label content is assembled. */
+export async function contentFor(orgId: string, type: "BOOK" | "LOCATION" | "ZONE", id: string): Promise<PrintLabel | null> {
+  return (await labelsFor(orgId, [{ type, id }]))[0] ?? null;
+}
+
+async function labelsFor(orgId: string, items: PrintItemRef[] | { type: "TEST"; sample?: string }[]): Promise<PrintLabel[]> {
   const out: PrintLabel[] = [];
-  const refs = items as { type: string; id?: string }[];
+  const refs = items as { type: string; id?: string; sample?: string }[];
   const books = await db.inventoryItem.findMany({ where: { organizationId: orgId, id: { in: refs.filter((r) => r.type === "BOOK").map((r) => r.id!) } } });
   const locs = await db.storageLocation.findMany({ where: { organizationId: orgId, id: { in: refs.filter((r) => r.type === "LOCATION").map((r) => r.id!) } }, include: locationInclude });
   const zones = await db.warehouseZone.findMany({ where: { id: { in: refs.filter((r) => r.type === "ZONE").map((r) => r.id!) }, warehouse: { organizationId: orgId } }, include: { warehouse: true } });
@@ -360,18 +368,17 @@ async function labelsFor(orgId: string, items: PrintItemRef[] | { type: "TEST" }
       const l = locs.find((x) => x.id === r.id);
       if (l) {
         const z = l.shelf.zone;
-        const cells = l.cell !== "01" && l.cell !== "1" ? ` · תא ${num(l.cell)}` : "";
         out.push({
           type: "LOCATION",
           code: l.code,
-          shelf: `מדף ${num(l.shelf.code)}${cells}`,
+          shelf: `מדף ${num(l.shelf.code)}`,
           path: [z.warehouse.name, z.name || `עמודה ${num(z.code)}`].join(" › "),
         });
       }
     } else if (r.type === "ZONE") {
       const z = zones.find((x) => x.id === r.id);
       if (z) out.push({ type: "ZONE", code: zoneOf(z), name: z.name || `עמודה ${num(z.code)}`, warehouse: z.warehouse.name });
-    } else if (r.type === "TEST") out.push({ type: "TEST", text: "AVOT · בדיקת הדפסה" });
+    } else if (r.type === "TEST") out.push(sampleLabel(r.sample === "BOOK" || r.sample === "LOCATION" || r.sample === "ZONE" ? r.sample : "TEST"));
   }
   return out;
 }
@@ -408,6 +415,8 @@ export async function claimNextPrintJob(device: DevicePrincipal) {
     const labels = await labelsFor(job.organizationId, job.items as never);
     if (!labels.length) throw new Error("התוויות להדפסה כבר לא קיימות");
     const stock = labelStock(printer.labelSize);
+    // the one calibration of the organization, applied to every label whatever path asked for it
+    const profiles = await getLabelProfiles(job.organizationId);
     const head = {
       jobId: job.id,
       attempt: job.attempts,
@@ -416,10 +425,14 @@ export async function claimNextPrintJob(device: DevicePrincipal) {
     };
     if (printer.language === "GDI") {
       // the Windows driver prints whatever the station draws: no printer language is assumed
-      return { ...head, format: "GDI" as const, stock, copies: job.copies, labels, zpl: null as string | null };
+      // the station only DRAWS this layout (boxes in mm); it never decides where anything goes
+      const layouts = labels.map((l) => layoutFor(l, stock, profiles));
+      // the logo picture travels once per job; layout items only say where it goes
+      const assets = layouts.some((l) => l.items.some((i) => i.kind === "image")) ? { logo: await logoPngBase64() } : null;
+      return { ...head, format: "GDI" as const, stock, copies: job.copies, labels, layouts, assets, zpl: null as string | null };
     }
-    const zpl = await renderZpl(labels, { stock, dotsPerMm: printer.dotsPerMm, copies: job.copies });
-    return { ...head, format: "ZPL" as const, stock, copies: 1, labels: null as PrintLabel[] | null, zpl: zpl as string | null };
+    const zpl = await renderZpl(labels, { stock, dotsPerMm: printer.dotsPerMm, copies: job.copies, profiles });
+    return { ...head, format: "ZPL" as const, stock, copies: 1, labels: null as PrintLabel[] | null, layouts: null, assets: null, zpl: zpl as string | null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.error("print job render failed", { jobId: id, err });

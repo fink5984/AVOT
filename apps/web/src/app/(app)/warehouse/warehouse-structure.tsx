@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowLeftRight, ChevronLeft, ChevronRight, MoreHorizontal, Pencil, Plus, Power, Printer, Rows3, Warehouse as WarehouseIcon } from "lucide-react";
+import { ArrowLeftRight, ChevronLeft, ChevronRight, ListChecks, MoreHorizontal, Pencil, Plus, Power, Printer, Rows3, Trash2, Warehouse as WarehouseIcon, X } from "lucide-react";
 import { Button, IconButton } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Field, Input } from "@/components/ui/field";
@@ -11,6 +11,7 @@ import { Menu } from "@/components/ui/menu";
 import { EmptyState } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { LocationDialog } from "@/components/warehouse/location-dialog";
+import { DeleteStructureDialog, type DeleteTarget } from "@/components/warehouse/delete-structure-dialog";
 import { usePrintLabels } from "@/lib/print";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -52,6 +53,9 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
   const [shelfId, setShelfId] = useState<string | null>(null);
   const [rename, setRename] = useState<{ kind: "warehouse" | "column"; id: string; name: string } | null>(null);
   const [addShelves, setAddShelves] = useState<ColumnDto | null>(null);
+  const [del, setDel] = useState<DeleteTarget | null>(null);
+  // "choose shelves to delete" inside one column
+  const [picking, setPicking] = useState<{ zoneId: string; ids: Set<string> } | null>(null);
   const wh = warehouses.find((w) => w.id === activeId) ?? warehouses[0];
   useEffect(() => {
     if (!warehouses.some((w) => w.id === activeId)) setActiveId(warehouses[0]?.id ?? "");
@@ -171,6 +175,10 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
                             { label: "שינוי שם", icon: <Pencil />, onSelect: () => setRename({ kind: "column", id: z.id, name: z.name }) },
                             { label: "הזזה ימינה", icon: <ChevronRight />, disabled: idx === 0, onSelect: () => void move(z, -1) },
                             { label: "הזזה שמאלה", icon: <ChevronLeft />, disabled: idx === wh.zones.length - 1, onSelect: () => void move(z, 1) },
+                            "separator",
+                            { label: "בחירת מדפים למחיקה", icon: <ListChecks />, disabled: z.shelves.length === 0, onSelect: () => setPicking({ zoneId: z.id, ids: new Set() }) },
+                            { label: "מחק מדפים ריקים", icon: <Trash2 />, disabled: !z.shelves.some((s) => s.books === 0), onSelect: () => setDel({ kind: "empty-shelves", id: z.id, name: z.name }) },
+                            { label: "מחק עמודה", icon: <Trash2 />, danger: true, onSelect: () => setDel({ kind: "column", id: z.id, name: z.name, shelfIds: z.shelves.map((s) => s.id) }) },
                           ] as const)
                         : []),
                     ]}
@@ -182,15 +190,31 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
                   <li key={s.id}>
                     <button
                       type="button"
-                      onClick={() => setShelfId(s.id)}
+                      onClick={() => {
+                        if (picking?.zoneId === z.id) {
+                          const ids = new Set(picking.ids);
+                          if (ids.has(s.id)) ids.delete(s.id);
+                          else ids.add(s.id);
+                          setPicking({ zoneId: z.id, ids });
+                        } else setShelfId(s.id);
+                      }}
+                      aria-pressed={picking?.zoneId === z.id ? picking.ids.has(s.id) : undefined}
                       className={cn(
                         "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-[13px] ring-1 transition-colors",
-                        !s.active ? "bg-stone text-faint ring-rule line-through" : s.books ? "bg-green-soft text-green-2 ring-green/20 hover:bg-green-soft/70" : "bg-paper text-ink-2 ring-rule hover:bg-stone-2",
+                        picking?.zoneId === z.id && picking.ids.has(s.id)
+                          ? "bg-danger-soft text-danger ring-danger/40"
+                          : !s.active
+                            ? "bg-stone text-faint ring-rule line-through"
+                            : s.books
+                              ? "bg-green-soft text-green-2 ring-green/20 hover:bg-green-soft/70"
+                              : "bg-paper text-ink-2 ring-rule hover:bg-stone-2",
                       )}
-                      title={s.locationIds.length === 0 ? "" : undefined}
                     >
-                      <span>
-                        מדף <span className="num font-semibold">{num(s.code)}</span>
+                      <span className="flex items-center gap-1.5">
+                        {picking?.zoneId === z.id && <input type="checkbox" readOnly tabIndex={-1} checked={picking.ids.has(s.id)} className="size-3.5 accent-[var(--color-danger)]" aria-hidden />}
+                        <span>
+                          מדף <span className="num font-semibold">{num(s.code)}</span>
+                        </span>
                       </span>
                       <span className="num text-[12px]">{s.books}</span>
                     </button>
@@ -210,6 +234,20 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
       <WizardDialog open={wizard} onClose={() => setWizard(false)} />
       <RenameDialog state={rename} onClose={() => setRename(null)} />
       <AddShelvesDialog column={addShelves} onClose={() => setAddShelves(null)} />
+      <DeleteStructureDialog target={del} onClose={() => setDel(null)} onDone={() => setPicking(null)} />
+      {picking && (
+        <div className="animate-pop fixed inset-x-0 bottom-6 z-30 mx-auto flex w-fit max-w-[calc(100vw-2rem)] items-center gap-2 rounded-xl bg-ink py-2 pe-2 ps-4 text-[13.5px] text-paper shadow-pop ring-1 ring-white/10" role="region" aria-label="מחיקת מדפים נבחרים">
+          <span>
+            נבחרו <span className="num font-semibold">{picking.ids.size}</span> מדפים
+          </span>
+          <Button size="sm" variant="danger" icon={<Trash2 />} disabled={picking.ids.size === 0} onClick={() => setDel({ kind: "shelves", ids: [...picking.ids], title: `מחיקת ${picking.ids.size} מדפים` })}>
+            מחק נבחרים
+          </Button>
+          <IconButton label="ביטול הבחירה" size="sm" className="text-paper hover:bg-white/14" onClick={() => setPicking(null)}>
+            <X />
+          </IconButton>
+        </div>
+      )}
       <ShelfPanel shelfId={shelfId} onClose={() => setShelfId(null)} perms={perms} warehouses={warehouses} />
     </section>
   );
@@ -349,7 +387,7 @@ function AddShelvesDialog({ column, onClose }: { column: ColumnDto | null; onClo
 }
 
 interface ShelfData {
-  shelf: { id: string; code: string; zone: string; warehouse: string; locations: { id: string; code: string; cell: string; active: boolean }[] };
+  shelf: { id: string; code: string; label: string; zone: string; warehouse: string; locations: { id: string; active: boolean }[] };
   items: { id: string; inventoryNumber: string; title: string; author: string | null; thumbAssetId: string | null }[];
 }
 
@@ -360,6 +398,7 @@ function ShelfPanel({ shelfId, onClose, perms, warehouses }: { shelfId: string |
   const print = usePrintLabels();
   const [data, setData] = useState<ShelfData | null>(null);
   const [moveBook, setMoveBook] = useState<ShelfData["items"][number] | null>(null);
+  const [delShelf, setDelShelf] = useState(false);
   useEffect(() => {
     setData(null);
     if (!shelfId) return;
@@ -381,7 +420,7 @@ function ShelfPanel({ shelfId, onClose, perms, warehouses }: { shelfId: string |
 
   return (
     <>
-      <Dialog open={!!shelfId} onClose={onClose} title={data ? `${data.shelf.zone} · מדף ${num(data.shelf.code)}` : "מדף"} description={data ? `${data.shelf.warehouse} · ${data.items.length} ספרים` : undefined} width="lg">
+      <Dialog open={!!shelfId} onClose={onClose} title={data ? data.shelf.label : "מדף"} description={data ? `${data.items.length} ספרים על המדף` : undefined} width="lg">
         {!data ? (
           <p className="py-6 text-center text-[13px] text-muted">טוען…</p>
         ) : (
@@ -395,6 +434,11 @@ function ShelfPanel({ shelfId, onClose, perms, warehouses }: { shelfId: string |
               {perms.manage && shelf && (
                 <Button size="sm" icon={<Power />} onClick={toggleActive}>
                   {shelf.active ? "השבתת המדף" : "הפעלת המדף"}
+                </Button>
+              )}
+              {perms.manage && shelf && (
+                <Button size="sm" variant="danger" icon={<Trash2 />} onClick={() => setDelShelf(true)}>
+                  מחק מדף
                 </Button>
               )}
               {data.shelf.locations[0] && (
@@ -426,6 +470,7 @@ function ShelfPanel({ shelfId, onClose, perms, warehouses }: { shelfId: string |
           </>
         )}
       </Dialog>
+      <DeleteStructureDialog target={delShelf && data ? { kind: "shelves", ids: [data.shelf.id], title: `מחיקת ${data.shelf.label}` } : null} onClose={() => setDelShelf(false)} onDone={onClose} />
       {moveBook && <LocationDialog open items={[moveBook]} onClose={() => setMoveBook(null)} onDone={() => setData((d) => (d ? { ...d, items: d.items.filter((i) => i.id !== moveBook.id) } : d))} />}
     </>
   );

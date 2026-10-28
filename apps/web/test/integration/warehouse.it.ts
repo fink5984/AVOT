@@ -45,8 +45,8 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
     expect(shelves.every((s) => s.locations.length === 1)).toBe(true);
     const codes = shelves.flatMap((s) => s.locations.map((l) => l.code));
     expect(new Set(codes).size).toBe(40);
-    expect(codes[0]).toBe("LOC-C1-01-01");
-    expect(codes.at(-1)).toBe("LOC-C8-05-01");
+    expect(codes[0]).toBe("LOC-C1-01");
+    expect(codes.at(-1)).toBe("LOC-C8-05");
     for (const c of codes) expect(classifyCode(c)).toEqual({ type: "LOCATION", value: c });
   });
 
@@ -54,7 +54,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
     const w2 = await createWarehouseFromWizard(ctx.admin, { name: "מחסן 2", columns: 2, shelvesPerColumn: 3 });
     expect(w2.code).toBe("W2");
     const t = (await warehouseTree(ctx.org.id)).find((w) => w.id === w2.id)!;
-    expect(t.zones[0]!.shelves[0]!.locations[0]!.code).toBe("LOC-W2-C1-01-01");
+    expect(t.zones[0]!.shelves[0]!.locations[0]!.code).toBe("LOC-W2-C1-01");
     await expect(createWarehouseFromWizard(ctx.admin, { name: "מחסן 2", columns: 1, shelvesPerColumn: 1 })).rejects.toThrow(/כבר קיים/);
   });
 
@@ -232,7 +232,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
       expect(all.reduce((a, j) => a + j.labelCount, 0)).toBe(9 /* columns */ + 43 /* shelves: the disabled one is skipped */);
 
       const claimed = await claimNextPrintJob(agent);
-      expect(claimed!.zpl).toContain("^FDLOC-C4-01-01");
+      expect(claimed!.zpl).toContain("^FDLOC-C4-01");
       await reportPrintJob(agent, claimed!.jobId, { status: "DONE" });
     });
   });

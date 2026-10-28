@@ -4,7 +4,7 @@ import { code128Modules, code128Svg, encodeCode128 } from "@/lib/barcode/code128
 import { can } from "@/server/auth/permissions";
 import { canSeeHouse, catalogScope } from "@/server/auth/houses";
 import { sizeFromDimensions } from "@/server/services/inventory";
-import { toZpl } from "@/server/services/labels";
+import { renderZpl } from "@/server/labels/zpl";
 import { lotIdFromCode } from "@/server/services/search";
 import { createDebouncer } from "@/lib/scanner/input";
 
@@ -22,8 +22,8 @@ describe("inventory and location codes", () => {
     expect(formatLegacyInventoryNumber(35)).toBe("ITM-000035");
   });
   it("builds location codes from the hierarchy", () => {
-    expect(formatLocationCode({ zone: "a", shelf: "03", cell: "02" })).toBe("LOC-A-03-02");
-    expect(formatLocationCode({ warehouse: "w2", zone: "B", shelf: "1", cell: "10" })).toBe("LOC-W2-B-1-10");
+    expect(formatLocationCode({ zone: "a", shelf: "03" })).toBe("LOC-A-03");
+    expect(formatLocationCode({ warehouse: "w2", zone: "B", shelf: "1" })).toBe("LOC-W2-B-1");
   });
 });
 
@@ -78,15 +78,13 @@ describe("Code 128", () => {
 });
 
 describe("ZPL", () => {
-  it("prints the code as Code 128 and escapes ZPL control characters in text", () => {
-    const zpl = toZpl({ books: [{ id: "1", code: "ITM-000184", title: "ספר ^בדיקה~", subtitle: null }], size: { widthMm: 50, heightMm: 25 } });
+  it("prints the code as Code 128 and escapes ZPL control characters in text", async () => {
+    const zpl = await renderZpl([{ type: "BOOK", code: "ITM-000184^~", inventoryNumber: "ITM-000184", title: "ספר ^בדיקה~" }], { stock: { widthMm: 50, heightMm: 25 } });
     expect(zpl).toContain("^XA");
     expect(zpl).toContain("^BCN");
-    expect(zpl).toContain("^FDITM-000184^FS");
+    expect(zpl).toContain("^FDITM-000184\\5e\\7e^FS");
     expect(zpl).toContain("^CI28");
     expect(zpl).not.toMatch(/ספר \^/);
-    expect(zpl).toContain("\\5e");
-    expect(zpl).toContain("\\7e");
   });
 });
 

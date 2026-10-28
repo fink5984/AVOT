@@ -27,6 +27,8 @@ export interface TextBitmapOptions {
   minFontPx?: number;
   align?: "right" | "left" | "centre";
   bold?: boolean;
+  /** at most this many lines: the font shrinks, then the text is cut with an ellipsis */
+  maxLines?: number;
 }
 
 const hasHebrew = (s: string) => /[֐-׿]/.test(s);
@@ -73,9 +75,12 @@ export async function renderTextBitmap(text: string, o: TextBitmapOptions): Prom
   let px = o.fontPx;
   const min = o.minFontPx ?? Math.max(14, Math.round(o.fontPx * 0.6));
   const align = o.align ?? (hasHebrew(shown) ? "right" : "left");
+  // one line of THIS text at this size (same glyph mix, no wrapping): how many lines the wrapped render really has
+  const oneLine = async (text: string, size: number) => (await renderOnce(text, { ...o, width: 20_000 }, size)).info.height;
   for (let guard = 0; guard < 200; guard++) {
     const { data, info } = await renderOnce(shown, o, px);
-    if (info.height <= o.maxHeight || (px <= min && shown.length <= 2)) {
+    const lines = o.maxLines ? Math.max(1, Math.round(info.height / (await oneLine(shown, px)))) : 1;
+    if ((info.height <= o.maxHeight && lines <= (o.maxLines ?? 99)) || (px <= min && shown.length <= 2)) {
       return pack(data, info.width, Math.min(info.height, o.maxHeight), info.channels, o.width, align);
     }
     if (px > min) px = Math.max(min, Math.floor(px * 0.88));

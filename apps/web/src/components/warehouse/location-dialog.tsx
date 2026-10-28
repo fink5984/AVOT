@@ -15,14 +15,14 @@ interface Tree {
     id: string;
     name: string;
     code: string;
-    shelves: { id: string; code: string; locations: { id: string; cell: string; code: string; active: boolean; itemCount: number }[] }[];
+    shelves: { id: string; code: string; locations: { id: string; code: string; active: boolean; itemCount: number }[] }[];
   }[];
 }
 
 const num = (code: string) => (/^\d+$/.test(code) ? String(Number(code)) : code);
 
 /**
- * "שנה מיקום": warehouse → column → shelf (→ cell only when a shelf was split into cells). Nothing is
+ * "שנה מיקום": warehouse → column → shelf. Nothing is
  * typed. Works for one book or several selected books; every move is recorded in the book's history.
  */
 export function LocationDialog({
@@ -42,7 +42,6 @@ export function LocationDialog({
   const [wh, setWh] = useState("");
   const [zone, setZone] = useState("");
   const [shelf, setShelf] = useState("");
-  const [cell, setCell] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,13 +60,11 @@ export function LocationDialog({
   const warehouse = tree?.find((w) => w.id === wh);
   const column = warehouse?.zones.find((z) => z.id === zone);
   const theShelf = column?.shelves.find((s) => s.id === shelf);
-  const cells = theShelf?.locations.filter((l) => l.active) ?? [];
-  const locationId = cells.length === 1 ? cells[0]!.id : cell || "";
+  const locationId = theShelf?.locations.find((l) => l.active)?.id ?? "";
 
   // choosing a level resets the levels below it
   useEffect(() => setZone(""), [wh]);
   useEffect(() => setShelf(""), [zone]);
-  useEffect(() => setCell(""), [shelf]);
 
   const single = items.length === 1;
   const title = single ? `שינוי מיקום · ${items[0]!.inventoryNumber}` : `שינוי מיקום ל-${items.length} ספרים`;
@@ -140,20 +137,6 @@ export function LocationDialog({
             </Select>
           )}
         </Field>
-        {cells.length > 1 && (
-          <Field label="תא">
-            {(p) => (
-              <Select {...p} value={cell} onChange={(e) => setCell(e.target.value)}>
-                <option value="">בחירת תא…</option>
-                {cells.map((l) => (
-                  <option key={l.id} value={l.id}>
-                    תא {num(l.cell)} · {l.itemCount} ספרים
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
-        )}
         {error && (
           <p className="rounded-md bg-danger-soft px-3 py-2 text-[13px] text-danger" role="alert">
             {error}

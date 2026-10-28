@@ -57,7 +57,7 @@ export function CountReview({ report, canApprove }: { report: CountReport; canAp
               {canApprove && <input type="checkbox" checked={missing.has(m.itemId)} onChange={() => flip(missing, setMissing, m.itemId)} aria-label={`סימון ${m.inventoryNumber} כחסר`} className="size-4 accent-[var(--color-ink)]" />}
               <span className="num w-28 font-mono text-muted">{m.inventoryNumber}</span>
               <Link href={`/inventory/${m.itemId}`} className="min-w-0 flex-1 truncate hover:underline">{m.title}</Link>
-              <span className="num font-mono text-[12px]">{m.locationCode}</span>
+              <span className="text-[12px]">{m.locationCode}</span>
             </li>
           ))}
           {report.missing.length === 0 && <li className={row + " text-muted"}>אין</li>}
@@ -70,7 +70,7 @@ export function CountReview({ report, canApprove }: { report: CountReport; canAp
               {canApprove && <input type="checkbox" checked={apply.has(w.entryId)} onChange={() => flip(apply, setApply, w.entryId)} aria-label={`עדכון מיקום ${w.inventoryNumber}`} className="size-4 accent-[var(--color-ink)]" />}
               <span className="num w-28 font-mono text-muted">{w.inventoryNumber}</span>
               <span className="min-w-0 flex-1 truncate">{w.title}</span>
-              <span className="num font-mono text-[12px]">{w.recordedCode} ← {w.foundCode}</span>
+              <span className="text-[12px]">{w.recordedCode} ← {w.foundCode}</span>
             </li>
           ))}
           {report.wrongLocation.length === 0 && <li className={row + " text-muted"}>אין</li>}
@@ -84,7 +84,7 @@ export function CountReview({ report, canApprove }: { report: CountReport; canAp
               <span className="num w-28 font-mono text-muted">{s.inventoryNumber}</span>
               <span className="min-w-0 flex-1 truncate">{s.title}</span>
               <span className="text-[12px] text-muted">{t.physicalStatus[s.physicalStatus as keyof typeof t.physicalStatus]}</span>
-              <span className="num font-mono text-[12px]">{s.foundCode}</span>
+              <span className="text-[12px]">{s.foundCode}</span>
             </li>
           ))}
           {report.surplus.length === 0 && <li className={row + " text-muted"}>אין</li>}
@@ -94,7 +94,7 @@ export function CountReview({ report, canApprove }: { report: CountReport; canAp
         <ul className="divide-y divide-rule">
           {report.visited.map((v) => (
             <li key={v.id} className={row}>
-              <span className="num w-32 font-mono">{v.code}</span>
+              <span className="w-56">{v.label}</span>
               <span className="text-muted">
                 נספרו <span className="num">{v.found}</span> · רשומים <span className="num">{v.expected}</span>
               </span>
@@ -102,7 +102,7 @@ export function CountReview({ report, canApprove }: { report: CountReport; canAp
           ))}
           {report.notVisited.map((v) => (
             <li key={v.code} className={row + " text-muted"}>
-              <span className="num w-32 font-mono">{v.code}</span> לא נספר ({v.expected} רשומים)
+              <span>{v.code}</span> לא נספר ({v.expected} רשומים)
             </li>
           ))}
         </ul>

@@ -13,7 +13,7 @@ import { storeBlockedReason } from "./item-status";
 import { locationInclude, locationLabel } from "./location-label";
 import { pickItemTx } from "./picking";
 import { removeFinallyTx, removeTemporarilyTx } from "./checkout";
-import { findLocationByCode, moveItemTx } from "./warehouse";
+import { findLocationByCode, isRetiredLocationCode, moveItemTx } from "./warehouse";
 
 /*
  * Handheld scans. Every scan carries a device-generated opId:
@@ -97,9 +97,10 @@ async function handle(tx: Tx, user: UserPrincipal, op: ScanOpInput, code: Scanne
 
   if (code.type === "LOCATION") {
     const loc = await findLocationByCode(orgId, code.value, tx);
-    if (!loc) return err(`מיקום ${code.value} לא קיים במערכת`);
-    if (!loc.active) return err(`מיקום ${loc.code} מושבת`, { locationId: loc.id });
+    if (!loc) return err((await isRetiredLocationCode(orgId, code.value, tx)) ? "המדף הוסר מהמבנה — תווית ישנה. אפשר להשליך אותה." : "המדף לא נמצא במערכת");
     const view = locView(loc)!;
+    if (loc.shelf.deletedAt) return err(`${view.label} — המדף הוסר מהמבנה`, { locationId: loc.id });
+    if (!loc.active) return err(`${view.label} — המדף מושבת`, { locationId: loc.id });
     if (op.mode === "PICK") return err("במצב ליקוט סורקים את ברקוד הספר", { locationId: loc.id });
     if (op.mode === "FIND") {
       const n = await tx.inventoryItem.count({ where: { currentLocationId: loc.id } });
@@ -114,9 +115,9 @@ async function handle(tx: Tx, user: UserPrincipal, op: ScanOpInput, code: Scanne
         update: {},
       });
       const n = await tx.stockCountEntry.count({ where: { sessionId: session.id, locationId: loc.id } });
-      return { result: "OK", message: `סופרים: ${loc.code}`, codeType: "LOCATION", activeLocation: view, locationId: loc.id, count: { sessionId: session.id, scannedInLocation: n } };
+      return { result: "OK", message: `סופרים: ${view.label}`, codeType: "LOCATION", activeLocation: view, locationId: loc.id, count: { sessionId: session.id, scannedInLocation: n } };
     }
-    return { result: "OK", message: `מיקום פעיל: ${loc.code}`, codeType: "LOCATION", activeLocation: view, locationId: loc.id };
+    return { result: "OK", message: `מיקום פעיל: ${view.label}`, codeType: "LOCATION", activeLocation: view, locationId: loc.id };
   }
 
   const found = await findItemByCode(orgId, code.value, tx);
@@ -171,7 +172,7 @@ async function handle(tx: Tx, user: UserPrincipal, op: ScanOpInput, code: Scanne
     return {
       ...base,
       result: existing?.locationId === ctx.id ? "NOOP" : "OK",
-      message: existing?.locationId === ctx.id ? `כבר נספר · ${n} במיקום` : elsewhere ? `נספר · רשום ב-${view.location?.code ?? "ללא מיקום"} (יוצג בפערים)` : `נספר · ${n} במיקום`,
+      message: existing?.locationId === ctx.id ? `כבר נספר · ${n} במיקום` : elsewhere ? `נספר · רשום ב-${view.location?.label ?? "ללא מיקום"} (יוצג בפערים)` : `נספר · ${n} במיקום`,
       warning: elsewhere,
       item: view,
       activeLocation: locView(ctx),
@@ -181,11 +182,11 @@ async function handle(tx: Tx, user: UserPrincipal, op: ScanOpInput, code: Scanne
   }
 
   // STORE / TRANSFER
-  if (!ctx.active) return { ...base, result: "ERROR", message: `מיקום ${ctx.code} מושבת` };
+  if (!ctx.active) return { ...base, result: "ERROR", message: `${locationLabel(ctx)} — המדף מושבת` };
   const blocked = storeBlockedReason(item.physicalStatus);
   if (blocked) return { ...base, result: "ERROR", message: blocked, item: await itemView(tx, user, item.id) };
   if (item.currentLocationId === ctx.id) {
-    return { ...base, result: "NOOP", message: `כבר במיקום ${ctx.code}`, item: await itemView(tx, user, item.id), activeLocation: locView(ctx), locationId: ctx.id };
+    return { ...base, result: "NOOP", message: `כבר במיקום ${locationLabel(ctx)}`, item: await itemView(tx, user, item.id), activeLocation: locView(ctx), locationId: ctx.id };
   }
   const clientAt = new Date(op.clientAt);
   if (op.deferred && item.locationUpdatedAt && item.locationUpdatedAt > clientAt) {
@@ -200,7 +201,7 @@ async function handle(tx: Tx, user: UserPrincipal, op: ScanOpInput, code: Scanne
   }
   await moveItemTx(tx, user, item.id, ctx.id, item.currentLocationId ? "TRANSFER" : "STORE", { opId: op.opId, occurredAt: op.deferred ? clientAt : new Date() });
   const view = await itemView(tx, user, item.id);
-  return { ...base, result: "OK", message: `${item.inventoryNumber} → ${ctx.code}`, item: view, activeLocation: locView(ctx), locationId: ctx.id };
+  return { ...base, result: "OK", message: `${item.inventoryNumber} → ${locationLabel(ctx)}`, item: view, activeLocation: locView(ctx), locationId: ctx.id };
 }
 
 async function openCountSession(tx: Tx, orgId: string, id: string | null | undefined) {
@@ -307,12 +308,12 @@ export async function listScanEvents(orgId: string, opts: { onlyOpen?: boolean; 
   const ids = (k: "userId" | "inventoryItemId" | "locationId" | "contextLocationId") => [...new Set(rows.map((r) => r[k]).filter((x): x is string => !!x))];
   const [users, items, locs] = await Promise.all([
     db.user.findMany({ where: { id: { in: ids("userId") } }, select: { id: true, name: true } }),
-    db.inventoryItem.findMany({ where: { id: { in: ids("inventoryItemId") } }, select: { id: true, inventoryNumber: true, title: true, currentLocation: { select: { code: true } } } }),
-    db.storageLocation.findMany({ where: { id: { in: [...ids("locationId"), ...ids("contextLocationId")] } }, select: { id: true, code: true } }),
+    db.inventoryItem.findMany({ where: { id: { in: ids("inventoryItemId") } }, select: { id: true, inventoryNumber: true, title: true, currentLocation: { include: locationInclude } } }),
+    db.storageLocation.findMany({ where: { id: { in: [...ids("locationId"), ...ids("contextLocationId")] } }, include: locationInclude }),
   ]);
   const u = new Map(users.map((x) => [x.id, x.name]));
   const it = new Map(items.map((x) => [x.id, x]));
-  const lc = new Map(locs.map((x) => [x.id, x.code]));
+  const lc = new Map(locs.map((x) => [x.id, locationLabel(x)]));
   return rows.map((r) => ({
     id: r.id,
     opId: r.opId,
@@ -325,7 +326,7 @@ export async function listScanEvents(orgId: string, opts: { onlyOpen?: boolean; 
     receivedAt: r.receivedAt.toISOString(),
     deferred: r.deferred,
     userName: r.userId ? (u.get(r.userId) ?? null) : null,
-    item: r.inventoryItemId ? (it.get(r.inventoryItemId) ?? null) : null,
+    item: r.inventoryItemId ? (() => { const x = it.get(r.inventoryItemId!); return x ? { id: x.id, inventoryNumber: x.inventoryNumber, title: x.title, currentLocation: x.currentLocation ? locationLabel(x.currentLocation) : null } : null; })() : null,
     location: r.locationId ? (lc.get(r.locationId) ?? null) : null,
     contextLocation: r.contextLocationId ? (lc.get(r.contextLocationId) ?? null) : null,
     resolvedAt: r.resolvedAt?.toISOString() ?? null,

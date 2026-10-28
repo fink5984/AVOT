@@ -115,10 +115,23 @@ export function formatLegacyInventoryNumber(serial: number | bigint): string {
 /** True for the current numeric format. */
 export const isInventoryNumber = (v: string) => /^\d{8,19}$/.test(v);
 
-/** Location code from its hierarchy: zone A, shelf 03, cell 02 → "LOC-A-03-02" (non-default warehouses are prefixed). */
-export function formatLocationCode(parts: { warehouse?: string | null; zone: string; shelf: string; cell: string }): string {
+/**
+ * Location code of a shelf from its hierarchy: warehouse W1, column C4, shelf 04 → "LOC-W1-C4-04". There is no cell
+ * level. The code is only the scannable value; workers see formatLocationLabel().
+ */
+export function formatLocationCode(parts: { warehouse?: string | null; zone: string; shelf: string }): string {
   const seg = (v: string) => v.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
-  return ["LOC", ...(parts.warehouse ? [seg(parts.warehouse)] : []), seg(parts.zone), seg(parts.shelf), seg(parts.cell)].join("-");
+  return ["LOC", ...(parts.warehouse ? [seg(parts.warehouse)] : []), seg(parts.zone), seg(parts.shelf)].join("-");
+}
+
+const plainNumber = (code: string) => (/^\d+$/.test(code) ? String(Number(code)) : code);
+
+/**
+ * THE way a place is shown to people, everywhere: "מחסן 1 · עמודה 4 · מדף 4". Real names, no codes, no cells.
+ * The server and every screen use this one function (the server wraps it for database rows).
+ */
+export function formatLocationLabel(parts: { warehouseName: string; zoneName?: string | null; zoneCode: string; shelfCode: string }): string {
+  return [parts.warehouseName, parts.zoneName?.trim() || `עמודה ${plainNumber(parts.zoneCode)}`, `מדף ${plainNumber(parts.shelfCode)}`].join(" · ");
 }
 
 /**

@@ -23,11 +23,10 @@ export default async function LocationPage({ params }: { params: Promise<{ locat
   return (
     <>
       <PageHeader
-        breadcrumbs={[{ label: "מחסן", href: "/warehouse" }, { label: loc.code }]}
-        title={<span className="num font-mono">{loc.code}</span>}
+        breadcrumbs={[{ label: "מחסן", href: "/warehouse" }, { label: locationLabel(loc) }]}
+        title={locationLabel(loc)}
         meta={
           <>
-            <span>{locationLabel(loc)}</span>
             <span>
               <span className="num">{items.length}</span>
               {loc.capacity ? <>/<span className="num">{loc.capacity}</span></> : null} ספרים

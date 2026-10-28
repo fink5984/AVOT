@@ -10,6 +10,7 @@ export const GET = route(async (req) => {
     directLotId: r.directLotId,
     directItemId: r.directItemId,
     directLocationId: r.directLocationId,
+    directLocation: r.directLocation,
     items: r.items,
     lots: r.lots.map((l) => ({
       id: l.id,

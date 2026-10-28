@@ -58,62 +58,32 @@ export const shelfSchema = z.object({
 });
 
 async function zoneOf(orgId: string, zoneId: string) {
-  const zone = await db.warehouseZone.findFirst({ where: { id: zoneId, warehouse: { organizationId: orgId } }, include: { warehouse: true } });
+  const zone = await db.warehouseZone.findFirst({ where: { id: zoneId, deletedAt: null, warehouse: { organizationId: orgId } }, include: { warehouse: true } });
   if (!zone) throw notFound("האזור");
   return zone;
 }
 
 export async function createShelf(user: UserPrincipal, input: z.infer<typeof shelfSchema>) {
-  await zoneOf(user.organizationId, input.zoneId);
+  const zone = await zoneOf(user.organizationId, input.zoneId);
   const clash = await db.shelf.findUnique({ where: { zoneId_code: { zoneId: input.zoneId, code: input.code } } });
-  if (clash) throw new AppError("CONFLICT", `מדף ${input.code} כבר קיים באזור`);
-  const count = await db.shelf.count({ where: { zoneId: input.zoneId } });
-  const s = await db.shelf.create({ data: { zoneId: input.zoneId, code: input.code, shelfType: input.shelfType ?? null, notes: input.notes ?? null, sortOrder: count + 1 } });
+  if (clash) throw new AppError("CONFLICT", `מדף ${input.code} כבר קיים בעמודה`);
+  const wh = zone.warehouse;
+  const locCode = formatLocationCode({ warehouse: wh.isDefault ? null : wh.code, zone: zone.code, shelf: input.code });
+  const s = await db.$transaction(async (tx) => {
+    if (await codeTaken(tx, user.organizationId, locCode)) throw new AppError("CONFLICT", `הקוד ${locCode} כבר היה בשימוש (מדף שנמחק) ולא ניתן לשימוש חוזר`);
+    const count = await tx.shelf.count({ where: { zoneId: input.zoneId } });
+    const shelf = await tx.shelf.create({ data: { zoneId: input.zoneId, code: input.code, shelfType: input.shelfType ?? null, notes: input.notes ?? null, sortOrder: count + 1 } });
+    // one location per shelf — the place a book is assigned to
+    await tx.storageLocation.create({ data: { organizationId: user.organizationId, shelfId: shelf.id, cell: "01", code: locCode, sortKey: sortKey(wh.code, zone.code, input.code) } });
+    return shelf;
+  });
   await audit(user, { action: "warehouse.shelf_created", entityType: "warehouse", entityId: s.id, data: { code: s.code } });
   return s;
 }
 
-export const locationsSchema = z.object({
-  shelfId: z.string().uuid(),
-  /** cell codes to create, e.g. ["01","02"]; or a numeric range */
-  cells: z.array(code("קוד תא", 4)).max(200).optional(),
-  from: z.number().int().min(0).max(999).optional(),
-  to: z.number().int().min(0).max(999).optional(),
-  sizeClass: z.enum(BOOK_SIZES).nullish(),
-  capacity: z.number().int().min(1).max(10000).nullish(),
-  notes: z.string().trim().max(1000).nullish(),
-});
-
-/** sortable key: zone/shelf/cell, numeric parts zero-padded so "A-10" sorts after "A-9" */
+/** sortable key: warehouse/column/shelf, numeric parts zero-padded so "A-10" sorts after "A-9" */
 function sortKey(...parts: string[]) {
   return parts.map((p) => p.replace(/\d+/g, (d) => d.padStart(4, "0"))).join("/");
-}
-
-export async function createLocations(user: UserPrincipal, input: z.infer<typeof locationsSchema>) {
-  const shelf = await db.shelf.findFirst({ where: { id: input.shelfId, zone: { warehouse: { organizationId: user.organizationId } } }, include: { zone: { include: { warehouse: true } } } });
-  if (!shelf) throw notFound("המדף");
-  let cells = input.cells ?? [];
-  if (!cells.length && input.from !== undefined && input.to !== undefined) {
-    if (input.to < input.from || input.to - input.from > 199) throw new AppError("VALIDATION", "טווח תאים לא תקין (עד 200)");
-    cells = Array.from({ length: input.to - input.from + 1 }, (_, i) => String(input.from! + i).padStart(2, "0"));
-  }
-  if (!cells.length) throw new AppError("VALIDATION", "יש לציין תאים");
-  const wh = shelf.zone.warehouse;
-  const rows = cells.map((cell) => ({
-    organizationId: user.organizationId,
-    shelfId: shelf.id,
-    cell,
-    code: formatLocationCode({ warehouse: wh.isDefault ? null : wh.code, zone: shelf.zone.code, shelf: shelf.code, cell }),
-    sizeClass: input.sizeClass ?? null,
-    capacity: input.capacity ?? null,
-    notes: input.notes ?? null,
-    sortKey: sortKey(wh.code, shelf.zone.code, shelf.code, cell),
-  }));
-  const existing = await db.storageLocation.findMany({ where: { organizationId: user.organizationId, code: { in: rows.map((r) => r.code) } }, select: { code: true } });
-  if (existing.length) throw new AppError("CONFLICT", `מיקומים כבר קיימים: ${existing.map((e) => e.code).join(", ")}`);
-  await db.storageLocation.createMany({ data: rows });
-  await audit(user, { action: "warehouse.locations_created", entityType: "location", entityId: shelf.id, data: { codes: rows.map((r) => r.code) } });
-  return db.storageLocation.findMany({ where: { organizationId: user.organizationId, code: { in: rows.map((r) => r.code) } }, orderBy: { sortKey: "asc" } });
 }
 
 export const locationPatchSchema = z.object({
@@ -136,8 +106,22 @@ export async function updateLocation(user: UserPrincipal, id: string, input: z.i
   return u;
 }
 
+/**
+ * A shelf by its scanned code: the current one ("LOC-W1-C4-04") or a former one printed when shelves still had
+ * cells ("LOC-W1-C4-04-01"). Never a merged cell row; the alias points at the shelf's own location.
+ */
 export async function findLocationByCode(orgId: string, raw: string, tx: Tx = db) {
-  return tx.storageLocation.findFirst({ where: { organizationId: orgId, code: raw.trim().toUpperCase() }, include: locationInclude });
+  const value = raw.trim().toUpperCase();
+  return tx.storageLocation.findFirst({
+    where: { organizationId: orgId, mergedIntoId: null, OR: [{ code: value }, { aliases: { some: { alias: value } } }] },
+    include: locationInclude,
+  });
+}
+
+/** True for the code of a shelf that was deleted: it stays reserved and never points at another shelf. */
+export async function isRetiredLocationCode(orgId: string, raw: string, tx: Tx = db) {
+  const value = raw.trim().toUpperCase();
+  return !!(await tx.storageLocationAlias.findFirst({ where: { organizationId: orgId, alias: value, locationId: null }, select: { id: true } }));
 }
 
 export async function getLocation(orgId: string, id: string) {
@@ -150,7 +134,13 @@ export async function warehouseTree(orgId: string) {
     db.warehouse.findMany({
       where: { organizationId: orgId },
       orderBy: [{ isDefault: "desc" }, { code: "asc" }],
-      include: { zones: { orderBy: { sortOrder: "asc" }, include: { shelves: { orderBy: { sortOrder: "asc" }, include: { locations: { orderBy: { sortKey: "asc" } } } } } } },
+      include: {
+        zones: {
+          where: { deletedAt: null },
+          orderBy: { sortOrder: "asc" },
+          include: { shelves: { where: { deletedAt: null }, orderBy: { sortOrder: "asc" }, include: { locations: { where: { mergedIntoId: null }, orderBy: { sortKey: "asc" }, include: { aliases: { select: { alias: true } } } } } } },
+        },
+      },
     }),
     db.inventoryItem.groupBy({ by: ["currentLocationId"], where: { organizationId: orgId, currentLocationId: { not: null } }, _count: { _all: true } }),
   ]);
@@ -176,6 +166,8 @@ export async function suggestLocations(orgId: string, itemId: string, limit = 3)
     where: {
       organizationId: orgId,
       active: true,
+      mergedIntoId: null,
+      shelf: { deletedAt: null, zone: { deletedAt: null } },
       isFull: false,
       ...(item.sizeCategory !== "UNKNOWN" ? { OR: [{ sizeClass: item.sizeCategory }, { sizeClass: null }, { sizeClass: "UNKNOWN" }] } : {}),
     },
@@ -299,9 +291,9 @@ export async function bulkManualMove(user: UserPrincipal, input: z.infer<typeof 
 
 /* ───────────────────────── simple structure: warehouse → column → shelf ─────────────────────────
  * UI vocabulary maps onto the stored hierarchy: Warehouse = warehouse, WarehouseZone = column,
- * Shelf = shelf, and every shelf gets ONE StorageLocation (cell "01") — the exact place a book is
- * assigned to. Cells stay available as an advanced mechanism (createLocations). Codes are written once
- * and never changed or reused, so printed barcodes stay valid however the structure is edited later.
+ * Shelf = shelf, and every shelf has exactly ONE StorageLocation — the exact place a book is assigned to.
+ * There are no cells. Codes are written once and never changed or reused, so printed barcodes stay valid
+ * however the structure is edited or shrunk later.
  */
 
 const MAX_LOCATIONS_PER_CALL = 2000;
@@ -320,7 +312,16 @@ async function nextWarehouseCode(tx: Tx, orgId: string) {
   throw new AppError("CONFLICT", "יותר מדי מחסנים");
 }
 
-/** Creates a column with `shelves` shelves, each with its single location. Codes continue after the highest existing one. */
+/** True when a code is (or ever was) used by a location of this organization — including deleted shelves. */
+async function codeTaken(tx: Tx, orgId: string, codeValue: string) {
+  const [loc, alias] = await Promise.all([
+    tx.storageLocation.findFirst({ where: { organizationId: orgId, code: codeValue }, select: { id: true } }),
+    tx.storageLocationAlias.findFirst({ where: { organizationId: orgId, alias: codeValue }, select: { id: true } }),
+  ]);
+  return !!(loc || alias);
+}
+
+/** Creates a column with `shelves` shelves, each with its single location. Codes continue after the highest existing one (deleted columns count). */
 async function createColumnTx(tx: Tx, orgId: string, wh: { id: string; code: string; isDefault: boolean }, shelves: number, name?: string | null) {
   const zones = await tx.warehouseZone.findMany({ where: { warehouseId: wh.id }, select: { code: true, sortOrder: true } });
   const used = zones.map((z) => /^C(\d+)$/.exec(z.code)).filter((m): m is RegExpExecArray => !!m).map((m) => Number(m[1]));
@@ -334,23 +335,24 @@ async function createColumnTx(tx: Tx, orgId: string, wh: { id: string; code: str
 }
 
 async function addShelvesTx(tx: Tx, orgId: string, wh: { code: string; isDefault: boolean }, zone: { id: string; code: string }, count: number) {
+  // every shelf of the column counts, deleted ones too: a shelf number (and its printed barcode) is never given again
   const shelves = await tx.shelf.findMany({ where: { zoneId: zone.id }, select: { code: true, sortOrder: true } });
   const used = shelves.map((s) => Number(s.code)).filter((n) => Number.isInteger(n));
-  const start = Math.max(0, ...used) + 1;
-  if (start + count - 1 > 99) throw new AppError("CONFLICT", "מספר המדפים המרבי בעמודה הוא 99");
+  let next = Math.max(0, ...used) + 1;
   let order = Math.max(0, ...shelves.map((s) => s.sortOrder));
   for (let i = 0; i < count; i++) {
-    const code = pad2(start + i);
-    const shelf = await tx.shelf.create({ data: { zoneId: zone.id, code, sortOrder: ++order } });
-    await tx.storageLocation.create({
-      data: {
-        organizationId: orgId,
-        shelfId: shelf.id,
-        cell: "01",
-        code: formatLocationCode({ warehouse: wh.isDefault ? null : wh.code, zone: zone.code, shelf: code, cell: "01" }),
-        sortKey: sortKey(wh.code, zone.code, code, "01"),
-      },
-    });
+    let codeStr = pad2(next);
+    let locCode = formatLocationCode({ warehouse: wh.isDefault ? null : wh.code, zone: zone.code, shelf: codeStr });
+    while (await codeTaken(tx, orgId, locCode)) {
+      next++;
+      codeStr = pad2(next);
+      locCode = formatLocationCode({ warehouse: wh.isDefault ? null : wh.code, zone: zone.code, shelf: codeStr });
+    }
+    if (next > 99) throw new AppError("CONFLICT", "מספר המדפים המרבי בעמודה הוא 99");
+    const shelf = await tx.shelf.create({ data: { zoneId: zone.id, code: codeStr, sortOrder: ++order } });
+    // one location per shelf — "cell" is a legacy column and is always "01"
+    await tx.storageLocation.create({ data: { organizationId: orgId, shelfId: shelf.id, cell: "01", code: locCode, sortKey: sortKey(wh.code, zone.code, codeStr) } });
+    next++;
   }
 }
 
@@ -431,30 +433,205 @@ export async function reorderStructure(user: UserPrincipal, input: z.infer<typeo
   await audit(user, { action: "warehouse.reordered", entityType: "warehouse", entityId: input.parentId, data: { kind: input.kind } });
 }
 
-/** Disables / re-enables a shelf (all its locations). Disabling is refused while books are on it. */
+/** Disables / re-enables a shelf's location. Disabling is refused while books are on it. */
 export async function setShelfActive(user: UserPrincipal, shelfId: string, active: boolean) {
-  const shelf = await db.shelf.findFirst({ where: { id: shelfId, zone: { warehouse: { organizationId: user.organizationId } } }, include: { locations: { select: { id: true } } } });
+  const shelf = await db.shelf.findFirst({ where: { id: shelfId, deletedAt: null, zone: { deletedAt: null, warehouse: { organizationId: user.organizationId } } }, include: { locations: { where: { mergedIntoId: null }, select: { id: true } } } });
   if (!shelf) throw notFound("המדף");
   if (!active) {
     const n = await db.inventoryItem.count({ where: { currentLocationId: { in: shelf.locations.map((l) => l.id) } } });
     if (n) throw new AppError("CONFLICT", `על המדף ${n} ספרים — העבירו אותם לפני השבתה`);
   }
-  await db.storageLocation.updateMany({ where: { shelfId }, data: { active } });
+  await db.storageLocation.updateMany({ where: { shelfId, mergedIntoId: null }, data: { active } });
   await audit(user, { action: active ? "warehouse.shelf_enabled" : "warehouse.shelf_disabled", entityType: "warehouse", entityId: shelfId });
 }
 
 /** The books on a shelf (all its locations) for the "click a shelf" panel. */
 export async function shelfContents(orgId: string, shelfId: string) {
-  const shelf = await db.shelf.findFirst({ where: { id: shelfId, zone: { warehouse: { organizationId: orgId } } }, include: { zone: { include: { warehouse: true } }, locations: true } });
+  const shelf = await db.shelf.findFirst({ where: { id: shelfId, deletedAt: null, zone: { warehouse: { organizationId: orgId } } }, include: { zone: { include: { warehouse: true } }, locations: { where: { mergedIntoId: null } } } });
   if (!shelf) throw notFound("המדף");
   const items = await db.inventoryItem.findMany({
     where: { organizationId: orgId, currentLocationId: { in: shelf.locations.map((l) => l.id) }, deletionRequestedAt: null },
     orderBy: { serial: "asc" },
     take: 500,
-    select: { id: true, inventoryNumber: true, title: true, author: true, physicalStatus: true, primaryAssetId: true, currentLocation: { select: { code: true } } },
+    select: { id: true, inventoryNumber: true, title: true, author: true, physicalStatus: true, primaryAssetId: true },
   });
   return {
-    shelf: { id: shelf.id, code: shelf.code, zone: shelf.zone.name, warehouse: shelf.zone.warehouse.name, locations: shelf.locations.map((l) => ({ id: l.id, code: l.code, cell: l.cell, active: l.active })) },
-    items: items.map((i) => ({ id: i.id, inventoryNumber: i.inventoryNumber, title: i.title, author: i.author, physicalStatus: i.physicalStatus, thumbAssetId: i.primaryAssetId, locationCode: i.currentLocation?.code ?? null })),
+    shelf: {
+      id: shelf.id,
+      code: shelf.code,
+      label: locationLabel({ shelf: { code: shelf.code, zone: { code: shelf.zone.code, name: shelf.zone.name, warehouse: shelf.zone.warehouse } } }),
+      zone: shelf.zone.name,
+      warehouse: shelf.zone.warehouse.name,
+      locations: shelf.locations.map((l) => ({ id: l.id, active: l.active })),
+    },
+    items: items.map((i) => ({ id: i.id, inventoryNumber: i.inventoryNumber, title: i.title, author: i.author, physicalStatus: i.physicalStatus, thumbAssetId: i.primaryAssetId })),
   };
+}
+
+
+/* ───────────────────────── deleting shelves and columns ─────────────────────────
+ * A shelf with no history at all is removed for real (its code is kept as a reserved alias, so it is never reused).
+ * A shelf that ever held a book, was counted or scanned leaves the active structure (deletedAt) and stays as the
+ * reference of that history. A column always leaves the structure logically — its code also stays reserved.
+ * Books on a shelf are never deleted: they are moved to a shelf the manager chooses first.
+ */
+
+export interface ShelfDeletionInfo {
+  id: string;
+  label: string;
+  books: number;
+  /** true = the shelf has no history and will be removed for real; false = it only leaves the active structure */
+  physical: boolean;
+  /** an open stock count or pick task refers to it */
+  blocked: string | null;
+}
+
+export interface DeletionPlan {
+  shelves: ShelfDeletionInfo[];
+  books: number;
+  blocked: string | null;
+}
+
+async function shelfInfos(orgId: string, shelfIds: string[], tx: Tx = db) {
+  const shelves = await tx.shelf.findMany({
+    where: { id: { in: shelfIds }, deletedAt: null, zone: { warehouse: { organizationId: orgId } } },
+    include: { zone: { include: { warehouse: true } }, locations: { select: { id: true, code: true } } },
+    orderBy: [{ zone: { sortOrder: "asc" } }, { sortOrder: "asc" }],
+  });
+  if (shelves.length !== new Set(shelfIds).size) throw notFound("המדף");
+  const locIds = shelves.flatMap((s) => s.locations.map((l) => l.id));
+  const [books, moves, scans, countLocs, countEntries, picks, openCounts, openPicks] = await Promise.all([
+    tx.inventoryItem.groupBy({ by: ["currentLocationId"], where: { currentLocationId: { in: locIds } }, _count: { _all: true } }),
+    tx.inventoryLocationMovement.findMany({ where: { OR: [{ fromLocationId: { in: locIds } }, { toLocationId: { in: locIds } }] }, select: { fromLocationId: true, toLocationId: true } }),
+    tx.barcodeScanEvent.findMany({ where: { OR: [{ locationId: { in: locIds } }, { contextLocationId: { in: locIds } }] }, select: { locationId: true, contextLocationId: true } }),
+    tx.stockCountLocation.findMany({ where: { locationId: { in: locIds } }, select: { locationId: true } }),
+    tx.stockCountEntry.findMany({ where: { OR: [{ locationId: { in: locIds } }, { expectedLocationId: { in: locIds } }] }, select: { locationId: true, expectedLocationId: true } }),
+    tx.pickTask.findMany({ where: { sourceLocationId: { in: locIds } }, select: { sourceLocationId: true } }),
+    tx.stockCountLocation.findMany({ where: { locationId: { in: locIds }, session: { status: "OPEN" } }, select: { locationId: true } }),
+    tx.pickTask.findMany({ where: { sourceLocationId: { in: locIds }, status: { in: ["OPEN", "PICKED", "PACKED"] } }, select: { sourceLocationId: true } }),
+  ]);
+  const touched = new Set<string>();
+  for (const m of moves) [m.fromLocationId, m.toLocationId].forEach((x) => x && touched.add(x));
+  for (const e of scans) [e.locationId, e.contextLocationId].forEach((x) => x && touched.add(x));
+  for (const c of countLocs) touched.add(c.locationId);
+  for (const c of countEntries) [c.locationId, c.expectedLocationId].forEach((x) => x && touched.add(x));
+  for (const p of picks) p.sourceLocationId && touched.add(p.sourceLocationId);
+  const booksBy = new Map(books.map((b) => [b.currentLocationId!, b._count._all]));
+  const openCount = new Set(openCounts.map((c) => c.locationId));
+  const openPick = new Set(openPicks.map((p) => p.sourceLocationId!));
+  return shelves.map((s) => {
+    const ids = s.locations.map((l) => l.id);
+    const n = ids.reduce((a, id) => a + (booksBy.get(id) ?? 0), 0);
+    const history = ids.some((id) => touched.has(id)) || n > 0 || s.locations.length > 1;
+    const blocked = ids.some((id) => openCount.has(id)) ? "ספירת מלאי פעילה כוללת את המדף" : ids.some((id) => openPick.has(id)) ? "קיימת משימת ליקוט פתוחה מהמדף" : null;
+    return {
+      shelf: s,
+      info: {
+        id: s.id,
+        label: locationLabel({ shelf: { code: s.code, zone: { code: s.zone.code, name: s.zone.name, warehouse: s.zone.warehouse } } }),
+        books: n,
+        // having held a book once is history even when the shelf is empty now: books show "where they were"
+        physical: !history,
+        blocked,
+      } satisfies ShelfDeletionInfo,
+    };
+  });
+}
+
+function toPlan(rows: { info: ShelfDeletionInfo }[]): DeletionPlan {
+  const infos = rows.map((r) => r.info);
+  return { shelves: infos, books: infos.reduce((a, i) => a + i.books, 0), blocked: infos.find((i) => i.blocked)?.blocked ?? null };
+}
+
+export async function planShelfDeletion(user: UserPrincipal, shelfIds: string[]): Promise<DeletionPlan> {
+  return toPlan(await shelfInfos(user.organizationId, shelfIds));
+}
+
+export const deleteShelvesSchema = z.object({
+  shelfIds: z.array(z.string().uuid()).min(1).max(300),
+  /** where the books go when the shelves are not empty (an active location outside the deleted shelves) */
+  moveToLocationId: z.string().uuid().nullish(),
+});
+
+async function removeShelvesTx(tx: Tx, user: UserPrincipal, rows: Awaited<ReturnType<typeof shelfInfos>>, moveTo: string | null) {
+  const locIds = rows.flatMap((r) => r.shelf.locations.map((l) => l.id));
+  if (rows.some((r) => r.info.blocked)) throw new AppError("CONFLICT", rows.find((r) => r.info.blocked)!.info.blocked!);
+  const books = await tx.inventoryItem.findMany({ where: { currentLocationId: { in: locIds } }, select: { id: true } });
+  if (books.length) {
+    if (!moveTo) throw new AppError("CONFLICT", `על המדפים ${books.length} ספרים — בחרו מדף להעברה`);
+    if (locIds.includes(moveTo)) throw new AppError("VALIDATION", "מדף היעד נמצא בין המדפים שנמחקים");
+    const target = await tx.storageLocation.findFirst({ where: { id: moveTo, organizationId: user.organizationId, active: true, mergedIntoId: null, shelf: { deletedAt: null, zone: { deletedAt: null } } } });
+    if (!target) throw notFound("מדף היעד");
+    for (const b of books) await moveItemTx(tx, user, b.id, moveTo, "TRANSFER", { note: "הועבר לפני מחיקת מדף" });
+  }
+  let physical = 0;
+  let logical = 0;
+  for (const { shelf, info } of rows) {
+    if (info.physical) {
+      // keep the codes reserved, then remove the rows (aliases of the deleted locations are set to "retired")
+      for (const l of shelf.locations) {
+        await tx.storageLocationAlias.upsert({
+          where: { organizationId_alias: { organizationId: user.organizationId, alias: l.code } },
+          create: { organizationId: user.organizationId, alias: l.code, locationId: null },
+          update: { locationId: null },
+        });
+      }
+      await tx.storageLocation.deleteMany({ where: { shelfId: shelf.id } });
+      await tx.shelf.delete({ where: { id: shelf.id } });
+      physical++;
+    } else {
+      await tx.storageLocation.updateMany({ where: { shelfId: shelf.id }, data: { active: false } });
+      await tx.shelf.update({ where: { id: shelf.id }, data: { deletedAt: new Date() } });
+      logical++;
+    }
+  }
+  return { moved: books.length, physical, logical };
+}
+
+/** "מחק מדף" / "מחק מדפים": books must be moved first; history is kept (see above). */
+export async function deleteShelves(user: UserPrincipal, input: z.infer<typeof deleteShelvesSchema>) {
+  const result = await db.$transaction(
+    async (tx) => removeShelvesTx(tx, user, await shelfInfos(user.organizationId, input.shelfIds, tx), input.moveToLocationId ?? null),
+    { timeout: 120_000 },
+  );
+  await audit(user, { action: "warehouse.shelves_deleted", entityType: "warehouse", entityId: input.shelfIds[0], data: { shelves: input.shelfIds.length, ...result, moveTo: input.moveToLocationId ?? null } });
+  return result;
+}
+
+/** "מחק מדפים ריקים": every shelf of the column that holds no book (and has no open count / pick). */
+export async function deleteEmptyShelves(user: UserPrincipal, zoneId: string, dryRun = false) {
+  const zone = await zoneOf(user.organizationId, zoneId);
+  const shelves = await db.shelf.findMany({ where: { zoneId: zone.id, deletedAt: null }, select: { id: true } });
+  if (!shelves.length) return { count: 0, removed: [] as string[] };
+  const rows = (await shelfInfos(user.organizationId, shelves.map((s) => s.id))).filter((r) => r.info.books === 0 && !r.info.blocked);
+  const labels = rows.map((r) => r.info.label);
+  if (dryRun || !rows.length) return { count: rows.length, removed: labels };
+  const result = await db.$transaction((tx) => removeShelvesTx(tx, user, rows, null), { timeout: 120_000 });
+  await audit(user, { action: "warehouse.empty_shelves_deleted", entityType: "warehouse", entityId: zone.id, data: { column: zone.code, ...result } });
+  return { count: rows.length, removed: labels };
+}
+
+export const deleteColumnSchema = z.object({ moveToLocationId: z.string().uuid().nullish() });
+
+export async function planColumnDeletion(user: UserPrincipal, zoneId: string) {
+  const zone = await zoneOf(user.organizationId, zoneId);
+  const shelves = await db.shelf.findMany({ where: { zoneId: zone.id, deletedAt: null }, select: { id: true } });
+  const plan = shelves.length ? toPlan(await shelfInfos(user.organizationId, shelves.map((s) => s.id))) : { shelves: [], books: 0, blocked: null };
+  return { column: zone.name, ...plan };
+}
+
+/** "מחק עמודה": its shelves go the same way as above; the column itself leaves the structure and its code stays reserved. */
+export async function deleteColumn(user: UserPrincipal, zoneId: string, input: z.infer<typeof deleteColumnSchema>) {
+  const zone = await zoneOf(user.organizationId, zoneId);
+  const result = await db.$transaction(
+    async (tx) => {
+      const shelves = await tx.shelf.findMany({ where: { zoneId: zone.id, deletedAt: null }, select: { id: true } });
+      const r = shelves.length ? await removeShelvesTx(tx, user, await shelfInfos(user.organizationId, shelves.map((s) => s.id), tx), input.moveToLocationId ?? null) : { moved: 0, physical: 0, logical: 0 };
+      await tx.warehouseZone.update({ where: { id: zone.id }, data: { deletedAt: new Date() } });
+      return r;
+    },
+    { timeout: 120_000 },
+  );
+  await audit(user, { action: "warehouse.column_deleted", entityType: "warehouse", entityId: zone.id, data: { column: zone.code, name: zone.name, ...result, moveTo: input.moveToLocationId ?? null } });
+  return result;
 }

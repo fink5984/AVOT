@@ -7,17 +7,16 @@ import { api } from "@/lib/api";
 interface Tree {
   id: string;
   name: string;
-  zones: { id: string; name: string; shelves: { id: string; code: string; locations: { id: string; cell: string; code: string; active: boolean }[] }[] }[];
+  zones: { id: string; name: string; shelves: { id: string; code: string; locations: { id: string; code: string; active: boolean }[] }[] }[];
 }
 const num = (c: string) => (/^\d+$/.test(c) ? String(Number(c)) : c);
 
-/** warehouse → column → shelf (→ cell) as three small selects; reports the chosen location (or null). No codes typed. */
-export function ShelfPicker({ onChange, className }: { onChange: (loc: { id: string; code: string; label: string } | null) => void; className?: string }) {
+/** warehouse → column → shelf as three small selects; reports the chosen location (or null). No codes typed. */
+export function ShelfPicker({ onChange, className, excludeShelfIds }: { onChange: (loc: { id: string; code: string; label: string } | null) => void; className?: string; excludeShelfIds?: Set<string> }) {
   const [tree, setTree] = useState<Tree[]>([]);
   const [wh, setWh] = useState("");
   const [zone, setZone] = useState("");
   const [shelf, setShelf] = useState("");
-  const [cell, setCell] = useState("");
 
   useEffect(() => {
     api<{ warehouses: Tree[] }>("/api/warehouse")
@@ -29,13 +28,11 @@ export function ShelfPicker({ onChange, className }: { onChange: (loc: { id: str
   }, []);
   useEffect(() => setZone(""), [wh]);
   useEffect(() => setShelf(""), [zone]);
-  useEffect(() => setCell(""), [shelf]);
 
   const w = tree.find((x) => x.id === wh);
   const z = w?.zones.find((x) => x.id === zone);
   const s = z?.shelves.find((x) => x.id === shelf);
-  const cells = s?.locations.filter((l) => l.active) ?? [];
-  const chosen = cells.length === 1 ? cells[0] : cells.find((l) => l.id === cell);
+  const chosen = s && !excludeShelfIds?.has(s.id) ? s.locations.find((l) => l.active) : undefined;
 
   useEffect(() => {
     onChange(chosen && w && z && s ? { id: chosen.id, code: chosen.code, label: [w.name, z.name, `מדף ${num(s.code)}`].join(" · ") } : null);
@@ -64,21 +61,11 @@ export function ShelfPicker({ onChange, className }: { onChange: (loc: { id: str
       <Select value={shelf} onChange={(e) => setShelf(e.target.value)} aria-label="מדף" disabled={!z} className="w-auto">
         <option value="">מדף…</option>
         {z?.shelves.map((x) => (
-          <option key={x.id} value={x.id} disabled={!x.locations.some((l) => l.active)}>
+          <option key={x.id} value={x.id} disabled={!x.locations.some((l) => l.active) || !!excludeShelfIds?.has(x.id)}>
             מדף {num(x.code)}
           </option>
         ))}
       </Select>
-      {cells.length > 1 && (
-        <Select value={cell} onChange={(e) => setCell(e.target.value)} aria-label="תא" className="w-auto">
-          <option value="">תא…</option>
-          {cells.map((l) => (
-            <option key={l.id} value={l.id}>
-              תא {num(l.cell)}
-            </option>
-          ))}
-        </Select>
-      )}
     </div>
   );
 }

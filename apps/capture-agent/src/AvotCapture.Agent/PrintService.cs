@@ -160,8 +160,8 @@ public sealed class PrintService : IDisposable
         var p = job.Printer;
         if (job.Format == "GDI")
         {
-            if (job.Labels is null || p.WindowsName is null) throw new PrintException("המשימה אינה כוללת תוויות או שם מדפסת Windows");
-            WindowsPrinting.PrintLabels(p.WindowsName, job.Stock, job.Copies, job.Labels);
+            if (job.Layouts is null || p.WindowsName is null) throw new PrintException("המשימה אינה כוללת עיצוב תווית או שם מדפסת Windows");
+            WindowsPrinting.PrintLabels(p.WindowsName, job.Stock, job.Copies, job.Layouts, job.Assets);
             return;
         }
         var bytes = Encoding.UTF8.GetBytes(job.Zpl ?? throw new PrintException("המשימה אינה כוללת תוכן להדפסה"));

@@ -3,12 +3,13 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Camera, Download, Gavel, Home, Library, LogOut, Menu as MenuIcon, ScanLine, Settings, Trash2, Warehouse, X } from "lucide-react";
+import { BarChart3, Camera, Download, Gavel, Home, Library, LogOut, Menu as MenuIcon, ScanBarcode, ScanLine, Settings, Trash2, Warehouse, X } from "lucide-react";
 import type { Role } from "@avot/shared";
 import { Wordmark } from "@/components/brand";
 import { t } from "@/i18n";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { WAREHOUSE_VIEW_ROLES } from "@/lib/nav-roles";
 import { HouseSwitcher, type HouseOption } from "@/components/house-switcher";
 import { GlobalSearch } from "./global-search";
 import { OutboxIndicator } from "./outbox-indicator";
@@ -30,7 +31,9 @@ const MAIN: NavItem[] = [
   { href: "/inventory", label: "מלאי ספרים", icon: Library, also: ["/search", "/labels"] },
   { href: "/capture", label: "צילום", icon: Camera, roles: ["ADMIN", "EDITOR", "PHOTOGRAPHER"] },
   { href: "/houses", label: "קטלוגים ומכירות", icon: Gavel, roles: ALL_BUT_WAREHOUSE, exact: true, also: ["/catalogs", "/lots"] },
-  { href: "/warehouse", label: "מחסן", icon: Warehouse, roles: ["ADMIN", "EDITOR", "WAREHOUSE", "VIEWER"] },
+  { href: "/warehouse", label: "מחסן", icon: Warehouse, roles: WAREHOUSE_VIEW_ROLES },
+  // the handheld: opens the phone interface (a computer gets the explanation with links to the warehouse and inventory)
+  { href: "/scanner", label: "מסופון", icon: ScanBarcode, roles: WAREHOUSE_VIEW_ROLES },
 ];
 
 const TOOLS: NavItem[] = [

@@ -11,6 +11,7 @@ import { requirementsSchema } from "./catalogs";
 import { changeStatus } from "./item-status";
 import { assignToCatalog, syncItemCommercial } from "./assignments";
 import { createItemTx, findItemByOpId, itemProgress, setItemCategoryNote, type CategoryProgress } from "./inventory";
+import { locationInclude, locationLabel } from "./location-label";
 
 /*
  * A Lot is a catalog lot: one inventory book's participation in a catalog.
@@ -278,7 +279,7 @@ export async function listLots(
           }
         : {}),
     },
-    include: { item: { select: { inventoryNumber: true, primaryAssetId: true, physicalStatus: true, currentLocation: { select: { code: true } } } } },
+    include: { item: { select: { inventoryNumber: true, primaryAssetId: true, physicalStatus: true, currentLocation: { include: locationInclude } } } },
     orderBy:
       opts.sort === "title"
         ? { title: "asc" }
@@ -309,7 +310,7 @@ export async function listLots(
       ...l,
       inventoryNumber: item.inventoryNumber,
       physicalStatus: item.physicalStatus,
-      locationCode: item.currentLocation?.code ?? null,
+      locationLabel: item.currentLocation ? locationLabel(item.currentLocation) : null,
       counts: byCat,
       thumbAssetId: l.primaryAssetId ?? item.primaryAssetId ?? firstThumbs.find((t) => t.inventoryItemId === l.inventoryItemId)?.id ?? null,
     };

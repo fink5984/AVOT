@@ -74,7 +74,7 @@ export async function countReport(orgId: string, sessionId: string): Promise<Cou
     }),
     db.inventoryItem.findMany({
       where: { id: { in: session.entries.map((e) => e.inventoryItemId) } },
-      select: { id: true, inventoryNumber: true, title: true, currentLocationId: true, physicalStatus: true, currentLocation: { select: { code: true } } },
+      include: { currentLocation: { include: locationInclude } },
     }),
   ]);
   const found = new Map(foundItems.map((i) => [i.id, i]));
@@ -94,19 +94,19 @@ export async function countReport(orgId: string, sessionId: string): Promise<Cou
     const expected = expectedItems.filter((i) => i.currentLocationId === l.id).length;
     if (visited.has(l.id)) {
       report.visited.push({ id: l.id, code: l.code, label: locationLabel(l), expected, found: session.entries.filter((e) => e.locationId === l.id).length });
-    } else if (expected) report.notVisited.push({ code: l.code, expected });
+    } else if (expected) report.notVisited.push({ code: locationLabel(l), expected });
   }
   for (const i of expectedItems) {
-    if (visited.has(i.currentLocationId!) && !scanned.has(i.id)) report.missing.push({ itemId: i.id, inventoryNumber: i.inventoryNumber, title: i.title, locationCode: locById.get(i.currentLocationId!)!.code });
+    if (visited.has(i.currentLocationId!) && !scanned.has(i.id)) report.missing.push({ itemId: i.id, inventoryNumber: i.inventoryNumber, title: i.title, locationCode: locationLabel(locById.get(i.currentLocationId!)!) });
   }
   for (const e of session.entries) {
     const i = found.get(e.inventoryItemId);
     if (!i) continue;
-    const foundCode = locById.get(e.locationId)?.code ?? "?";
+    const foundCode = locById.get(e.locationId) ? locationLabel(locById.get(e.locationId)!) : "?";
     if (i.currentLocationId === e.locationId && i.physicalStatus !== "MISSING") report.matched++;
     else if (!i.currentLocationId || i.physicalStatus === "MISSING" || i.physicalStatus === "SHIPPED")
       report.surplus.push({ entryId: e.id, itemId: i.id, inventoryNumber: i.inventoryNumber, title: i.title, foundCode, foundId: e.locationId, physicalStatus: i.physicalStatus });
-    else report.wrongLocation.push({ entryId: e.id, itemId: i.id, inventoryNumber: i.inventoryNumber, title: i.title, foundCode, foundId: e.locationId, recordedCode: i.currentLocation?.code ?? "—" });
+    else report.wrongLocation.push({ entryId: e.id, itemId: i.id, inventoryNumber: i.inventoryNumber, title: i.title, foundCode, foundId: e.locationId, recordedCode: i.currentLocation ? locationLabel(i.currentLocation) : "—" });
   }
   report.visited.sort((a, b) => a.code.localeCompare(b.code));
   return report;

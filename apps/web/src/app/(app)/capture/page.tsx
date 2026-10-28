@@ -5,6 +5,7 @@ import { PhotoStatusBadge } from "@/components/ui/badge";
 import { PageBody, PageHeader, Panel } from "@/components/ui/misc";
 import { fmt } from "@/i18n";
 import { CaptureOpener } from "./capture-client";
+import { locationInclude, locationLabel } from "@/server/services/location-label";
 
 export const metadata = { title: "צילום" };
 
@@ -21,7 +22,7 @@ export default async function CaptureHome() {
       where: { organizationId: org, photoStatus: { in: ["NOT_STARTED", "NEEDS_RESHOOT", "IN_PROGRESS"] }, physicalStatus: { notIn: ["SHIPPED"] } },
       orderBy: [{ photoStatus: "desc" }, { serial: "asc" }],
       take: 30,
-      select: { id: true, inventoryNumber: true, title: true, photoStatus: true, photoCount: true, currentLocation: { select: { code: true } } },
+      select: { id: true, inventoryNumber: true, title: true, photoStatus: true, photoCount: true, currentLocation: { include: locationInclude } },
     }),
     db.captureSession.findMany({
       where: { userId: user.userId, inventoryItemId: { not: null } },
@@ -45,7 +46,7 @@ export default async function CaptureHome() {
                   <Link href={`/capture/${i.id}`} className="flex items-center gap-3 px-5 py-2.5 hover:bg-stone-2">
                     <span className="num w-28 font-mono text-[12.5px] text-muted">{i.inventoryNumber}</span>
                     <span className="min-w-0 flex-1 truncate font-medium">{i.title}</span>
-                    {i.currentLocation && <span className="num font-mono text-[12px] text-muted">{i.currentLocation.code}</span>}
+                    {i.currentLocation && <span className="text-[12px] text-muted">{locationLabel(i.currentLocation)}</span>}
                     <span className="num text-[12px] text-muted">{i.photoCount} תמונות</span>
                     <PhotoStatusBadge status={i.photoStatus} />
                   </Link>

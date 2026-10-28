@@ -1,0 +1,210 @@
+[
+ {
+  "widthMm": 57,
+  "heightMm": 32,
+  "type": "BOOK",
+  "items": [
+   {
+    "kind": "image",
+    "role": "logo",
+    "x": 2,
+    "y": 2.71,
+    "w": 13.86,
+    "h": 9.24
+   },
+   {
+    "kind": "text",
+    "role": "title",
+    "text": "מקור חיים",
+    "sizeMm": 5,
+    "minSizeMm": 2.6,
+    "x": 17.06,
+    "y": 2,
+    "w": 37.94,
+    "h": 10.66,
+    "bold": true,
+    "align": "center",
+    "valign": "middle",
+    "maxLines": 2
+   },
+   {
+    "kind": "barcode",
+    "code": "10000041",
+    "x": 2,
+    "y": 13.86,
+    "w": 53,
+    "h": 10,
+    "moduleMmMin": 0.25,
+    "moduleMmMax": 0.5,
+    "quietModules": 10
+   },
+   {
+    "kind": "text",
+    "role": "number",
+    "text": "10000041",
+    "x": 2,
+    "y": 25.06,
+    "w": 53,
+    "h": 4.94,
+    "sizeMm": 3.8,
+    "minSizeMm": 2.4,
+    "bold": false,
+    "align": "center",
+    "valign": "top",
+    "maxLines": 1
+   }
+  ]
+ },
+ {
+  "widthMm": 57,
+  "heightMm": 32,
+  "type": "BOOK",
+  "items": [
+   {
+    "kind": "image",
+    "role": "logo",
+    "x": 2,
+    "y": 2.71,
+    "w": 13.86,
+    "h": 9.24
+   },
+   {
+    "kind": "text",
+    "role": "title",
+    "text": "שולחן ערוך — אורח חיים, עם פירוש משנה ברורה ובאר היטב והגהות הגר״א (דפוס וילנא)",
+    "sizeMm": 5,
+    "minSizeMm": 2.6,
+    "x": 17.06,
+    "y": 2,
+    "w": 37.94,
+    "h": 10.66,
+    "bold": true,
+    "align": "center",
+    "valign": "middle",
+    "maxLines": 2
+   },
+   {
+    "kind": "barcode",
+    "code": "10000041",
+    "x": 2,
+    "y": 13.86,
+    "w": 53,
+    "h": 10,
+    "moduleMmMin": 0.25,
+    "moduleMmMax": 0.5,
+    "quietModules": 10
+   },
+   {
+    "kind": "text",
+    "role": "number",
+    "text": "10000041",
+    "x": 2,
+    "y": 25.06,
+    "w": 53,
+    "h": 4.94,
+    "sizeMm": 3.8,
+    "minSizeMm": 2.4,
+    "bold": false,
+    "align": "center",
+    "valign": "top",
+    "maxLines": 1
+   }
+  ]
+ },
+ {
+  "widthMm": 70,
+  "heightMm": 40,
+  "type": "LOCATION",
+  "items": [
+   {
+    "kind": "text",
+    "role": "title",
+    "text": "מדף 4",
+    "sizeMm": 10,
+    "minSizeMm": 5,
+    "x": 2,
+    "y": 2,
+    "w": 66,
+    "h": 19.94,
+    "bold": true,
+    "align": "center",
+    "valign": "bottom",
+    "maxLines": 2
+   },
+   {
+    "kind": "text",
+    "role": "subtitle",
+    "text": "מחסן 1 › עמודה 4",
+    "sizeMm": 3.6,
+    "minSizeMm": 2.2,
+    "x": 2,
+    "y": 21.94,
+    "w": 66,
+    "h": 4.86,
+    "bold": false,
+    "align": "center",
+    "valign": "top",
+    "maxLines": 1
+   },
+   {
+    "kind": "barcode",
+    "code": "LOC-W1-C4-04",
+    "x": 2,
+    "y": 28,
+    "w": 66,
+    "h": 10,
+    "moduleMmMin": 0.25,
+    "moduleMmMax": 0.5,
+    "quietModules": 10
+   }
+  ]
+ },
+ {
+  "widthMm": 70,
+  "heightMm": 40,
+  "type": "ZONE",
+  "items": [
+   {
+    "kind": "text",
+    "role": "title",
+    "text": "עמודה 4",
+    "sizeMm": 12,
+    "minSizeMm": 5.4,
+    "x": 2,
+    "y": 2,
+    "w": 66,
+    "h": 20.94,
+    "bold": true,
+    "align": "center",
+    "valign": "bottom",
+    "maxLines": 2
+   },
+   {
+    "kind": "text",
+    "role": "subtitle",
+    "text": "מחסן 1",
+    "sizeMm": 3.6,
+    "minSizeMm": 2.2,
+    "x": 2,
+    "y": 22.94,
+    "w": 66,
+    "h": 4.86,
+    "bold": false,
+    "align": "center",
+    "valign": "top",
+    "maxLines": 1
+   },
+   {
+    "kind": "barcode",
+    "code": "COL-W1-C4",
+    "x": 2,
+    "y": 29,
+    "w": 66,
+    "h": 9,
+    "moduleMmMin": 0.25,
+    "moduleMmMax": 0.5,
+    "quietModules": 10
+   }
+  ]
+ }
+]

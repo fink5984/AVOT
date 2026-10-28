@@ -5,7 +5,7 @@ import { createItem } from "@/server/services/inventory";
 import { createLot } from "@/server/services/lots";
 import { assignToCatalog } from "@/server/services/assignments";
 import { createCatalog } from "@/server/services/catalogs";
-import { bulkManualMove, createLocations, createShelf, createWarehouse, createZone } from "@/server/services/warehouse";
+import { bulkManualMove, createShelf, createWarehouse, createZone } from "@/server/services/warehouse";
 import {
   claimNextPrintJob,
   createPrintJobs,
@@ -125,22 +125,23 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
       const wh = await createWarehouse(ctx.admin, { code: "W1", name: "מחסן 1" });
       const zone = await createZone(ctx.admin, { warehouseId: wh.id, code: "C1", name: "עמודה 1" });
       const shelf = await createShelf(ctx.admin, { zoneId: zone.id, code: "01" });
-      const [loc] = await createLocations(ctx.admin, { shelfId: shelf.id, cells: ["01"] });
+      // a shelf comes with its one location
+      const loc = await db.storageLocation.findFirstOrThrow({ where: { shelfId: shelf.id } });
       const a = (await createItem(ctx.editor, { title: "מ1" })).item;
       const b = (await createItem(ctx.editor, { title: "מ2" })).item;
       const shipped = (await createItem(ctx.editor, { title: "נשלח" })).item;
       await db.inventoryItem.update({ where: { id: shipped.id }, data: { physicalStatus: "SHIPPED" } });
 
-      const r = await bulkManualMove(ctx.warehouse, { itemIds: [a.id, b.id, shipped.id], locationId: loc!.id });
+      const r = await bulkManualMove(ctx.warehouse, { itemIds: [a.id, b.id, shipped.id], locationId: loc.id });
       expect(r.done.sort()).toEqual([a.id, b.id].sort());
       expect(r.failed.map((f) => f.itemId)).toEqual([shipped.id]);
       const moves = await db.inventoryLocationMovement.findMany({ where: { inventoryItemId: a.id } });
       expect(moves).toHaveLength(1);
-      expect(moves[0]).toMatchObject({ toLocationId: loc!.id, fromLocationId: null, userId: ctx.warehouse.userId, kind: "MANUAL" });
+      expect(moves[0]).toMatchObject({ toLocationId: loc.id, fromLocationId: null, userId: ctx.warehouse.userId, kind: "MANUAL" });
       expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: a.id } })).physicalStatus).toBe("IN_STORAGE");
 
       // same shelf again = no new movement
-      await bulkManualMove(ctx.warehouse, { itemIds: [a.id], locationId: loc!.id });
+      await bulkManualMove(ctx.warehouse, { itemIds: [a.id], locationId: loc.id });
       expect(await db.inventoryLocationMovement.count({ where: { inventoryItemId: a.id } })).toBe(1);
     });
   });
@@ -257,8 +258,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
       const wh = await createWarehouse(ctx.admin, { code: "W2", name: "מחסן 2" });
       const zone = await createZone(ctx.admin, { warehouseId: wh.id, code: "C1", name: "עמודה 1" });
       for (const code of ["01", "02", "03"]) {
-        const s = await createShelf(ctx.admin, { zoneId: zone.id, code });
-        await createLocations(ctx.admin, { shelfId: s.id, cells: ["01"] });
+        await createShelf(ctx.admin, { zoneId: zone.id, code });
       }
       const [job] = await createPrintJobs(ctx.admin, { zoneId: zone.id });
       expect(job!.labelCount).toBe(4); // column label + 3 shelves
@@ -266,7 +266,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
       // drain both and look at the rendered ZPL
       const c1 = await claimNextPrintJob(agent);
       expect(c1!.zpl!).toContain("COL-W2-C1");
-      expect(c1!.zpl!).toContain("LOC-W2-C1-01-01");
+      expect(c1!.zpl!).toContain("LOC-W2-C1-01");
       const c2 = await claimNextPrintJob(agent);
       expect(c2!.jobId).toBe(t.id);
       expect((await listPrintJobs(ctx.org.id)).length).toBeGreaterThan(5);

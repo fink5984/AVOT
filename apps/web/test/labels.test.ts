@@ -2,9 +2,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { code128Modules } from "@/lib/barcode/code128";
 import { renderTextBitmap, type Bitmap } from "@/server/labels/bitmap";
-import { barcodeModuleWidth, labelStock, renderZpl } from "@/server/labels/zpl";
+import { labelStock, renderZpl } from "@/server/labels/zpl";
 
 /** unpacks a printer bitmap (1 = black) into a grey image buffer for inspection */
 function toGrey(b: Bitmap) {
@@ -52,22 +51,23 @@ describe("label text bitmaps (Hebrew, RTL)", () => {
   });
 });
 
-describe("book / shelf / column label ZPL", () => {
+describe("book / shelf / column label ZPL (one engine)", () => {
   const stock = labelStock("57x32");
 
-  it("book label: scannable native Code 128 of the stored barcode, readable number, Hebrew as graphic", async () => {
-    const zpl = await renderZpl([{ type: "BOOK", code: "ITM-000184", inventoryNumber: "ITM-000184", title: "תלמוד בבלי — מסכת ברכות" }], { stock });
+  it("book label: native Code 128 of the stored barcode, text as graphics, nothing else", async () => {
+    const zpl = await renderZpl([{ type: "BOOK", code: "10000041", inventoryNumber: "10000041", title: "תלמוד בבלי — מסכת ברכות" }], { stock });
     expect(zpl).toMatch(/^\^XA/);
     expect(zpl).toContain("^PW456");
     expect(zpl).toContain("^LL256");
     expect(zpl).toMatch(/\^BY\d,3,\d+\^BCN,\d+,N,N,N/);
-    expect(zpl.match(/\^FH\\\^FDITM-000184\^FS/g)).toHaveLength(2); // barcode + readable number
-    const gf = zpl.match(/\^GFA,(\d+),(\d+),(\d+),([0-9A-F]+)\^FS/);
-    expect(gf).toBeTruthy();
-    const [, total, total2, perRow, hex] = gf!;
-    expect(total).toBe(total2);
-    expect(hex!.length).toBe(Number(total) * 2);
-    expect(Number(perRow)).toBe(Math.ceil((456 - 2 * 16) / 8));
+    // the barcode is the only ASCII field; the title and the number are bitmaps drawn by the server
+    expect(zpl.match(/\^FH\\\^FD10000041\^FS/g)).toHaveLength(1);
+    const gfs = [...zpl.matchAll(/\^GFA,(\d+),(\d+),(\d+),([0-9A-F]+)\^FS/g)];
+    expect(gfs).toHaveLength(3); // logo + title + number
+    for (const [, total, total2, , hex] of gfs) {
+      expect(total).toBe(total2);
+      expect(hex!.length).toBe(Number(total) * 2);
+    }
     expect(zpl.trimEnd().endsWith("^XZ")).toBe(true);
   });
 
@@ -78,24 +78,15 @@ describe("book / shelf / column label ZPL", () => {
     expect(zpl).not.toContain("^FDAB^CD");
   });
 
-  it("long external barcodes get a thinner module so the symbol still fits", () => {
-    const code = "9781234567897-LONG-EXTERNAL-TAG-0001";
-    const avail = 456 - 32;
-    const { by, widthDots } = barcodeModuleWidth(code, avail, 3);
-    expect(widthDots).toBeLessThanOrEqual(avail);
-    expect(by).toBeLessThanOrEqual(3);
-    expect(code128Modules(code).length).toBeGreaterThan(50);
-  });
-
   it("shelf and column labels carry their own scannable codes", async () => {
     const zpl = await renderZpl(
       [
-        { type: "LOCATION", code: "LOC-C1-03-01", shelf: "מדף 3", path: "מחסן ראשי › עמודה 1" },
+        { type: "LOCATION", code: "LOC-C1-03", shelf: "מדף 3", path: "מחסן ראשי › עמודה 1" },
         { type: "ZONE", code: "COL-C1", name: "עמודה 1", warehouse: "מחסן ראשי" },
       ],
       { stock: labelStock("70x40"), dotsPerMm: 8 },
     );
-    expect(zpl).toContain("^FDLOC-C1-03-01");
+    expect(zpl).toContain("^FDLOC-C1-03");
     expect(zpl).toContain("^FDCOL-C1");
     expect(zpl.match(/\^XA/g)).toHaveLength(2);
     expect(zpl).toContain("^PW560");

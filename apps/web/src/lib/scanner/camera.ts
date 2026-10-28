@@ -1,5 +1,7 @@
 "use client";
 
+import { createScanGate } from "./scan-gate";
+
 /**
  * Phone-camera barcode scanning, entirely on the device: frames are decoded locally and only the decoded
  * text is ever sent anywhere. Uses the browser's BarcodeDetector where it exists (Chrome / Android) and a
@@ -26,29 +28,10 @@ export const CAMERA_ERROR_TEXT: Record<CameraErrorKind, string> = {
   error: "לא ניתן להפעיל את המצלמה.",
 };
 
-/**
- * Decides which decoded codes are reported. The same code seen again within `cooldownMs` (the camera sees
- * a barcode in ~20 consecutive frames) is dropped; a different code is reported at once; the same code is
- * reported again once it was out of sight for `gapMs` (scanning the same book twice on purpose).
- */
-export function createCodeGate(cooldownMs = 2500, gapMs = 900, now: () => number = Date.now) {
-  let last = "";
-  let lastSeen = 0;
-  let lastEmit = 0;
-  return (code: string): boolean => {
-    const t = now();
-    const sameAsLast = code === last;
-    const continuous = t - lastSeen <= gapMs;
-    lastSeen = t;
-    if (sameAsLast && (continuous || t - lastEmit < cooldownMs)) return false;
-    last = code;
-    lastEmit = t;
-    return true;
-  };
-}
-
 export interface CameraScanner {
   stop: () => void;
+  /** "סרוק שוב": the next sighting of the code in view counts as a new scan */
+  rearm: () => void;
   torchSupported: boolean;
   setTorch: (on: boolean) => Promise<boolean>;
   engine: "native" | "zxing";
@@ -95,13 +78,13 @@ export async function startCameraScanner(video: HTMLVideoElement, onCode: (code:
 
   const track = stream.getVideoTracks()[0]!;
   const caps = (track.getCapabilities?.() ?? {}) as MediaTrackCapabilities & { torch?: boolean };
-  const gate = createCodeGate();
+  const gate = createScanGate();
   let stopped = false;
   let timer = 0;
 
-  const emit = (raw: string) => {
-    const code = raw.trim();
-    if (code && gate(code)) onCode(code);
+  /** one decoded frame: every code in it (none = an empty frame, which is what releases a lock) */
+  const frame = (codes: string[]) => {
+    for (const code of gate.frame(codes)) onCode(code);
   };
 
   let decode: () => Promise<void>;
@@ -110,7 +93,7 @@ export async function startCameraScanner(video: HTMLVideoElement, onCode: (code:
   if (native) {
     decode = async () => {
       const found = await native.detect(video).catch(() => []);
-      for (const f of found) emit(f.rawValue);
+      frame(found.map((f) => f.rawValue));
     };
   } else {
     engine = "zxing";
@@ -126,7 +109,7 @@ export async function startCameraScanner(video: HTMLVideoElement, onCode: (code:
     decode = async () => {
       const w = video.videoWidth;
       const h = video.videoHeight;
-      if (!w || !h) return;
+      if (!w || !h) return; // no picture yet: not an empty frame
       // the central band is where the worker aims; a smaller image decodes faster
       const cw = Math.min(w, 960);
       const ch = Math.round(cw * (h / w));
@@ -135,9 +118,9 @@ export async function startCameraScanner(video: HTMLVideoElement, onCode: (code:
       ctx.drawImage(video, 0, 0, cw, ch);
       try {
         const bitmap = new zx.BinaryBitmap(new zx.HybridBinarizer(new zx.HTMLCanvasElementLuminanceSource(canvas)));
-        emit(reader.decode(bitmap).getText());
+        frame([reader.decode(bitmap).getText()]);
       } catch {
-        /* no barcode in this frame (NotFoundException) */
+        frame([]); // no barcode in this frame (NotFoundException)
       }
     };
   }
@@ -152,6 +135,7 @@ export async function startCameraScanner(video: HTMLVideoElement, onCode: (code:
 
   return {
     engine,
+    rearm: () => gate.rearm(),
     torchSupported: !!caps.torch,
     async setTorch(on) {
       try {

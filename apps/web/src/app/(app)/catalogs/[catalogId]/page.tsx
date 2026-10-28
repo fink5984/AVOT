@@ -50,7 +50,7 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
     inventoryNumber: l.inventoryNumber,
     assignmentStatus: l.assignmentStatus,
     commercialStatus: l.commercialStatus,
-    locationCode: l.locationCode,
+    locationLabel: l.locationLabel,
   }));
   const activeLots = lots.filter((l) => l.assignmentStatus === "ACTIVE").length;
   const sold = lots.filter((l) => l.commercialStatus === "SOLD").length;

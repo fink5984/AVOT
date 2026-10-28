@@ -224,15 +224,15 @@ enum JobStatus {
 }
 
 model Organization {
-  id        String   @id @default(uuid()) @db.Uuid
-  name      String
-  slug      String   @unique
+  id                 String   @id @default(uuid()) @db.Uuid
+  name               String
+  slug               String   @unique
   /// days a soft-deleted photo stays restorable before purge
-  trashRetentionDays Int @default(30)
+  trashRetentionDays Int      @default(30)
   /// last allocated InventoryItem.serial (allocated with UPDATE … RETURNING, never reused)
-  inventorySerialSeq BigInt @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  inventorySerialSeq BigInt   @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   users          User[]
   auctionHouses  AuctionHouse[]
@@ -251,6 +251,7 @@ model Organization {
   cameraProfiles CameraProfile[]
   printers       Printer[]
   printJobs      PrintJob[]
+  labelTemplates LabelTemplate[]
 }
 
 model User {
@@ -265,16 +266,16 @@ model User {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
-  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  sessions       Session[]
-  preferences    UserPreference[]
-  createdAssets  PhotoAsset[]     @relation("AssetCreatedBy")
-  auditLogs      AuditLog[]
-  captureSession CaptureSession[]
-  resetTokens    PasswordResetToken[]
-  assignedDevices Device[]        @relation("DeviceAssignedUser")
+  organization    Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  sessions        Session[]
+  preferences     UserPreference[]
+  createdAssets   PhotoAsset[]         @relation("AssetCreatedBy")
+  auditLogs       AuditLog[]
+  captureSession  CaptureSession[]
+  resetTokens     PasswordResetToken[]
+  assignedDevices Device[]             @relation("DeviceAssignedUser")
   /// empty = every auction house; otherwise only these houses' commercial data
-  houseAccess    UserHouseAccess[]
+  houseAccess     UserHouseAccess[]
 
   @@index([organizationId])
 }
@@ -318,54 +319,54 @@ model UserHouseAccess {
 /// One physical copy. Two copies of the same title are two items. The serial /
 /// inventory number never changes, whichever house or catalog the book is in.
 model InventoryItem {
-  id              String           @id @default(uuid()) @db.Uuid
-  organizationId  String           @db.Uuid
+  id                    String           @id @default(uuid()) @db.Uuid
+  organizationId        String           @db.Uuid
   /// sequence number; the public inventory number is 10000000 + serial and is never reused
-  serial          BigInt
+  serial                BigInt
   /// "ITM-000184" — brand-neutral, printed on the book's tag
-  inventoryNumber String
+  inventoryNumber       String
   /// Code 128 payload; equals inventoryNumber unless an external tag was registered
-  barcode         String
-  title           String
-  subtitle        String?
-  author          String?
-  printPlace      String?
-  printYear       String?
-  publisher       String?
-  bibliographicNotes String?
-  internalNotes   String?
+  barcode               String
+  title                 String
+  subtitle              String?
+  author                String?
+  printPlace            String?
+  printYear             String?
+  publisher             String?
+  bibliographicNotes    String?
+  internalNotes         String?
   /// physical condition of the copy (binding, foxing …)
-  conditionNotes  String?
-  heightMm        Int?
-  widthMm         Int?
-  depthMm         Int?
-  sizeCategory    BookSize         @default(UNKNOWN)
+  conditionNotes        String?
+  heightMm              Int?
+  widthMm               Int?
+  depthMm               Int?
+  sizeCategory          BookSize         @default(UNKNOWN)
   /// photography workflow (same values as the legacy Lot.status)
-  photoStatus     LotStatus        @default(NOT_STARTED)
-  physicalStatus  PhysicalStatus   @default(AWAITING_STORAGE)
-  commercialStatus CommercialStatus @default(UNASSIGNED)
+  photoStatus           LotStatus        @default(NOT_STARTED)
+  physicalStatus        PhysicalStatus   @default(AWAITING_STORAGE)
+  commercialStatus      CommercialStatus @default(UNASSIGNED)
   /// CategoryRequirements for photography
-  requirements    Json
+  requirements          Json
   /// denormalised, maintained transactionally with PhotoAsset writes
-  photoCount      Int              @default(0)
-  primaryAssetId  String?          @db.Uuid
-  currentLocationId String?        @db.Uuid
-  locationUpdatedAt DateTime?
+  photoCount            Int              @default(0)
+  primaryAssetId        String?          @db.Uuid
+  currentLocationId     String?          @db.Uuid
+  locationUpdatedAt     DateTime?
   /// set when the item was created by the Phase 2 migration from a legacy lot
-  migratedFromLotId String?        @unique @db.Uuid
+  migratedFromLotId     String?          @unique @db.Uuid
   /// client-generated key of the "create" request — a double Enter / retried request never creates a second book
-  createOpId      String?          @db.Uuid
+  createOpId            String?          @db.Uuid
   /// set when a permanent deletion was requested: the book is hidden from everyday work until its files are gone
-  deletionRequestedAt DateTime?
-  deletionRequestedById String?    @db.Uuid
-  receivedAt      DateTime         @default(now())
-  photoCompletedAt DateTime?
-  createdById     String?          @db.Uuid
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  deletionRequestedAt   DateTime?
+  deletionRequestedById String?          @db.Uuid
+  receivedAt            DateTime         @default(now())
+  photoCompletedAt      DateTime?
+  createdById           String?          @db.Uuid
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
 
-  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  currentLocation StorageLocation? @relation(fields: [currentLocationId], references: [id], onDelete: Restrict)
+  organization    Organization                @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  currentLocation StorageLocation?            @relation(fields: [currentLocationId], references: [id], onDelete: Restrict)
   lots            Lot[]
   assets          PhotoAsset[]
   categoryNotes   InventoryCategoryNote[]
@@ -493,21 +494,21 @@ model UserPreference {
 }
 
 model Catalog {
-  id             String        @id @default(uuid()) @db.Uuid
-  organizationId String        @db.Uuid
-  auctionHouseId String        @db.Uuid
+  id                  String        @id @default(uuid()) @db.Uuid
+  organizationId      String        @db.Uuid
+  auctionHouseId      String        @db.Uuid
   /// human catalog number, e.g. "3" or "2026-A"; unique per auction house
-  number         String
-  name           String
-  description    String?
-  saleDate       DateTime?     @db.Date
-  status         CatalogStatus @default(DRAFT)
-  coverAssetId   String?       @db.Uuid
+  number              String
+  name                String
+  description         String?
+  saleDate            DateTime?     @db.Date
+  status              CatalogStatus @default(DRAFT)
+  coverAssetId        String?       @db.Uuid
   /// default CategoryRequirements applied to new lots
   defaultRequirements Json
-  archivedAt     DateTime?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  archivedAt          DateTime?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   auctionHouse AuctionHouse @relation(fields: [auctionHouseId], references: [id], onDelete: Restrict)
@@ -525,49 +526,49 @@ model Catalog {
 /// At most one ACTIVE assignment per item — enforced by the partial unique
 /// index "Lot_inventoryItemId_active_key" (raw SQL in the migration).
 model Lot {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @db.Uuid
-  catalogId      String    @db.Uuid
-  inventoryItemId String   @db.Uuid
-  lotNumber      Int
-  sortOrder      Int
-  title          String
-  subtitle       String?
+  id               String              @id @default(uuid()) @db.Uuid
+  organizationId   String              @db.Uuid
+  catalogId        String              @db.Uuid
+  inventoryItemId  String              @db.Uuid
+  lotNumber        Int
+  sortOrder        Int
+  title            String
+  subtitle         String?
   shortDescription String?
   /// long catalog description (versioned in LotDescriptionVersion)
-  description    String?
-  internalNotes  String?
-  author         String?
-  printYear      String?
-  printPlace     String?
+  description      String?
+  internalNotes    String?
+  author           String?
+  printYear        String?
+  printPlace       String?
   /// mirror of InventoryItem.photoStatus, kept in the same transaction
-  status         LotStatus @default(NOT_STARTED)
+  status           LotStatus           @default(NOT_STARTED)
   /// legacy per-lot requirements; photography requirements now live on the item
-  requirements   Json
+  requirements     Json
   /// mirror of the item's photo count
-  photoCount     Int       @default(0)
+  photoCount       Int                 @default(0)
   /// catalog-specific primary photo (null → the item's primary photo)
-  primaryAssetId String?   @db.Uuid
-  completedAt    DateTime?
+  primaryAssetId   String?             @db.Uuid
+  completedAt      DateTime?
   assignmentStatus LotAssignmentStatus @default(ACTIVE)
   commercialStatus CommercialStatus    @default(ASSIGNED)
-  assignedAt     DateTime  @default(now())
-  assignedById   String?   @db.Uuid
-  endedAt        DateTime?
-  endReason      String?
+  assignedAt       DateTime            @default(now())
+  assignedById     String?             @db.Uuid
+  endedAt          DateTime?
+  endReason        String?
   /// reference to a designed catalog page (future layout module)
-  pageRef        Json?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  pageRef          Json?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  catalog      Catalog       @relation(fields: [catalogId], references: [id], onDelete: Restrict)
-  item         InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
-  assets       PhotoAsset[]
-  categoryNotes LotCategoryNote[]
-  displayAssets LotDisplayAsset[]
+  organization        Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  catalog             Catalog                 @relation(fields: [catalogId], references: [id], onDelete: Restrict)
+  item                InventoryItem           @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  assets              PhotoAsset[]
+  categoryNotes       LotCategoryNote[]
+  displayAssets       LotDisplayAsset[]
   descriptionVersions LotDescriptionVersion[]
-  pickTasks    PickTask[]
+  pickTasks           PickTask[]
 
   @@unique([catalogId, lotNumber])
   @@index([organizationId])
@@ -622,65 +623,65 @@ model LotCategoryNote {
 /// One shot (one shutter action). RAW+JPEG from the same shot are two PhotoFile
 /// rows under the same asset — the shot group.
 model PhotoAsset {
-  id             String        @id @default(uuid()) @db.Uuid
-  organizationId String        @db.Uuid
+  id               String               @id @default(uuid()) @db.Uuid
+  organizationId   String               @db.Uuid
   /// owner: source photos belong to the physical copy
-  inventoryItemId String       @db.Uuid
+  inventoryItemId  String               @db.Uuid
   /// provenance only — the catalog / lot the shot was taken for (null when shot from inventory)
-  catalogId      String?       @db.Uuid
-  lotId          String?       @db.Uuid
-  category       PhotoCategory
+  catalogId        String?              @db.Uuid
+  lotId            String?              @db.Uuid
+  category         PhotoCategory
   /// client-generated id of the capture request — the idempotency key
-  captureId      String        @db.Uuid
-  captureSessionId String?     @db.Uuid
-  source         CaptureSource
-  cameraName     String?
+  captureId        String               @db.Uuid
+  captureSessionId String?              @db.Uuid
+  source           CaptureSource
+  cameraName       String?
   /// per-item running number shown in the filmstrip (never reused)
-  sequence       Int
+  sequence         Int
   /// master order within the item + category
-  sortOrder      Int
+  sortOrder        Int
   /// the item's primary photo
-  isPrimary      Boolean       @default(false)
-  displayName    String?
-  notes          String?
+  isPrimary        Boolean              @default(false)
+  displayName      String?
+  notes            String?
   /// non-destructive view transforms
-  rotation       Int           @default(0)
-  crop           Json?
-  width          Int?
-  height         Int?
-  exif           Json?
-  capturedAt     DateTime
+  rotation         Int                  @default(0)
+  crop             Json?
+  width            Int?
+  height           Int?
+  exif             Json?
+  capturedAt       DateTime
   /// thumbnail / preview derivatives (never the original)
-  thumbKey       String?
-  previewKey     String?
-  processingStatus ProcessingStatus @default(PENDING)
+  thumbKey         String?
+  previewKey       String?
+  processingStatus ProcessingStatus     @default(PENDING)
   /// green-screen processing: state, the settings snapshot taken at capture time (+ manual edits) and the outcome
-  imageState     ImageProcessingState @default(NONE)
-  processing     Json?
+  imageState       ImageProcessingState @default(NONE)
+  processing       Json?
   processingResult Json?
   /// full-resolution processed image (rotated, background removed, cropped); the original stays untouched
-  processedKey   String?
-  processedMime  String?
-  processedWidth Int?
-  processedHeight Int?
+  processedKey     String?
+  processedMime    String?
+  processedWidth   Int?
+  processedHeight  Int?
   /// automatic quality hints — advisory only, never used to delete or approve
-  quality        Json?
-  needsReshoot   Boolean       @default(false)
-  reshootNote    String?
-  createdById    String?       @db.Uuid
-  deletedAt      DateTime?
-  deletedById    String?       @db.Uuid
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  quality          Json?
+  needsReshoot     Boolean              @default(false)
+  reshootNote      String?
+  createdById      String?              @db.Uuid
+  deletedAt        DateTime?
+  deletedById      String?              @db.Uuid
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  item         InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
-  catalog      Catalog?      @relation(fields: [catalogId], references: [id], onDelete: SetNull)
-  lot          Lot?          @relation(fields: [lotId], references: [id], onDelete: SetNull)
-  createdBy    User?        @relation("AssetCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  captureSession CaptureSession? @relation(fields: [captureSessionId], references: [id], onDelete: SetNull)
-  files        PhotoFile[]
-  lotDisplay   LotDisplayAsset[]
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  item           InventoryItem     @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  catalog        Catalog?          @relation(fields: [catalogId], references: [id], onDelete: SetNull)
+  lot            Lot?              @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  createdBy      User?             @relation("AssetCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  captureSession CaptureSession?   @relation(fields: [captureSessionId], references: [id], onDelete: SetNull)
+  files          PhotoFile[]
+  lotDisplay     LotDisplayAsset[]
 
   @@unique([organizationId, captureId])
   @@index([inventoryItemId, category, deletedAt, sortOrder])
@@ -715,21 +716,21 @@ model PhotoFile {
 }
 
 model CaptureSession {
-  id             String               @id @default(uuid()) @db.Uuid
-  organizationId String               @db.Uuid
-  userId         String               @db.Uuid
-  deviceId       String?              @db.Uuid
-  cameraKind     String
-  cameraName     String?
-  inventoryItemId String?             @db.Uuid
-  catalogId      String?              @db.Uuid
-  lotId          String?              @db.Uuid
-  activeCategory PhotoCategory
-  status         CaptureSessionStatus @default(ACTIVE)
-  shotCount      Int                  @default(0)
-  startedAt      DateTime             @default(now())
-  lastActivityAt DateTime             @default(now())
-  endedAt        DateTime?
+  id              String               @id @default(uuid()) @db.Uuid
+  organizationId  String               @db.Uuid
+  userId          String               @db.Uuid
+  deviceId        String?              @db.Uuid
+  cameraKind      String
+  cameraName      String?
+  inventoryItemId String?              @db.Uuid
+  catalogId       String?              @db.Uuid
+  lotId           String?              @db.Uuid
+  activeCategory  PhotoCategory
+  status          CaptureSessionStatus @default(ACTIVE)
+  shotCount       Int                  @default(0)
+  startedAt       DateTime             @default(now())
+  lastActivityAt  DateTime             @default(now())
+  endedAt         DateTime?
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -760,35 +761,35 @@ model CameraProfile {
 
 /// A paired capture station (Windows Capture Agent).
 model Device {
-  id             String    @id @default(uuid()) @db.Uuid
-  organizationId String    @db.Uuid
-  name           String
+  id                String    @id @default(uuid()) @db.Uuid
+  organizationId    String    @db.Uuid
+  name              String
   /// CAPTURE (camera station) | PRINT (label print agent)
-  kind           String    @default("CAPTURE")
-  machineName    String?
+  kind              String    @default("CAPTURE")
+  machineName       String?
   /// sha256 of the bearer token used by the agent for server calls
-  tokenHash      String    @unique
+  tokenHash         String    @unique
   /// AES-GCM encrypted HMAC secret shared with the agent (signs browser control tokens)
-  secretEnc      String
-  assignedUserId String?   @db.Uuid
-  agentVersion   String?
-  apiVersion     Int?
-  cameraKind     String?
-  cameraModel    String?
-  cameraConnected Boolean  @default(false)
+  secretEnc         String
+  assignedUserId    String?   @db.Uuid
+  agentVersion      String?
+  apiVersion        Int?
+  cameraKind        String?
+  cameraModel       String?
+  cameraConnected   Boolean   @default(false)
   /// print agents: JSON status of the printers it drives, and the agent's own report
-  printStatus    Json?
-  storagePath    String?
-  freeDiskBytes  BigInt?
-  pendingUploads Int       @default(0)
-  failedUploads  Int       @default(0)
-  lastSyncAt     DateTime?
-  lastError      String?
-  controllingUserId String? @db.Uuid
-  lastSeenAt     DateTime?
-  revokedAt      DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  printStatus       Json?
+  storagePath       String?
+  freeDiskBytes     BigInt?
+  pendingUploads    Int       @default(0)
+  failedUploads     Int       @default(0)
+  lastSyncAt        DateTime?
+  lastError         String?
+  controllingUserId String?   @db.Uuid
+  lastSeenAt        DateTime?
+  revokedAt         DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   assignedUser User?            @relation("DeviceAssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
@@ -841,19 +842,19 @@ model Job {
 }
 
 model AuditLog {
-  id             String   @id @default(uuid()) @db.Uuid
-  organizationId String   @db.Uuid
-  userId         String?  @db.Uuid
-  deviceId       String?  @db.Uuid
-  action         String
-  entityType     String
-  entityId       String?
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @db.Uuid
+  userId          String?  @db.Uuid
+  deviceId        String?  @db.Uuid
+  action          String
+  entityType      String
+  entityId        String?
   /// lot id for quick "history of this lot" queries
-  lotId          String?  @db.Uuid
+  lotId           String?  @db.Uuid
   /// inventory item — "history of this book" across catalogs and houses
-  inventoryItemId String? @db.Uuid
-  data           Json?
-  createdAt      DateTime @default(now())
+  inventoryItemId String?  @db.Uuid
+  data            Json?
+  createdAt       DateTime @default(now())
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -864,7 +865,9 @@ model AuditLog {
   @@index([entityType, entityId])
 }
 
-/* ─────────────────────────── Warehouse ─────────────────────────── */
+/**
+ * ─────────────────────────── Warehouse ───────────────────────────
+ */
 
 model Warehouse {
   id             String   @id @default(uuid()) @db.Uuid
@@ -876,37 +879,41 @@ model Warehouse {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  zones        WarehouseZone[]
+  organization  Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  zones         WarehouseZone[]
   countSessions StockCountSession[]
 
   @@unique([organizationId, code])
 }
 
 model WarehouseZone {
-  id          String   @id @default(uuid()) @db.Uuid
-  warehouseId String   @db.Uuid
+  id          String    @id @default(uuid()) @db.Uuid
+  warehouseId String    @db.Uuid
   code        String
   name        String
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  /// taken out of the active structure (it has history, so the row stays; its code is never reused)
+  deletedAt   DateTime?
 
-  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
-  shelves   Shelf[]
+  warehouse     Warehouse           @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  shelves       Shelf[]
   countSessions StockCountSession[]
 
   @@unique([warehouseId, code])
 }
 
 model Shelf {
-  id        String   @id @default(uuid()) @db.Uuid
-  zoneId    String   @db.Uuid
+  id        String    @id @default(uuid()) @db.Uuid
+  zoneId    String    @db.Uuid
   code      String
   /// e.g. open shelf, closed cabinet, flat-file drawer, safe
   shelfType String?
   notes     String?
-  sortOrder Int      @default(0)
-  createdAt DateTime @default(now())
+  sortOrder Int       @default(0)
+  createdAt DateTime  @default(now())
+  /// taken out of the active structure (it has history, so the row stays; its code is never reused)
+  deletedAt DateTime?
 
   zone      WarehouseZone     @relation(fields: [zoneId], references: [id], onDelete: Restrict)
   locations StorageLocation[]
@@ -914,12 +921,13 @@ model Shelf {
   @@unique([zoneId, code])
 }
 
-/// The smallest addressable place (shelf cell / box). Code like LOC-A-03-02.
+/// The place a book is assigned to: exactly one active location per shelf (warehouse → column → shelf). Code like
+/// LOC-W1-C4-04. Older rows may be "merged" into the shelf's location (mergedIntoId) — they only keep history valid.
 model StorageLocation {
   id             String    @id @default(uuid()) @db.Uuid
   organizationId String    @db.Uuid
   shelfId        String    @db.Uuid
-  /// cell code within the shelf ("02")
+  /// legacy: the old cell level. New locations always get "01"; nothing reads it for work any more.
   cell           String
   /// unique human code, also the printed barcode
   code           String
@@ -929,18 +937,55 @@ model StorageLocation {
   isFull         Boolean   @default(false)
   notes          String?
   active         Boolean   @default(true)
-  /// zone/shelf/cell order used to sort pick routes
+  /// zone/shelf order used to sort pick routes
   sortKey        String
+  /// set when this was a cell of a shelf that was merged into one location: history keeps pointing here
+  mergedIntoId   String?   @db.Uuid
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  shelf     Shelf           @relation(fields: [shelfId], references: [id], onDelete: Restrict)
-  items     InventoryItem[]
-  movesFrom InventoryLocationMovement[] @relation("MoveFrom")
-  movesTo   InventoryLocationMovement[] @relation("MoveTo")
+  shelf      Shelf                       @relation(fields: [shelfId], references: [id], onDelete: Restrict)
+  aliases    StorageLocationAlias[]
+  mergedInto StorageLocation?            @relation("LocationMerge", fields: [mergedIntoId], references: [id], onDelete: Restrict)
+  mergedFrom StorageLocation[]           @relation("LocationMerge")
+  items      InventoryItem[]
+  movesFrom  InventoryLocationMovement[] @relation("MoveFrom")
+  movesTo    InventoryLocationMovement[] @relation("MoveTo")
 
   @@unique([organizationId, code])
   @@index([organizationId, sortKey])
+}
+
+/// Former barcodes of a shelf (printed "LOC-W1-C4-04-01"): scanning one still finds the shelf. Codes of deleted shelves are kept
+/// here too (locationId null), so no code is ever reused.
+model StorageLocationAlias {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  /// null = the shelf was deleted; the code stays reserved and is never given to another shelf
+  locationId     String?  @db.Uuid
+  alias          String
+  createdAt      DateTime @default(now())
+
+  location StorageLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, alias])
+  @@index([locationId])
+}
+
+/// The calibration of one kind of label (book / shelf / column) for the whole organization: the single design every
+/// print path uses. Only the values that differ from the built-in defaults are meaningful; see label-layout.ts.
+model LabelTemplate {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  /// BOOK | LOCATION | ZONE
+  type           String
+  profile        Json
+  updatedById    String?  @db.Uuid
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, type])
 }
 
 model InventoryLocationMovement {
@@ -969,29 +1014,29 @@ model InventoryLocationMovement {
 /// Every scan received from a scanner client, with its server outcome.
 /// opId is generated on the device per scan: re-sending is idempotent.
 model BarcodeScanEvent {
-  id             String     @id @default(uuid()) @db.Uuid
-  organizationId String     @db.Uuid
-  opId           String     @db.Uuid
-  userId         String?    @db.Uuid
-  mode           ScanMode
-  code           String
+  id                String     @id @default(uuid()) @db.Uuid
+  organizationId    String     @db.Uuid
+  opId              String     @db.Uuid
+  userId            String?    @db.Uuid
+  mode              ScanMode
+  code              String
   /// ITEM | LOCATION | COMMAND | UNKNOWN
-  codeType       String
-  inventoryItemId String?   @db.Uuid
-  locationId     String?    @db.Uuid
+  codeType          String
+  inventoryItemId   String?    @db.Uuid
+  locationId        String?    @db.Uuid
   /// active location the client had when the scan happened
-  contextLocationId String? @db.Uuid
-  result         ScanResult
-  message        String?
-  clientAt       DateTime
-  receivedAt     DateTime   @default(now())
+  contextLocationId String?    @db.Uuid
+  result            ScanResult
+  message           String?
+  clientAt          DateTime
+  receivedAt        DateTime   @default(now())
   /// arrived from the offline queue
-  deferred       Boolean    @default(false)
-  deviceLabel    String?
+  deferred          Boolean    @default(false)
+  deviceLabel       String?
   /// CONFLICT rows: how a manager resolved them
-  resolvedAt     DateTime?
-  resolvedById   String?    @db.Uuid
-  resolution     String?
+  resolvedAt        DateTime?
+  resolvedById      String?    @db.Uuid
+  resolution        String?
 
   @@unique([organizationId, opId])
   @@index([organizationId, receivedAt])
@@ -1014,8 +1059,8 @@ model StockCountSession {
   /// discrepancy report frozen at approval, and which corrections were applied
   result         Json?
 
-  warehouse Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
-  zone      WarehouseZone? @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+  warehouse Warehouse            @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  zone      WarehouseZone?       @relation(fields: [zoneId], references: [id], onDelete: SetNull)
   locations StockCountLocation[]
   entries   StockCountEntry[]
 
@@ -1035,14 +1080,14 @@ model StockCountLocation {
 }
 
 model StockCountEntry {
-  id              String   @id @default(uuid()) @db.Uuid
-  sessionId       String   @db.Uuid
-  locationId      String   @db.Uuid
-  inventoryItemId String   @db.Uuid
+  id                 String   @id @default(uuid()) @db.Uuid
+  sessionId          String   @db.Uuid
+  locationId         String   @db.Uuid
+  inventoryItemId    String   @db.Uuid
   /// where the database said the item was at scan time
-  expectedLocationId String? @db.Uuid
-  scannedById     String?  @db.Uuid
-  scannedAt       DateTime @default(now())
+  expectedLocationId String?  @db.Uuid
+  scannedById        String?  @db.Uuid
+  scannedAt          DateTime @default(now())
 
   session StockCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
@@ -1050,24 +1095,24 @@ model StockCountEntry {
 }
 
 model PickTask {
-  id              String     @id @default(uuid()) @db.Uuid
-  organizationId  String     @db.Uuid
-  inventoryItemId String     @db.Uuid
-  lotId           String?    @db.Uuid
-  reason          String
-  status          PickStatus @default(OPEN)
-  note            String?
+  id               String     @id @default(uuid()) @db.Uuid
+  organizationId   String     @db.Uuid
+  inventoryItemId  String     @db.Uuid
+  lotId            String?    @db.Uuid
+  reason           String
+  status           PickStatus @default(OPEN)
+  note             String?
   /// location when the task was created (the item may move later)
-  sourceLocationId String?   @db.Uuid
-  createdById     String?    @db.Uuid
-  createdAt       DateTime   @default(now())
-  pickedById      String?    @db.Uuid
-  pickedAt        DateTime?
-  packedById      String?    @db.Uuid
-  packedAt        DateTime?
-  shippedById     String?    @db.Uuid
-  shippedAt       DateTime?
-  cancelledAt     DateTime?
+  sourceLocationId String?    @db.Uuid
+  createdById      String?    @db.Uuid
+  createdAt        DateTime   @default(now())
+  pickedById       String?    @db.Uuid
+  pickedAt         DateTime?
+  packedById       String?    @db.Uuid
+  packedAt         DateTime?
+  shippedById      String?    @db.Uuid
+  shippedAt        DateTime?
+  cancelledAt      DateTime?
 
   item InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
   lot  Lot?          @relation(fields: [lotId], references: [id], onDelete: SetNull)
@@ -1076,7 +1121,9 @@ model PickTask {
   @@index([inventoryItemId])
 }
 
-/* ─────────────────────────── Label printing ─────────────────────────── */
+/**
+ * ─────────────────────────── Label printing ───────────────────────────
+ */
 
 /// A label printer. Only the print agent (a paired Device of kind PRINT) talks to it; the server
 /// never connects to a printer's local address.

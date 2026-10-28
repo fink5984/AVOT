@@ -19,6 +19,7 @@ export function CameraPane({ onCode, enabled, className }: { onCode: (code: stri
   const [torch, setTorch] = useState(false);
   const [torchOk, setTorchOk] = useState(false);
   const [flash, setFlash] = useState(0);
+  const [last, setLast] = useState<string | null>(null);
 
   async function start() {
     if (!video.current || scanner.current) return;
@@ -27,6 +28,7 @@ export function CameraPane({ onCode, enabled, className }: { onCode: (code: stri
     try {
       const s = await startCameraScanner(video.current, (c) => {
         setFlash((n) => n + 1);
+        setLast(c);
         handler.current(c);
       });
       scanner.current = s;
@@ -88,6 +90,18 @@ export function CameraPane({ onCode, enabled, className }: { onCode: (code: stri
             </>
           )}
         </div>
+      )}
+      {state === "on" && last && (
+        <button
+          type="button"
+          onClick={() => {
+            scanner.current?.rearm();
+            setLast(null);
+          }}
+          className="absolute bottom-2 start-2 h-11 rounded-full bg-black/60 px-4 text-[13.5px] font-semibold text-white"
+        >
+          סרוק שוב
+        </button>
       )}
       {state === "on" && torchOk && (
         <button

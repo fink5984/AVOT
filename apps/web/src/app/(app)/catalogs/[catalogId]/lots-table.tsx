@@ -37,7 +37,7 @@ export interface LotRow {
   inventoryNumber: string;
   assignmentStatus: "ACTIVE" | "ENDED";
   commercialStatus: CommercialStatus;
-  locationCode: string | null;
+  locationLabel: string | null;
 }
 
 type Sort = "number" | "title" | "updated" | "status";
@@ -346,7 +346,7 @@ export function LotsTable({
                     </Link>
                     <div className="truncate text-[12.5px] text-muted">
                       <span className="num font-mono text-[11.5px] text-ink-2">{l.inventoryNumber}</span>
-                      {l.locationCode && <span className="num ms-2 font-mono text-[11.5px]">{l.locationCode}</span>}
+                      {l.locationLabel && <span className="ms-2 text-[11.5px]">{l.locationLabel}</span>}
                       {(l.subtitle || l.author) && <span> · {[l.author, l.subtitle].filter(Boolean).join(" · ")}</span>}
                     </div>
                   </td>

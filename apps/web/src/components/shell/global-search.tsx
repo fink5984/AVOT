@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { BookOpen, CornerDownLeft, Loader2, Search } from "lucide-react";
+import { BookOpen, CornerDownLeft, Loader2, MapPin, Search } from "lucide-react";
 import type { CatalogStatus, LotStatus } from "@avot/shared";
 import { LotStatusBadge, PhotoStatusBadge } from "@/components/ui/badge";
 import { Kbd } from "@/components/ui/misc";
@@ -12,12 +12,27 @@ interface Result {
   directLotId: string | null;
   directItemId: string | null;
   directLocationId: string | null;
+  directLocation?: { id: string; label: string } | null;
   items: { id: string; inventoryNumber: string; title: string; author: string | null; photoStatus: LotStatus }[];
   lots: { id: string; lotNumber: number; title: string; subtitle: string | null; status: LotStatus; photoCount: number; catalog: { id: string; number: string; house: string } }[];
   catalogs: { id: string; number: string; name: string; status: CatalogStatus; house: string }[];
 }
 
 type Row = { key: string; href: string; node: React.ReactNode };
+
+async function fetchResults(needle: string, signal?: AbortSignal): Promise<Result | null> {
+  const r = await fetch(`/api/search?q=${encodeURIComponent(needle)}`, { signal, credentials: "same-origin" });
+  return r.ok ? ((await r.json()) as Result) : null;
+}
+
+/** where Enter goes for a result: a scanned/typed exact code opens its target, otherwise the highlighted row */
+function directHref(r: Result | null): string | null {
+  if (!r) return null;
+  if (r.directItemId) return `/inventory/${r.directItemId}`;
+  if (r.directLotId) return `/lots/${r.directLotId}`;
+  if (r.directLocationId) return `/warehouse/locations/${r.directLocationId}`;
+  return null;
+}
 
 /**
  * Global search with instant results. Typing shows matches right under the
@@ -34,6 +49,8 @@ export function GlobalSearch() {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
+  /** the query the shown result belongs to — Enter must never act on the answer to an older query */
+  const [resultFor, setResultFor] = useState("");
   const [active, setActive] = useState(0);
 
   useEffect(() => {
@@ -76,9 +93,10 @@ export function GlobalSearch() {
     const ctrl = new AbortController();
     const id = setTimeout(async () => {
       try {
-        const r = await fetch(`/api/search?q=${encodeURIComponent(needle)}`, { signal: ctrl.signal, credentials: "same-origin" });
-        if (r.ok) {
-          setResult((await r.json()) as Result);
+        const r = await fetchResults(needle, ctrl.signal);
+        if (r) {
+          setResult(r);
+          setResultFor(needle);
           setActive(0);
         }
       } catch {
@@ -95,6 +113,18 @@ export function GlobalSearch() {
 
   const rows: Row[] = [];
   if (result) {
+    if (result.directLocation) {
+      rows.push({
+        key: `loc-${result.directLocation.id}`,
+        href: `/warehouse/locations/${result.directLocation.id}`,
+        node: (
+          <>
+            <MapPin className="size-4 shrink-0 text-muted" />
+            <span className="min-w-0 flex-1 truncate font-medium">{result.directLocation.label}</span>
+          </>
+        ),
+      });
+    }
     for (const i of result.items.slice(0, 5)) {
       rows.push({
         key: `i-${i.id}`,
@@ -144,7 +174,7 @@ export function GlobalSearch() {
       });
     }
   }
-  const total = (result?.items.length ?? 0) + (result?.lots.length ?? 0) + (result?.catalogs.length ?? 0);
+  const total = rows.length === 0 ? 0 : (result?.items.length ?? 0) + (result?.lots.length ?? 0) + (result?.catalogs.length ?? 0) + (result?.directLocation ? 1 : 0);
 
   function go(href: string) {
     setOpen(false);
@@ -157,15 +187,27 @@ export function GlobalSearch() {
       ref={rootRef}
       role="search"
       className="relative w-full max-w-xl"
-      onSubmit={(e) => {
+      onSubmit={async (e) => {
         e.preventDefault();
         const needle = q.trim();
         if (!needle) return;
+        // A USB scanner sends Enter right after the last digit, usually before the debounced request has even
+        // started: resolve the code now instead of acting on the previous (or no) answer.
+        let r = result;
+        if (resultFor !== needle) {
+          setLoading(true);
+          try {
+            r = await fetchResults(needle);
+          } catch {
+            r = null;
+          } finally {
+            setLoading(false);
+          }
+        }
         // a scanned tag / label / shelf code opens its target directly
-        if (result?.directItemId) return go(`/inventory/${result.directItemId}`);
-        if (result?.directLotId) return go(`/lots/${result.directLotId}`);
-        if (result?.directLocationId) return go(`/warehouse/locations/${result.directLocationId}`);
-        if (open && rows[active]) return go(rows[active]!.href);
+        const direct = directHref(r);
+        if (direct) return go(direct);
+        if (r && r === result && open && rows[active]) return go(rows[active]!.href);
         go(`/search?q=${encodeURIComponent(needle)}`);
       }}
     >
@@ -213,7 +255,7 @@ export function GlobalSearch() {
 
       {open && q.trim() && (
         <div id={listId} className="animate-pop absolute inset-x-0 top-full z-50 mt-2 overflow-hidden rounded-xl border border-rule bg-paper shadow-pop">
-          {result && total === 0 && !loading ? (
+          {result && resultFor === q.trim() && total === 0 && !loading ? (
             <p className="px-4 py-6 text-center text-[13px] text-muted">לא נמצאו ספרים או קטלוגים עבור ״{q.trim()}״</p>
           ) : !result ? (
             <p className="px-4 py-6 text-center text-[13px] text-muted">מחפש…</p>

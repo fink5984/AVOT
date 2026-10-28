@@ -14,7 +14,8 @@ import { PageHeader, Panel } from "@/components/ui/misc";
 import { HouseMark } from "@/components/house-mark";
 import { fmt, t } from "@/i18n";
 import { Gallery } from "../../lots/[lotId]/gallery/gallery-client";
-import { ItemActions } from "./item-client";
+import { InventoryItemActions } from "@/components/inventory/item-actions";
+import { locationLabel } from "@/server/services/location-label";
 
 export async function generateMetadata({ params }: { params: Promise<{ itemId: string }> }) {
   const { itemId } = await params;
@@ -60,7 +61,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
     ...moves.map((m) => ({
       at: m.occurredAt,
       tone: "move" as const,
-      text: `${MOVE_KIND[m.kind] ?? m.kind}: ${m.from?.code ?? "—"} ← ${m.to?.code ?? "מחוץ למדף"}`,
+      text: `${MOVE_KIND[m.kind] ?? m.kind}: ${m.fromLabel ?? "—"} ← ${m.toLabel ?? "מחוץ למדף"}`,
       detail: m.note ?? (m.occurredAt.getTime() < m.createdAt.getTime() - 60_000 ? `סונכרן ב-${fmt.dateTime(m.createdAt)}` : null),
       who: m.userName,
     })),
@@ -110,7 +111,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
             {item.currentLocation ? (
               <Link href={`/warehouse/locations/${item.currentLocation.id}`} className="inline-flex items-center gap-1 hover:underline">
                 <MapPin className="size-3.5" />
-                <span className="num font-mono">{item.currentLocation.code}</span>
+                <span>{locationLabel(item.currentLocation)}</span>
               </Link>
             ) : (
               <span className="inline-flex items-center gap-1 text-warn">
@@ -122,36 +123,39 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
         }
         actions={
           <>
-            <ItemActions
-              item={{
+            <InventoryItemActions
+              context="page"
+              subject={{
                 id: item.id,
                 inventoryNumber: item.inventoryNumber,
                 title: item.title,
-                subtitle: item.subtitle,
-                author: item.author,
-                printPlace: item.printPlace,
-                printYear: item.printYear,
-                publisher: item.publisher,
-                bibliographicNotes: item.bibliographicNotes,
-                internalNotes: item.internalNotes,
-                conditionNotes: item.conditionNotes,
-                heightMm: item.heightMm,
-                widthMm: item.widthMm,
-                depthMm: item.depthMm,
-                sizeCategory: item.sizeCategory,
-                barcode: item.barcode,
                 physicalStatus: item.physicalStatus,
                 commercialStatus: item.commercialStatus,
-                hasActiveLot: !!active,
+                hasLocation: !!item.currentLocation,
+                assignment: active ? "active" : null,
                 hasOpenPick: !!openPick,
+                captureHref: `/capture/${item.id}${category ? `?category=${category}` : ""}`,
+                edit: {
+                  id: item.id,
+                  inventoryNumber: item.inventoryNumber,
+                  title: item.title,
+                  subtitle: item.subtitle,
+                  author: item.author,
+                  printPlace: item.printPlace,
+                  printYear: item.printYear,
+                  publisher: item.publisher,
+                  bibliographicNotes: item.bibliographicNotes,
+                  internalNotes: item.internalNotes,
+                  conditionNotes: item.conditionNotes,
+                  heightMm: item.heightMm,
+                  widthMm: item.widthMm,
+                  depthMm: item.depthMm,
+                  sizeCategory: item.sizeCategory,
+                  barcode: item.barcode,
+                },
               }}
-              perms={perms}
+              perms={{ ...perms, relocate: perms.move, fulfil: can(user.role, "pick.fulfil"), delete: can(user.role, "inventory.delete") }}
             />
-            {perms.capture && (
-              <ButtonLink href={`/capture/${item.id}${category ? `?category=${category}` : ""}`} variant="capture" icon={<Camera />}>
-                צילום
-              </ButtonLink>
-            )}
           </>
         }
       />

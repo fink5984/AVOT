@@ -12,7 +12,6 @@ export function LabelsToolbar({
   size,
   sizes,
   layout,
-  qr,
   ids,
   zplHref,
 }: {
@@ -21,13 +20,12 @@ export function LabelsToolbar({
   size: string;
   sizes: string[];
   layout: "roll" | "sheet";
-  qr: boolean;
   ids: string;
   zplHref: string | null;
 }) {
   const router = useRouter();
   const go = (patch: Record<string, string>) => {
-    const p = new URLSearchParams({ ids, size, layout, qr: qr ? "1" : "0", ...patch });
+    const p = new URLSearchParams({ ids, size, layout, ...patch });
     router.replace(`/labels/${kind}?${p.toString()}`);
   };
   return (
@@ -57,12 +55,6 @@ export function LabelsToolbar({
             <option value="sheet">גיליון A4</option>
           </select>
         </label>
-        {kind === "books" && (
-          <label className="flex items-center gap-1.5 text-[13px]">
-            <input type="checkbox" checked={qr} onChange={(e) => go({ qr: e.target.checked ? "1" : "0" })} className="size-4 accent-[var(--color-ink)]" />
-            QR נוסף
-          </label>
-        )}
         <div className="ms-auto flex gap-2">
           {zplHref && count > 0 && (
             <ButtonLink href={zplHref} icon={<Download />} title="ZPL למדפסות תרמיות (Zebra ותואמות)">

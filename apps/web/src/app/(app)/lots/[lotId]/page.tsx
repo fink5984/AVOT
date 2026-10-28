@@ -18,6 +18,7 @@ import { cn } from "@/lib/cn";
 import { Gallery } from "./gallery/gallery-client";
 import { LotControls, LotDetails, LotMenu, LotNotes } from "./lot-client";
 import { LotDisplayPanel } from "./lot-display";
+import { locationInclude, locationLabel } from "@/server/services/location-label";
 
 export async function generateMetadata({ params }: { params: Promise<{ lotId: string }> }) {
   const { lotId } = await params;
@@ -36,7 +37,7 @@ export default async function LotPage({ params, searchParams }: { params: Promis
   if (!/^[0-9a-f-]{36}$/i.test(lotId)) notFound();
   const lot = await db.lot.findFirst({
     where: { id: lotId, organizationId: user.organizationId },
-    include: { catalog: { include: { auctionHouse: true } }, item: { include: { currentLocation: { select: { id: true, code: true } } } } },
+    include: { catalog: { include: { auctionHouse: true } }, item: { include: { currentLocation: { include: locationInclude } } } },
   });
   if (!lot || !canSeeHouse(user, lot.catalog.auctionHouseId)) notFound();
 
@@ -100,7 +101,7 @@ export default async function LotPage({ params, searchParams }: { params: Promis
             {lot.item.currentLocation && (
               <span className="inline-flex items-center gap-1">
                 <MapPin className="size-3.5" />
-                <span className="num font-mono">{lot.item.currentLocation.code}</span>
+                <span>{locationLabel(lot.item.currentLocation)}</span>
               </span>
             )}
           </>

@@ -121,24 +121,63 @@ describe("labels & shortcuts", () => {
   });
 });
 
-describe("camera scan gate (no double reads)", () => {
-  it("reports a code once while it stays in view, a different code at once, the same code again after it left and the cooldown passed", async () => {
-    const { createCodeGate } = await import("@/lib/scanner/camera");
+describe("camera scan gate (one barcode = one scan)", () => {
+  it("holding one barcode in view for 30 seconds is one scan, even through recognition drop-outs", async () => {
+    const { createScanGate } = await import("@/lib/scanner/scan-gate");
     let t = 1_000;
-    const gate = createCodeGate(2500, 900, () => t);
-    expect(gate("ITM-000001")).toBe(true);
-    for (let i = 0; i < 20; i++) {
-      t += 110; // ~20 consecutive frames of the same barcode
-      expect(gate("ITM-000001")).toBe(false);
+    const gate = createScanGate(1200, () => t);
+    expect(gate.frame(["10000041"])).toEqual(["10000041"]);
+    let reported = 0;
+    for (let i = 0; i < 300; i++) {
+      t += 100; // 30 s of frames
+      // focus / light changes: every 10th stretch loses the barcode for ~0.8 s (< release time)
+      const lost = i % 40 >= 30 && i % 40 < 38;
+      reported += gate.frame(lost ? [] : ["10000041"]).length;
     }
+    expect(reported).toBe(0);
+  });
+
+  it("ten different books in a row are each taken at once, no waiting", async () => {
+    const { createScanGate } = await import("@/lib/scanner/scan-gate");
+    let t = 0;
+    const gate = createScanGate(1200, () => t);
+    const got: string[] = [];
+    for (let n = 1; n <= 10; n++) {
+      for (let f = 0; f < 5; f++) {
+        t += 100;
+        got.push(...gate.frame([`1000004${n}`]));
+      }
+    }
+    expect(got).toEqual(Array.from({ length: 10 }, (_, i) => `1000004${i + 1}`));
+  });
+
+  it("taking the barcode away and showing it again scans again; so does 'scan again'", async () => {
+    const { createScanGate } = await import("@/lib/scanner/scan-gate");
+    let t = 0;
+    const gate = createScanGate(1200, () => t);
+    expect(gate.frame(["A"])).toEqual(["A"]);
+    t += 300;
+    expect(gate.frame([])).toEqual([]); // empty frame
+    t += 600;
+    expect(gate.frame(["A"])).toEqual([]); // gone for only 0.9 s: the same sighting (focus / light flicker)
+    t += 1500;
+    expect(gate.frame([])).toEqual([]);
     t += 100;
-    expect(gate("ITM-000002")).toBe(true); // next book immediately
-    t += 100;
-    expect(gate("ITM-000001")).toBe(true); // A → B → A is three real scans
-    t += 1_000; // out of view
-    expect(gate("ITM-000001")).toBe(false); // still inside the 2.5 s cooldown after its last report
-    t += 1_500;
-    expect(gate("ITM-000001")).toBe(true); // shown again on purpose
+    expect(gate.frame(["A"])).toEqual(["A"]); // clearly gone and back
+    expect(gate.frame(["A"])).toEqual([]);
+    gate.rearm();
+    expect(gate.frame(["A"])).toEqual(["A"]); // 'סרוק שוב'
+  });
+
+  it("two barcodes in view are each reported once and do not flip-flop", async () => {
+    const { createScanGate } = await import("@/lib/scanner/scan-gate");
+    let t = 0;
+    const gate = createScanGate(1200, () => t);
+    expect(gate.frame(["A", "B"]).sort()).toEqual(["A", "B"]);
+    for (let i = 0; i < 20; i++) {
+      t += 100;
+      expect(gate.frame(i % 2 ? ["A", "B"] : ["B", "A"])).toEqual([]);
+    }
   });
 });
 

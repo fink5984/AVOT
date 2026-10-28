@@ -110,7 +110,7 @@ public static class WindowsPrinting
     /// Windows-driver mode: the label is drawn here and printed through the printer's own driver — works with any printer
     /// that has one (Hebrew included, Code 128 drawn as bars). One page per label, paper = the label stock.
     /// </summary>
-    public static void PrintLabels(string printerName, PrintStock stock, int copies, IReadOnlyList<PrintLabelDto> labels)
+    public static void PrintLabels(string printerName, PrintStock stock, int copies, IReadOnlyList<LabelLayoutDto> labels, PrintAssets? assets = null)
     {
         var pages = labels.SelectMany(l => Enumerable.Repeat(l, Math.Clamp(copies, 1, 50))).ToList();
         var index = 0;
@@ -130,7 +130,7 @@ public static class WindowsPrinting
                 g.PageUnit = GraphicsUnit.Pixel;
                 g.ResetTransform();
                 g.TranslateTransform((float)(-e.PageSettings.HardMarginX / 100.0 * g.DpiX), (float)(-e.PageSettings.HardMarginY / 100.0 * g.DpiY));
-                LabelDrawer.Draw(g, stock, pages[index]);
+                LabelDrawer.Draw(g, pages[index], assets);
                 index++;
                 e.HasMorePages = index < pages.Count;
             }
@@ -152,93 +152,104 @@ public static class WindowsPrinting
     }
 }
 
-/// <summary>Draws one label (book / shelf / column / test) the way the thermal layout does: Hebrew title, Code 128, readable number.</summary>
+/// <summary>
+/// Draws a label layout received from the server. There is no design here: every box (text, barcode) has its position, size,
+/// alignment and line limit in the layout; this class only fits the text into its box with the Windows fonts and draws the
+/// Code 128 in whole device dots with the same module rule as the server's ZPL and preview.
+/// </summary>
 public static class LabelDrawer
 {
-    private static readonly StringFormat Rtl = new(StringFormatFlags.DirectionRightToLeft | StringFormatFlags.NoClip) { Alignment = StringAlignment.Near, Trimming = StringTrimming.EllipsisWord };
-    private static readonly StringFormat Center = new() { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
+    private static readonly StringFormat RtlFormat = new(StringFormatFlags.DirectionRightToLeft | StringFormatFlags.NoClip) { Trimming = StringTrimming.EllipsisWord };
 
-    public static void Draw(Graphics g, PrintStock stock, PrintLabelDto l)
+    public static void Draw(Graphics g, LabelLayoutDto layout, PrintAssets? assets = null)
     {
         g.Clear(Color.White);
         g.SmoothingMode = SmoothingMode.None; // crisp bars
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         var pxMm = g.DpiX / 25.4f;
-        var w = (float)stock.WidthMm * pxMm;
-        var h = (float)stock.HeightMm * pxMm;
-        var m = 2f * pxMm;
-        var area = new RectangleF(m, m, w - 2 * m, h - 2 * m);
-
-        switch (l.Type)
+        foreach (var item in layout.Items)
         {
-            case "BOOK":
-                Stack(g, area, pxMm, (l.Title ?? "", 3.8f, true, 0.38f), l.Code ?? l.InventoryNumber ?? "", l.InventoryNumber, rtl: true);
-                break;
-            case "LOCATION":
-                Stack(g, area, pxMm, (l.Shelf ?? "", 6f, true, 0.30f), l.Code ?? "", l.Code, rtl: true, secondLine: (l.Path ?? "", 3f, false, 0.18f));
-                break;
-            case "ZONE":
-                Stack(g, area, pxMm, (l.Name ?? "", 9f, true, 0.42f), l.Code ?? "", l.Code, rtl: true, secondLine: (l.Warehouse ?? "", 3.4f, false, 0.16f));
-                break;
-            default:
-                Stack(g, area, pxMm, (l.Text ?? "AVOT · בדיקת הדפסה", 4.5f, true, 0.45f), "AVOT-TEST", null, rtl: true);
-                break;
+            var box = new RectangleF((float)item.X * pxMm, (float)item.Y * pxMm, (float)item.W * pxMm, (float)item.H * pxMm);
+            if (item.Kind == "barcode") DrawBarcode(g, item, box, pxMm);
+            else if (item.Kind == "image") DrawImage(g, box, assets);
+            else DrawText(g, item, box, pxMm);
         }
     }
 
-    /// <summary>top text(s) → barcode → readable code, all inside <paramref name="area"/>.</summary>
-    private static void Stack(Graphics g, RectangleF area, float pxMm, (string Text, float SizeMm, bool Bold, float MaxHeightFraction) title, string code, string? readable, bool rtl, (string Text, float SizeMm, bool Bold, float MaxHeightFraction)? secondLine = null)
+    /// <summary>The AVOT logo (PNG from the server) scaled into its box, black on white, with the best resampling the driver DPI allows.</summary>
+    private static void DrawImage(Graphics g, RectangleF box, PrintAssets? assets)
     {
-        var y = area.Top;
-        y += DrawFitted(g, title.Text, new RectangleF(area.Left, y, area.Width, area.Height * title.MaxHeightFraction), title.SizeMm * pxMm, title.Bold, rtl);
-        if (secondLine is { } s)
-            y += DrawFitted(g, s.Text, new RectangleF(area.Left, y + 0.5f * pxMm, area.Width, area.Height * s.MaxHeightFraction), s.SizeMm * pxMm, s.Bold, rtl) + 0.5f * pxMm;
-        y += 1.2f * pxMm;
-
-        var readableH = readable is null ? 0f : 3.4f * pxMm;
-        var barH = Math.Max(5f * pxMm, area.Bottom - y - readableH - 1f * pxMm);
-        DrawBarcode(g, code, new RectangleF(area.Left, y, area.Width, barH), g.DpiX);
-        if (readable is not null)
-        {
-            using var f = new Font("Arial", 3f * pxMm, FontStyle.Regular, GraphicsUnit.Pixel);
-            g.DrawString(readable, f, Brushes.Black, new RectangleF(area.Left, y + barH + 0.6f * pxMm, area.Width, readableH), Center);
-        }
+        if (string.IsNullOrEmpty(assets?.Logo)) return;
+        using var ms = new MemoryStream(Convert.FromBase64String(assets.Logo));
+        using var img = Image.FromStream(ms);
+        var old = g.InterpolationMode;
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+        // contain: keep the artwork's proportions inside the box
+        var scale = Math.Min(box.Width / img.Width, box.Height / img.Height);
+        var w = img.Width * scale;
+        var h = img.Height * scale;
+        g.DrawImage(img, box.Left + (box.Width - w) / 2f, box.Top + (box.Height - h) / 2f, w, h);
+        g.InterpolationMode = old;
     }
 
-    /// <summary>Largest font ≤ size that fits the box (shrinks, then trims with an ellipsis); returns the height used.</summary>
-    private static float DrawFitted(Graphics g, string text, RectangleF box, float sizePx, bool bold, bool rtl)
+    private static void DrawText(Graphics g, LayoutItemDto item, RectangleF box, float pxMm)
     {
-        if (string.IsNullOrWhiteSpace(text)) return 0;
-        var fmt = rtl && text.Any(c => c is >= '֐' and <= '׿') ? Rtl : new StringFormat(StringFormatFlags.NoClip) { Trimming = StringTrimming.EllipsisWord };
-        var size = sizePx;
-        var min = Math.Max(10f, sizePx * 0.55f);
+        var text = item.Text ?? "";
+        if (string.IsNullOrWhiteSpace(text)) return;
+        var hebrew = text.Any(c => c is >= '֐' and <= '׿');
+        var fmt = hebrew ? (StringFormat)RtlFormat.Clone() : new StringFormat(StringFormatFlags.NoClip) { Trimming = StringTrimming.EllipsisWord };
+        // RightToLeft flips Near/Far, so the alignment is expressed for the text direction
+        fmt.Alignment = item.Align switch
+        {
+            "center" => StringAlignment.Center,
+            "right" => hebrew ? StringAlignment.Near : StringAlignment.Far,
+            _ => hebrew ? StringAlignment.Far : StringAlignment.Near,
+        };
+        var size = (float)item.SizeMm * pxMm;
+        var min = Math.Max(8f, (float)item.MinSizeMm * pxMm);
+        var style = item.Bold ? FontStyle.Bold : FontStyle.Regular;
         while (true)
         {
-            using var font = new Font("Arial", size, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel);
-            var measured = g.MeasureString(text, font, (int)box.Width, fmt);
-            if (measured.Height <= box.Height || size <= min)
+            using var font = new Font("Arial", size, style, GraphicsUnit.Pixel);
+            var one = g.MeasureString(text, font, 100_000, fmt).Height; // one line of this text at this size
+            var m = g.MeasureString(text, font, (int)box.Width, fmt);
+            var lines = Math.Max(1, (int)Math.Round(m.Height / Math.Max(1f, one)));
+            if ((m.Height <= box.Height + 0.5f && lines <= Math.Max(1, item.MaxLines)) || size <= min)
             {
-                var drawBox = new RectangleF(box.X, box.Y, box.Width, Math.Min(box.Height, measured.Height + 1));
-                g.DrawString(text, font, Brushes.Black, drawBox, fmt);
-                return Math.Min(box.Height, measured.Height);
+                var free = Math.Max(0, box.Height - m.Height);
+                var top = item.VAlign switch { "middle" => box.Top + free / 2, "bottom" => box.Top + free, _ => box.Top };
+                g.DrawString(text, font, Brushes.Black, new RectangleF(box.Left, top, box.Width, Math.Min(box.Height, m.Height + 1)), fmt);
+                return;
             }
             size = Math.Max(min, size * 0.9f);
         }
     }
 
-    /// <summary>Bars in whole printer dots (never anti-aliased), centred, as wide as fits (1–4 dots per module).</summary>
-    public static void DrawBarcode(Graphics g, string code, RectangleF box, float dpi)
+    /// <summary>Whole dots per module, as wide as allowed; the symbol plus its quiet zones must fit (same rule as barcodeModuleDots in the shared package).</summary>
+    public static (int Dots, int WidthPx, bool Fits) ModuleDots(int modules, float availPx, float pxPerMm, double minMm, double maxMm, int quiet)
     {
-        var modules = Code128.Modules(code);
-        var total = modules.Sum();
-        var quiet = 10; // modules of quiet zone each side
-        var dots = (int)Math.Clamp(Math.Floor(box.Width / (total + 2 * quiet)), 1, 4);
-        var width = total * dots;
-        var x = box.Left + (box.Width - width) / 2f;
+        var lo = Math.Max(1, (int)Math.Ceiling(minMm * pxPerMm - 1e-9));
+        var hi = Math.Max(lo, (int)Math.Floor(maxMm * pxPerMm + 1e-9));
+        var fitting = (int)Math.Floor(availPx / (modules + 2 * quiet));
+        if (fitting >= lo)
+        {
+            var d = Math.Min(hi, fitting);
+            return (d, d * modules, true);
+        }
+        var dots = Math.Max(1, (int)Math.Floor(availPx / modules));
+        return (dots, dots * modules, false);
+    }
+
+    private static void DrawBarcode(Graphics g, LayoutItemDto item, RectangleF box, float pxMm)
+    {
+        var modules = Code128.Modules(item.Code ?? "");
+        var (dots, width, _) = ModuleDots(modules.Sum(), box.Width, pxMm, item.ModuleMmMin, item.ModuleMmMax, item.QuietModules);
+        var x = box.Left + (float)Math.Round((box.Width - width) / 2f);
         var isBar = true;
         foreach (var m in modules)
         {
-            if (isBar) g.FillRectangle(Brushes.Black, (float)Math.Round(x), box.Top, m * dots, box.Height);
+            if (isBar) g.FillRectangle(Brushes.Black, (float)Math.Round(x), (float)Math.Round(box.Top), m * dots, (float)Math.Round(box.Height));
             x += m * dots;
             isBar = !isBar;
         }

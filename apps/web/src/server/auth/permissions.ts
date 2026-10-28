@@ -1,4 +1,5 @@
 import type { Role } from "@avot/shared";
+import { WAREHOUSE_VIEW_ROLES } from "@/lib/nav-roles";
 
 /**
  * Permission matrix. Checked on the server for every request; the UI only uses
@@ -47,7 +48,7 @@ export const PERMISSIONS = {
   "print.manage": ["ADMIN"],
 
   /* warehouse */
-  "warehouse.view": ["ADMIN", "EDITOR", "WAREHOUSE", "VIEWER"],
+  "warehouse.view": WAREHOUSE_VIEW_ROLES,
   /** handheld: store, transfer, pick, count scans */
   "warehouse.operate": ["ADMIN", "WAREHOUSE"],
   /** zones / shelves / locations, approving stock counts, resolving scan conflicts */

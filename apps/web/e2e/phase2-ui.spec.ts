@@ -19,10 +19,8 @@ async function ensureShelf(page: Page) {
   if (!zone) zone = (await (await page.request.post("/api/warehouse/zones", { data: { code: "A" }, headers })).json()).zone;
   let shelf = (zone.shelves ?? []).find((s: { code: string }) => s.code === "03");
   if (!shelf) shelf = (await (await page.request.post("/api/warehouse/shelves", { data: { zoneId: zone.id, code: "03" }, headers })).json()).shelf;
-  for (const cell of ["02", "03"]) {
-    const r = await page.request.get(`/api/warehouse/locations?code=LOC-A-03-${cell}`);
-    if (r.status() === 404) await page.request.post("/api/warehouse/locations", { data: { shelfId: shelf.id, cells: [cell] }, headers });
-  }
+  // one location per shelf (no cells): the second shelf is the move target below
+  if (!(zone.shelves ?? []).some((x: { code: string }) => x.code === "04")) await page.request.post("/api/warehouse/shelves", { data: { zoneId: zone.id, code: "04" }, headers });
 }
 
 /** A keyboard-wedge scanner types the code and presses Enter into the focused field. */
@@ -59,8 +57,9 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   // 2. book label: Code 128 SVG + antique-binding warning
   await page.goto(`/labels/books?ids=${itemId}`);
   await expect(page.getByText("אין להדביק את התווית על הכריכה")).toBeVisible();
-  await expect(page.locator(".label svg rect").first()).toBeAttached();
-  await expect(page.locator(".label").getByText(inventoryNumber)).toBeVisible();
+  // the label is the PNG of the one label engine (same as the printer's), at its physical size
+  await expect(page.locator(".label img").first()).toBeVisible();
+  expect((await page.request.get(`/api/labels/png?type=BOOK&id=${itemId}&stock=57x32`)).headers()["content-type"]).toBe("image/png");
 
   // 3. open the capture studio by scanning the tag, shoot 4 categories with the fake webcam
   await page.goto("/capture");
@@ -93,8 +92,8 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   const input = page.getByLabel("קלט סורק");
   await expect(input).toBeFocused();
   await expect(page.getByTestId("step")).toContainText("סרוק מדף");
-  await wedge(page, "LOC-A-03-02");
-  await expect(page.getByTestId("active-location")).toContainText("LOC-A-03-02"); // technical code small, human label large
+  await wedge(page, "LOC-A-03");
+  await expect(page.getByTestId("active-location")).toContainText("LOC-A-03"); // technical code small, human label large
   await expect(page.getByTestId("active-location")).toContainText("מדף 3");
   await expect(page.getByTestId("step")).toContainText("סרוק ספר");
   await wedge(page, inventoryNumber);
@@ -111,8 +110,8 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   await page.getByRole("button", { name: "חזרה לפעולות" }).click();
   await page.getByRole("button", { name: /העברת ספר בין מדפים/ }).click();
   await expect(page.getByTestId("step")).toContainText("מדף היעד");
-  await wedge(page, "LOC-A-03-03");
-  await expect(page.getByTestId("active-location")).toContainText("LOC-A-03-03"); // known shelf, from the device cache
+  await wedge(page, "LOC-A-04");
+  await expect(page.getByTestId("active-location")).toContainText("LOC-A-04"); // known shelf, from the device cache
   await wedge(page, inventoryNumber);
   await expect(result).toHaveAttribute("data-kind", "queued");
   await expect(result).toContainText("ממתין לסנכרון");
@@ -120,13 +119,13 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   await expect(page.getByRole("button", { name: /2 סריקות ממתינות לסנכרון/ })).toBeVisible();
   let item = (await (await page.request.get(`/api/inventory/${itemId}`)).json()).item;
   void item; // page.request bypasses the offline emulation; the server still has the old place:
-  expect(item.currentLocation?.code ?? null).toBe("LOC-A-03-02");
+  expect(item.currentLocation?.code ?? null).toBe("LOC-A-03");
 
   // back online → the queue syncs in scan order and the statuses turn into server answers
   await context.setOffline(false);
   await expect(page.getByRole("button", { name: /ממתינות לסנכרון/ })).toHaveCount(0, { timeout: 30_000 });
   item = (await (await page.request.get(`/api/inventory/${itemId}`)).json()).item;
-  expect(item.currentLocation.code).toBe("LOC-A-03-03");
+  expect(item.currentLocation.code).toBe("LOC-A-04");
 
   // 6. command barcode switches the mode; find shows the book
   await wedge(page, "CMD-FIND");
@@ -150,7 +149,7 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   await page.getByRole("button", { name: "שיוך", exact: true }).click();
   await expect(page.getByText(/קטלוג\s*UI-/).first()).toBeVisible();
   await expect(page.getByText("פריט 62").first()).toBeVisible();
-  await expect(page.getByText(/הועבר: LOC-A-03-02/)).toBeVisible();
+  await expect(page.getByText(/הועבר: LOC-A-03/)).toBeVisible();
   await expect(page.getByText(/אוחסן/)).toBeVisible();
 
   // the lot shows the book's 4 photos (no copies)

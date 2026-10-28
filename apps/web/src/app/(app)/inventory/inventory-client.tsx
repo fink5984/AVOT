@@ -5,10 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BookPlus, BookUp, Camera, FileUp, Gavel, Library, Loader2, MapPin, MoreHorizontal, Plus, Printer, Tag, Trash2, X } from "lucide-react";
 import type { CommercialStatus, LotStatus, PhysicalStatus } from "@avot/shared";
-import { Button, IconButton, IconButtonLink } from "@/components/ui/button";
+import { Button, IconButton } from "@/components/ui/button";
 import { CommercialStatusBadge, PhotoStatusBadge, PhysicalStatusBadge } from "@/components/ui/badge";
 import { Dialog } from "@/components/ui/dialog";
-import { Menu } from "@/components/ui/menu";
 import { EmptyState } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { HouseMark } from "@/components/house-mark";
@@ -17,6 +16,7 @@ import { ItemFormDialog } from "@/components/inventory/item-form-dialog";
 import { fmt } from "@/i18n";
 import { ApiError, api, errorMessage } from "@/lib/api";
 import { usePrintLabels } from "@/lib/print";
+import { InventoryItemActions, useItemCheckout } from "@/components/inventory/item-actions";
 import { LocationDialog } from "@/components/warehouse/location-dialog";
 import { DeleteDialog } from "@/components/deletion/delete-dialog";
 import { cn } from "@/lib/cn";
@@ -213,19 +213,8 @@ export function InventoryTable({
   const chosen = all.filter((r) => selected.has(r.id));
   const asItems = (rs: InventoryRowDto[]) => rs.map((r) => ({ id: r.id, inventoryNumber: r.inventoryNumber, title: r.title }));
   const printBooks = (rs: InventoryRowDto[]) => print(rs.map((r) => ({ type: "BOOK" as const, id: r.id })), { what: rs.length === 1 ? `תווית ${rs[0]!.inventoryNumber}` : undefined });
-  /** the same service as the phone scanner's "הוצאה זמנית / הוצאה סופית" */
-  async function checkout(kind: "TEMP" | "FINAL", rs: InventoryRowDto[]) {
-    if (kind === "FINAL" && !window.confirm(`הוצאה סופית של ${rs.length} ספרים? הם יסומנו כנשלחו. פעולה זו אפשרית רק לספרים שנמכרו.`)) return;
-    try {
-      const r = await api<{ done: string[]; skipped: { itemId: string; message: string }[] }>("/api/inventory/bulk-checkout", { method: "POST", json: { itemIds: rs.map((x) => x.id), kind } });
-      if (r.skipped.length) toast.warning(`${r.done.length} הוצאו · ${r.skipped.length} לא`, { detail: r.skipped.slice(0, 2).map((s) => s.message).join(" · ") });
-      else toast.success(kind === "TEMP" ? `${r.done.length} ספרים הוצאו זמנית — יש להחזירם למדף` : `${r.done.length} ספרים הוצאו סופית`);
-      setSelected(new Set());
-      router.refresh();
-    } catch (err) {
-      toast.error(errorMessage(err));
-    }
-  }
+  const itemCheckout = useItemCheckout();
+  const checkout = (kind: "TEMP" | "FINAL", rs: InventoryRowDto[]) => itemCheckout(kind, rs.map((x) => x.id), () => setSelected(new Set()));
   const canAssign = (r: InventoryRowDto) => perms.assign && r.physicalStatus !== "SHIPPED" && r.commercialStatus !== "SOLD";
 
   return (
@@ -247,7 +236,7 @@ export function InventoryTable({
                   <th className="w-12 px-1 py-2.5" aria-label="תמונה" />
                   <th className="px-2 py-2.5 text-start font-medium">שם הספר</th>
                   <th className="hidden w-28 px-2 py-2.5 text-start font-medium md:table-cell">צילום</th>
-                  <th className="hidden w-32 px-2 py-2.5 text-start font-medium lg:table-cell">מיקום</th>
+                  <th className="hidden w-44 px-2 py-2.5 text-start font-medium lg:table-cell">מיקום</th>
                   <th className="hidden w-48 px-2 py-2.5 text-start font-medium xl:table-cell">קטלוג</th>
                   <th className="w-px pe-3 ps-2 py-2.5" aria-label="פעולות" />
                 </tr>
@@ -282,9 +271,7 @@ export function InventoryTable({
                     </td>
                     <td className="hidden px-2 py-1.5 lg:table-cell">
                       {r.location ? (
-                        <span className="num font-mono text-[12.5px]" title={r.location.label}>
-                          {r.location.code}
-                        </span>
+                        <span className="text-[12.5px]">{r.location.label}</span>
                       ) : (
                         <span className="text-[12.5px] text-faint">ללא מיקום</span>
                       )}
@@ -309,40 +296,19 @@ export function InventoryTable({
                       )}
                     </td>
                     <td className="relative z-10 pe-3 ps-2 py-1">
-                      <div className="flex items-center justify-end gap-0.5">
-                        {perms.capture && (
-                          <IconButtonLink href={`/capture/${r.id}`} label={`צילום ${r.inventoryNumber}`}>
-                            <Camera className="text-accent" />
-                          </IconButtonLink>
-                        )}
-                        {perms.label && (
-                          <IconButton label={`הדפסת תווית ${r.inventoryNumber}`} size="sm" onClick={() => void printBooks([r])}>
-                            <Printer />
-                          </IconButton>
-                        )}
-                        {canAssign(r) && (
-                          <IconButton label={r.assignment ? "שינוי שיוך לקטלוג" : "שייך לקטלוג"} size="sm" onClick={() => setAssignFor([r])}>
-                            <Gavel />
-                          </IconButton>
-                        )}
-                        {perms.relocate && (
-                          <IconButton label="שנה מיקום" size="sm" onClick={() => setLocationFor([r])}>
-                            <MapPin />
-                          </IconButton>
-                        )}
-                        <Menu
-                          trigger={(p) => (
-                            <IconButton label={`פעולות נוספות ל-${r.inventoryNumber}`} size="sm" {...p}>
-                              <MoreHorizontal />
-                            </IconButton>
-                          )}
-                          items={[
-                            { label: "פתיחה והיסטוריה", icon: <Library />, onSelect: () => router.push(`/inventory/${r.id}`) },
-                            ...(perms.label ? [{ label: "תווית להדפסה ידנית (PDF / ZPL)", icon: <Tag />, onSelect: () => router.push(`/labels/books?ids=${r.id}`) }] : []),
-                            ...(perms.relocate && r.location ? [{ label: "הוצאה זמנית מהמדף", icon: <BookUp />, onSelect: () => void checkout("TEMP", [r]) }] : []),
-                            ...(perms.fulfil && r.commercialStatus === "SOLD" ? [{ label: "הוצאה סופית (נשלח)", icon: <BookUp />, onSelect: () => void checkout("FINAL", [r]) }] : []),
-                            ...(perms.delete ? (["separator", { label: "מחיקה לצמיתות", icon: <Trash2 />, danger: true, onSelect: () => setDeleteIds([r.id]) }] as const) : []),
-                          ]}
+                      <div className="flex items-center justify-end">
+                        <InventoryItemActions
+                          context="table"
+                          subject={{
+                            id: r.id,
+                            inventoryNumber: r.inventoryNumber,
+                            title: r.title,
+                            physicalStatus: r.physicalStatus,
+                            commercialStatus: r.commercialStatus,
+                            hasLocation: !!r.location,
+                            assignment: r.assignment === null ? null : "hidden" in r.assignment ? "hidden" : "active",
+                          }}
+                          perms={perms}
                         />
                       </div>
                     </td>

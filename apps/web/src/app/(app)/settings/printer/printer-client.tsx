@@ -11,6 +11,7 @@ import { EmptyState, Panel } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { fmt } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
+import { LabelCalibration } from "@/components/print/label-calibration";
 
 export interface PrinterDto {
   id: string;
@@ -216,6 +217,8 @@ export function PrinterAdmin({ printers, agents, jobs, serverUrl, queue }: { pri
           </ul>
         )}
       </Panel>
+
+      <LabelCalibration printerId={(printers.find((p) => p.isPrimary) ?? printers[0])?.id ?? null} labelSize={(printers.find((p) => p.isPrimary) ?? printers[0])?.labelSize ?? "57x32"} dotsPerMm={(printers.find((p) => p.isPrimary) ?? printers[0])?.dotsPerMm ?? 8} />
 
       <Panel title="תור הדפסות">
         {jobs.length === 0 ? (

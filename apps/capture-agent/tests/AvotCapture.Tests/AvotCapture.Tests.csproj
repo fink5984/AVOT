@@ -12,5 +12,10 @@
     <ProjectReference Include="..\..\src\AvotCapture.Core\AvotCapture.Core.csproj" />
     <ProjectReference Include="..\..\src\AvotCapture.Simulator\AvotCapture.Simulator.csproj" />
     <ProjectReference Include="..\..\src\AvotCapture.DigiCam\AvotCapture.DigiCam.csproj" />
+    <ProjectReference Include="..\..\src\AvotCapture.Agent\AvotCapture.Agent.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="fixtures\*.b64" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
