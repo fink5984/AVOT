@@ -61,7 +61,7 @@ export function CameraPane({ onCode, enabled, className }: { onCode: (code: stri
   }, [enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className={cn("relative overflow-hidden rounded-xl bg-black ring-1 ring-studio-rule", className)} data-testid="camera-pane" data-state={state}>
+    <div className={cn("relative overflow-hidden rounded-xl bg-black ring-1 ring-rule", className)} data-testid="camera-pane" data-state={state}>
       <video ref={video} className={cn("h-full w-full object-cover", state !== "on" && "invisible")} playsInline muted aria-label="תצוגת המצלמה" />
       {state === "on" && (
         <>

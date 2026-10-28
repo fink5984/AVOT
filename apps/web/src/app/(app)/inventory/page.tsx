@@ -124,6 +124,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             create: can(user.role, "inventory.create"),
             delete: can(user.role, "inventory.delete"),
             relocate: can(user.role, "inventory.relocate"),
+            fulfil: can(user.role, "pick.fulfil"),
           }}
           defaultHouse={house?.slug ?? null}
           focusAdd={sp.new === "1"}

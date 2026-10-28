@@ -10,6 +10,7 @@ import { EmptyState, PageBody, PageHeader, Panel, Stat } from "@/components/ui/m
 import { fmt, t } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { WarehouseStructure } from "./warehouse-structure";
+import { StartCountButton } from "./start-count";
 
 export const metadata = { title: "מחסן" };
 
@@ -42,6 +43,7 @@ export default async function WarehousePage() {
             <ButtonLink href="/labels/commands" icon={<Tag />}>
               ברקודי פקודה
             </ButtonLink>
+            {can(user.role, "warehouse.operate") && <StartCountButton zones={tree.flatMap((w) => w.zones.map((z) => ({ id: z.id, name: `${w.name} · ${z.name}` })))} />}
             {can(user.role, "warehouse.operate") && (
               <ButtonLink href="/scans" icon={<ClipboardList />}>
                 יומן סריקות

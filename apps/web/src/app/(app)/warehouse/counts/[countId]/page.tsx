@@ -4,7 +4,7 @@ import { can } from "@/server/auth/permissions";
 import { countReport } from "@/server/services/counting";
 import { PageBody, PageHeader } from "@/components/ui/misc";
 import { fmt } from "@/i18n";
-import { CountReview } from "./count-client";
+import { CountEntry, CountReview } from "./count-client";
 
 export const metadata = { title: "ספירת מלאי" };
 
@@ -32,7 +32,8 @@ export default async function CountPage({ params }: { params: Promise<{ countId:
           </>
         }
       />
-      <PageBody>
+      <PageBody className="space-y-5">
+        {report.session.status === "OPEN" && can(user.role, "warehouse.operate") && <CountEntry sessionId={report.session.id} />}
         <CountReview report={report} canApprove={can(user.role, "warehouse.manage") && (report.session.status === "REVIEW" || report.session.status === "OPEN")} />
       </PageBody>
     </>

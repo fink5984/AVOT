@@ -5,7 +5,7 @@ import { can } from "@/server/auth/permissions";
 import { ScannerApp } from "./scanner-app";
 
 export const metadata: Metadata = { title: "מסופון מחסן", manifest: "/scanner.webmanifest" };
-export const viewport: Viewport = { themeColor: "#1a1917", width: "device-width", initialScale: 1, maximumScale: 1, userScalable: false };
+export const viewport: Viewport = { themeColor: "#f4f3f0", width: "device-width", initialScale: 1, maximumScale: 1, userScalable: false };
 
 /**
  * Warehouse handheld (PWA). Mobile-first, works with the device's built-in

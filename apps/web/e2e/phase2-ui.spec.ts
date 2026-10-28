@@ -80,7 +80,13 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   expect(new Set(assets.map((a: { category: string }) => a.category)).size).toBe(4);
 
   // 4. handheld: store by shelf scan + book scan, typed as a keyboard wedge
+  // a desktop browser gets the "use a phone" notice; the phone itself has a coarse pointer (?mobile=1 emulates it here)
   await page.goto("/scanner");
+  await expect(page.getByText("המסופון מיועד לשימוש בטלפון")).toBeVisible();
+  await expect(page.getByRole("link", { name: "פתח מלאי" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "פתח מחסן" })).toBeVisible();
+  await expect(page.getByLabel("קלט סורק")).toHaveCount(0);
+  await page.goto("/scanner?mobile=1");
   // the phone home screen speaks plain Hebrew: pick the activity, then follow "סרוק מדף" → "סרוק ספר"
   await expect(page.getByRole("heading", { name: "מה עושים עכשיו?" })).toBeVisible();
   await page.getByRole("button", { name: /הכנסת ספר למחסן/ }).click();
@@ -88,14 +94,17 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   await expect(input).toBeFocused();
   await expect(page.getByTestId("step")).toContainText("סרוק מדף");
   await wedge(page, "LOC-A-03-02");
-  await expect(page.getByTestId("active-location")).toContainText("LOC-A-03-02");
+  await expect(page.getByTestId("active-location")).toContainText("LOC-A-03-02"); // technical code small, human label large
+  await expect(page.getByTestId("active-location")).toContainText("מדף 3");
   await expect(page.getByTestId("step")).toContainText("סרוק ספר");
   await wedge(page, inventoryNumber);
   const result = page.getByTestId("scan-result");
   await expect(result).toHaveAttribute("data-kind", "ok");
-  await expect(result).toContainText(inventoryNumber);
-  await expect(result).toContainText("LOC-A-03-02");
-  await expect(page.getByTestId("scan-log").locator("li").first()).toHaveAttribute("data-status", "synced");
+  await expect(result).toContainText(`ספר UI ${RUN}`);
+  await expect(result).toContainText("נקלט במדף 3");
+  // no scan log on the phone screen (the history lives on the server / warehouse area)
+  await expect(page.getByText("סריקות אחרונות")).toHaveCount(0);
+  await expect(page.getByTestId("scan-log")).toHaveCount(0);
 
   // 5. offline: a shelf change + book scan are queued on the device, never shown as saved
   await context.setOffline(true);
@@ -108,14 +117,14 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   await expect(result).toHaveAttribute("data-kind", "queued");
   await expect(result).toContainText("ממתין לסנכרון");
   await expect(page.getByRole("button", { name: /ממתינות לסנכרון/ })).toBeVisible();
-  await expect(page.getByTestId("scan-log").locator('li[data-status="pending"]')).toHaveCount(2);
+  await expect(page.getByRole("button", { name: /2 סריקות ממתינות לסנכרון/ })).toBeVisible();
   let item = (await (await page.request.get(`/api/inventory/${itemId}`)).json()).item;
   void item; // page.request bypasses the offline emulation; the server still has the old place:
   expect(item.currentLocation?.code ?? null).toBe("LOC-A-03-02");
 
   // back online → the queue syncs in scan order and the statuses turn into server answers
   await context.setOffline(false);
-  await expect(page.getByTestId("scan-log").locator('li[data-status="pending"]')).toHaveCount(0, { timeout: 30_000 });
+  await expect(page.getByRole("button", { name: /ממתינות לסנכרון/ })).toHaveCount(0, { timeout: 30_000 });
   item = (await (await page.request.get(`/api/inventory/${itemId}`)).json()).item;
   expect(item.currentLocation.code).toBe("LOC-A-03-03");
 
@@ -124,7 +133,8 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   await expect(page.getByTestId("step")).toContainText("סרוק ספר");
   await expect(page.locator("header")).toContainText("איתור ספר");
   await wedge(page, inventoryNumber);
-  await expect(result).toContainText("LOC-A-03-03");
+  await expect(result).toContainText("מדף 3"); // location in human words
+  await expect(page.getByTestId("scan-result")).toContainText(`ספר UI ${RUN}`);
 
   // 7. assign to a catalog of טבין from the book page; history shows the movements
   const origin = new URL(page.url()).origin;
@@ -153,7 +163,7 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
 test("phase 2 screens fit a phone (no horizontal scrolling)", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await login(page);
-  for (const path of ["/inventory", "/warehouse", "/scanner", "/houses", "/capture", "/scans", "/warehouse/picking"]) {
+  for (const path of ["/inventory", "/warehouse", "/scanner?mobile=1", "/houses", "/capture", "/scans", "/warehouse/picking"]) {
     await page.goto(path);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect(overflow, `horizontal overflow on ${path}`).toBeLessThanOrEqual(0);

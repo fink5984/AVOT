@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BookPlus, Camera, FileUp, Gavel, Library, Loader2, MapPin, MoreHorizontal, Plus, Printer, Tag, Trash2, X } from "lucide-react";
+import { BookPlus, BookUp, Camera, FileUp, Gavel, Library, Loader2, MapPin, MoreHorizontal, Plus, Printer, Tag, Trash2, X } from "lucide-react";
 import type { CommercialStatus, LotStatus, PhysicalStatus } from "@avot/shared";
 import { Button, IconButton, IconButtonLink } from "@/components/ui/button";
 import { CommercialStatusBadge, PhotoStatusBadge, PhysicalStatusBadge } from "@/components/ui/badge";
@@ -184,12 +184,13 @@ export function InventoryTable({
 }: {
   rows: InventoryRowDto[];
   total: number;
-  perms: { capture: boolean; assign: boolean; label: boolean; edit: boolean; create: boolean; delete: boolean; relocate: boolean };
+  perms: { capture: boolean; assign: boolean; label: boolean; edit: boolean; create: boolean; delete: boolean; relocate: boolean; fulfil?: boolean };
   defaultHouse: string | null;
   focusAdd?: boolean;
 }) {
   const router = useRouter();
   const print = usePrintLabels();
+  const toast = useToast();
   const [added, setAdded] = useState<InventoryRowDto[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [assignFor, setAssignFor] = useState<InventoryRowDto[] | null>(null);
@@ -212,6 +213,19 @@ export function InventoryTable({
   const chosen = all.filter((r) => selected.has(r.id));
   const asItems = (rs: InventoryRowDto[]) => rs.map((r) => ({ id: r.id, inventoryNumber: r.inventoryNumber, title: r.title }));
   const printBooks = (rs: InventoryRowDto[]) => print(rs.map((r) => ({ type: "BOOK" as const, id: r.id })), { what: rs.length === 1 ? `תווית ${rs[0]!.inventoryNumber}` : undefined });
+  /** the same service as the phone scanner's "הוצאה זמנית / הוצאה סופית" */
+  async function checkout(kind: "TEMP" | "FINAL", rs: InventoryRowDto[]) {
+    if (kind === "FINAL" && !window.confirm(`הוצאה סופית של ${rs.length} ספרים? הם יסומנו כנשלחו. פעולה זו אפשרית רק לספרים שנמכרו.`)) return;
+    try {
+      const r = await api<{ done: string[]; skipped: { itemId: string; message: string }[] }>("/api/inventory/bulk-checkout", { method: "POST", json: { itemIds: rs.map((x) => x.id), kind } });
+      if (r.skipped.length) toast.warning(`${r.done.length} הוצאו · ${r.skipped.length} לא`, { detail: r.skipped.slice(0, 2).map((s) => s.message).join(" · ") });
+      else toast.success(kind === "TEMP" ? `${r.done.length} ספרים הוצאו זמנית — יש להחזירם למדף` : `${r.done.length} ספרים הוצאו סופית`);
+      setSelected(new Set());
+      router.refresh();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  }
   const canAssign = (r: InventoryRowDto) => perms.assign && r.physicalStatus !== "SHIPPED" && r.commercialStatus !== "SOLD";
 
   return (
@@ -325,6 +339,8 @@ export function InventoryTable({
                           items={[
                             { label: "פתיחה והיסטוריה", icon: <Library />, onSelect: () => router.push(`/inventory/${r.id}`) },
                             ...(perms.label ? [{ label: "תווית להדפסה ידנית (PDF / ZPL)", icon: <Tag />, onSelect: () => router.push(`/labels/books?ids=${r.id}`) }] : []),
+                            ...(perms.relocate && r.location ? [{ label: "הוצאה זמנית מהמדף", icon: <BookUp />, onSelect: () => void checkout("TEMP", [r]) }] : []),
+                            ...(perms.fulfil && r.commercialStatus === "SOLD" ? [{ label: "הוצאה סופית (נשלח)", icon: <BookUp />, onSelect: () => void checkout("FINAL", [r]) }] : []),
                             ...(perms.delete ? (["separator", { label: "מחיקה לצמיתות", icon: <Trash2 />, danger: true, onSelect: () => setDeleteIds([r.id]) }] as const) : []),
                           ]}
                         />
@@ -356,6 +372,11 @@ export function InventoryTable({
           {perms.relocate && (
             <Button size="sm" className="border-white/15 bg-white/8 text-paper shadow-none hover:bg-white/14" icon={<MapPin />} onClick={() => setLocationFor(chosen)}>
               שינוי מיקום
+            </Button>
+          )}
+          {perms.relocate && (
+            <Button size="sm" className="border-white/15 bg-white/8 text-paper shadow-none hover:bg-white/14" icon={<BookUp />} onClick={() => void checkout("TEMP", chosen)}>
+              הוצאה זמנית
             </Button>
           )}
           {perms.delete && (

@@ -9,9 +9,10 @@ import { can } from "../auth/permissions";
 import { canSeeHouse } from "../auth/houses";
 import type { UserPrincipal } from "../auth/principal";
 import { findItemByCode } from "./inventory";
-import { changeStatus, storeBlockedReason } from "./item-status";
+import { storeBlockedReason } from "./item-status";
 import { locationInclude, locationLabel } from "./location-label";
-import { pickItemTx, shipItemTx } from "./picking";
+import { pickItemTx } from "./picking";
+import { removeFinallyTx, removeTemporarilyTx } from "./checkout";
 import { findLocationByCode, moveItemTx } from "./warehouse";
 
 /*
@@ -37,15 +38,11 @@ function requiredPermission(mode: ScanOpInput["mode"]) {
   return mode === "FIND" ? ("warehouse.view" as const) : ("warehouse.operate" as const);
 }
 
-/** Takes a book off its shelf for a while: it is no longer on a shelf, so it is "awaiting storage" until it is shelved again. */
+/** The scanner wrapper around the shared "temporary removal" rule (see checkout.ts — the desktop uses the same one). */
 async function tempOutTx(tx: Tx, user: UserPrincipal, itemId: string, op: ScanOpInput, base: { codeType: ScannedCode["type"]; itemId: string }): Promise<Outcome> {
-  const item = await tx.inventoryItem.findUniqueOrThrow({ where: { id: itemId } });
-  const blocked = storeBlockedReason(item.physicalStatus);
-  if (blocked) return { ...base, result: "ERROR", message: blocked, item: await itemView(tx, user, itemId) };
-  if (!item.currentLocationId) return { ...base, result: "NOOP", message: "הספר כבר אינו על מדף", item: await itemView(tx, user, itemId) };
-  await moveItemTx(tx, user, itemId, null, "MANUAL", { opId: op.opId, occurredAt: op.deferred ? new Date(op.clientAt) : new Date(), note: "הוצאה זמנית" });
-  await changeStatus(tx, user, itemId, "PHYSICAL", "AWAITING_STORAGE", { refType: "scan", reason: "הוצאה זמנית מהמדף" });
-  return { ...base, result: "OK", message: `${item.inventoryNumber} הוצא זמנית — יש להחזירו למדף`, item: await itemView(tx, user, itemId) };
+  const r = await removeTemporarilyTx(tx, user, itemId, { opId: op.opId, occurredAt: op.deferred ? new Date(op.clientAt) : new Date() });
+  const item = await itemView(tx, user, itemId);
+  return { ...base, result: r.kind === "ok" ? "OK" : r.kind === "noop" ? "NOOP" : "ERROR", message: r.message, item };
 }
 
 async function itemView(tx: Tx, user: UserPrincipal, itemId: string): Promise<NonNullable<ScanResponse["item"]>> {
@@ -137,11 +134,9 @@ async function handle(tx: Tx, user: UserPrincipal, op: ScanOpInput, code: Scanne
 
   if (op.mode === "PICK" && op.intent === "FINAL_OUT") {
     if (!can(user.role, "pick.fulfil")) return { ...base, result: "ERROR", message: "אין לך הרשאה להוצאה סופית" };
-    const r = await shipItemTx(tx, user, item.id, { opId: op.opId, occurredAt: op.deferred ? new Date(op.clientAt) : new Date() });
+    const r = await removeFinallyTx(tx, user, item.id, { opId: op.opId, occurredAt: op.deferred ? new Date(op.clientAt) : new Date() });
     const view = await itemView(tx, user, item.id);
-    if (r.kind === "none") return { ...base, result: "ERROR", message: "לספר אין משימת משלוח — הוצאה סופית נעשית לספר שנמכר", item: view };
-    if (r.kind === "already") return { ...base, result: "NOOP", message: "הספר כבר נשלח", item: view };
-    return { ...base, result: "OK", message: `${item.inventoryNumber} הוצא סופית (נשלח)`, item: view };
+    return { ...base, result: r.kind === "ok" ? "OK" : r.kind === "noop" ? "NOOP" : "ERROR", message: r.kind === "ok" ? `${item.inventoryNumber} הוצא סופית (נשלח)` : r.message, item: view };
   }
 
   if (op.mode === "PICK") {

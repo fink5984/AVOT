@@ -7,7 +7,7 @@
   "scope": "/scanner",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#0f0f10",
-  "theme_color": "#1a1917",
+  "background_color": "#f4f3f0",
+  "theme_color": "#f4f3f0",
   "icons": [{ "src": "/scanner-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
 }

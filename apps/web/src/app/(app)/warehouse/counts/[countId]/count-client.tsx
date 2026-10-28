@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/misc";
+import { ShelfPicker } from "@/components/warehouse/shelf-picker";
 import { useToast } from "@/components/ui/toast";
 import { t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
@@ -117,5 +118,105 @@ export function CountReview({ report, canApprove }: { report: CountReport; canAp
         </div>
       )}
     </div>
+  );
+}
+
+interface EntryLine {
+  id: number;
+  ok: boolean;
+  text: string;
+}
+
+/**
+ * Desktop twin of the phone's stock count: choose the shelf, then scan (USB scanner) or type each book. It posts to
+ * the same /api/scan service as the phone, so the rules, the history and the permissions are identical.
+ */
+export function CountEntry({ sessionId }: { sessionId: string }) {
+  const router = useRouter();
+  const [shelf, setShelf] = useState<{ id: string; code: string; label: string } | null>(null);
+  const [shelfId, setShelfId] = useState<string | null>(null);
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [lines, setLines] = useState<EntryLine[]>([]);
+  const [counted, setCounted] = useState(0);
+  const seq = useRef(0);
+  const input = useRef<HTMLInputElement>(null);
+
+  const post = (code: string, contextLocationId?: string | null) =>
+    api<{ result: string; message: string; warning?: boolean; item?: { title: string }; activeLocation?: { id: string } | null }>("/api/scan", {
+      method: "POST",
+      json: { opId: crypto.randomUUID(), mode: "COUNT", code, contextLocationId: contextLocationId ?? null, countSessionId: sessionId, clientAt: new Date().toISOString(), deviceLabel: "desktop" },
+    });
+
+  // choosing a shelf registers it as visited in the count (same as scanning the shelf with the phone)
+  useEffect(() => {
+    setShelfId(null);
+    if (!shelf) return;
+    post(shelf.code)
+      .then((r) => {
+        setShelfId(r.activeLocation?.id ?? shelf.id);
+        setTimeout(() => input.current?.focus(), 50);
+      })
+      .catch((e) => setLines((l) => [{ id: ++seq.current, ok: false, text: errorMessage(e) }, ...l]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shelf?.id]);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const code = value.trim();
+    if (!code || !shelfId || busy) return;
+    setValue("");
+    setBusy(true);
+    try {
+      const r = await post(code, shelfId);
+      const ok = r.result === "OK" || r.result === "NOOP";
+      if (ok) setCounted((n) => n + (r.result === "OK" ? 1 : 0));
+      setLines((l) => [{ id: ++seq.current, ok: ok && !r.warning, text: `${r.item?.title ?? code} · ${r.message}` }, ...l].slice(0, 8));
+      router.refresh();
+    } catch (err) {
+      setLines((l) => [{ id: ++seq.current, ok: false, text: errorMessage(err) }, ...l].slice(0, 8));
+    } finally {
+      setBusy(false);
+      input.current?.focus();
+    }
+  }
+
+  return (
+    <Panel title="הזנת ספירה מהמחשב">
+      <div className="space-y-3 px-5 py-4">
+        <p className="text-[13px] text-muted">בחרו מדף, ואז סרקו (או הקלידו) כל ספר שעליו. אותו שירות ואותן הרשאות כמו המסופון.</p>
+        <ShelfPicker onChange={setShelf} />
+        <form onSubmit={submit} className="flex gap-2">
+          <input
+            ref={input}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            disabled={!shelfId}
+            dir="ltr"
+            autoComplete="off"
+            aria-label="ברקוד ספר"
+            placeholder={shelfId ? "סרקו ברקוד ולחצו Enter" : "קודם בוחרים מדף"}
+            className="h-10 min-w-0 flex-1 rounded-md border border-rule-strong bg-paper px-3 font-mono text-[14px] disabled:bg-stone-2 focus:outline-none focus:ring-[3px] focus:ring-ink/8"
+          />
+          <Button type="submit" variant="primary" loading={busy} disabled={!shelfId || !value.trim()}>
+            הוספה
+          </Button>
+        </form>
+        {shelf && shelfId && (
+          <p className="text-[12.5px] text-ink-2">
+            {shelf.label} · נספרו בסשן זה: <span className="num font-semibold">{counted}</span>
+          </p>
+        )}
+        {lines.length > 0 && (
+          <ul className="space-y-1 text-[13px]" aria-live="polite">
+            {lines.map((l) => (
+              <li key={l.id} className={l.ok ? "text-green-2" : "text-danger"}>
+                {l.ok ? "✓" : "⚠"} {l.text}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Panel>
   );
 }
