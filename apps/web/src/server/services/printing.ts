@@ -372,7 +372,7 @@ async function labelsFor(orgId: string, items: PrintItemRef[] | { type: "TEST"; 
           type: "LOCATION",
           code: l.code,
           shelf: `מדף ${num(l.shelf.code)}`,
-          path: [z.warehouse.name, z.name || `עמודה ${num(z.code)}`].join(" › "),
+          path: [z.warehouse.name, z.name || `עמודה ${num(z.code)}`].join(" · "),
         });
       }
     } else if (r.type === "ZONE") {

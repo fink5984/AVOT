@@ -19,6 +19,11 @@
   <ItemGroup Condition="Exists('..\..\third_party\EDSDK\EDSDK.dll')">
     <None Include="..\..\third_party\EDSDK\*.dll" Link="EDSDK\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- the label typefaces (SIL OFL) are the very files the server renders with: one set, in the web app's assets -->
+  <ItemGroup>
+    <None Include="..\..\..\web\assets\fonts\label\*.ttf" Link="Fonts\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\..\web\assets\fonts\OFL-*.txt" Link="Fonts\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\AvotCapture.DigiCam\AvotCapture.DigiCam.csproj" />
   </ItemGroup>

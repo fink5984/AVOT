@@ -207,19 +207,27 @@ public static class LabelDrawer
             _ => hebrew ? StringAlignment.Far : StringAlignment.Near,
         };
         var size = (float)item.SizeMm * pxMm;
-        var min = Math.Max(8f, (float)item.MinSizeMm * pxMm);
-        var style = item.Bold ? FontStyle.Bold : FontStyle.Regular;
+        // like the server's text fitting: below the nominal minimum the font may still shrink to 80 % before any word is cut
+        var min = Math.Max(8f, (float)item.MinSizeMm * pxMm * 0.8f);
         while (true)
         {
-            using var font = new Font("Arial", size, style, GraphicsUnit.Pixel);
+            using var font = LabelFonts.Create(item.Font, item.Bold, size);
             var one = g.MeasureString(text, font, 100_000, fmt).Height; // one line of this text at this size
             var m = g.MeasureString(text, font, (int)box.Width, fmt);
             var lines = Math.Max(1, (int)Math.Round(m.Height / Math.Max(1f, one)));
             if ((m.Height <= box.Height + 0.5f && lines <= Math.Max(1, item.MaxLines)) || size <= min)
             {
-                var free = Math.Max(0, box.Height - m.Height);
+                var drawH = m.Height;
+                if (lines > Math.Max(1, item.MaxLines))
+                {
+                    // still too long at the smallest size: keep the line limit and cut with an ellipsis (never more lines than the layout allows)
+                    drawH = one * Math.Max(1, item.MaxLines);
+                    fmt.FormatFlags |= StringFormatFlags.LineLimit;
+                    fmt.Trimming = StringTrimming.EllipsisWord;
+                }
+                var free = Math.Max(0, box.Height - drawH);
                 var top = item.VAlign switch { "middle" => box.Top + free / 2, "bottom" => box.Top + free, _ => box.Top };
-                g.DrawString(text, font, Brushes.Black, new RectangleF(box.Left, top, box.Width, Math.Min(box.Height, m.Height + 1)), fmt);
+                g.DrawString(text, font, Brushes.Black, new RectangleF(box.Left, top, box.Width, Math.Min(box.Height, drawH + 1)), fmt);
                 return;
             }
             size = Math.Max(min, size * 0.9f);
@@ -253,5 +261,39 @@ public static class LabelDrawer
             x += m * dots;
             isBar = !isBar;
         }
+    }
+}
+
+/// <summary>
+/// The bundled label typefaces, loaded privately from the Fonts folder next to the program (never from what is installed on
+/// the PC). One file per typeface and weight, each a one-word family: "AvotClassicBold". Falls back to Arial only if a file is missing.
+/// </summary>
+public static class LabelFonts
+{
+    private static readonly Lazy<System.Drawing.Text.PrivateFontCollection> Collection = new(() =>
+    {
+        var pfc = new System.Drawing.Text.PrivateFontCollection();
+        var dir = Path.Combine(AppContext.BaseDirectory, "Fonts");
+        if (Directory.Exists(dir))
+            foreach (var f in Directory.GetFiles(dir, "Avot*.ttf")) pfc.AddFontFile(f);
+        return pfc;
+    });
+
+    public static string FamilyName(string? style, bool bold)
+    {
+        var s = style switch { "traditional" => "AvotTraditional", "modern" => "AvotModern", _ => "AvotClassic" };
+        return s + (bold ? "Bold" : "Regular");
+    }
+
+    public static bool Available(string? style, bool bold) => Collection.Value.Families.Any(f => f.Name == FamilyName(style, bold));
+
+    public static Font Create(string? style, bool bold, float sizePx)
+    {
+        var name = FamilyName(style, bold);
+        var family = Collection.Value.Families.FirstOrDefault(f => f.Name == name);
+        // the weight is in the outlines of the file; no synthetic bold
+        return family is null
+            ? new Font("Arial", sizePx, bold ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel)
+            : new Font(family, sizePx, FontStyle.Regular, GraphicsUnit.Pixel);
     }
 }

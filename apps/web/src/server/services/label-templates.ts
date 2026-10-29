@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { DEFAULT_LABEL_PROFILES, LABEL_STOCKS, LABEL_TYPES, labelProfileSchema, layoutLabel, resolveProfile, type LabelContent, type LabelProfilesOverrides, type LabelType } from "@avot/shared";
+import { DEFAULT_LABEL_PROFILES, FONT_STYLES, LABEL_STOCKS, LABEL_TYPES, labelProfileSchema, layoutLabel, resolveProfile, type LabelContent, type LabelProfilesOverrides, type LabelType } from "@avot/shared";
 import { db } from "../db";
 import { audit } from "../audit";
 import { AppError } from "../errors";
@@ -38,23 +38,40 @@ export async function saveLabelTemplate(user: UserPrincipal, type: LabelType, in
     create: { organizationId: user.organizationId, type, profile, updatedById: user.userId },
     update: { profile, updatedById: user.userId },
   });
+  // the typeface is ONE setting for all label types: saving it on one type carries it to the others (their other values stay as they are)
+  for (const other of LABEL_TYPES) {
+    if (other === type) continue;
+    const row = await db.labelTemplate.findUnique({ where: { organizationId_type: { organizationId: user.organizationId, type: other } } });
+    const stored = labelProfileSchema.partial().safeParse(row?.profile);
+    const now = stored.success ? stored.data : {};
+    if ((now.fontStyle ?? "classic") === profile.fontStyle) continue;
+    await db.labelTemplate.upsert({
+      where: { organizationId_type: { organizationId: user.organizationId, type: other } },
+      create: { organizationId: user.organizationId, type: other, profile: { ...now, fontStyle: profile.fontStyle }, updatedById: user.userId },
+      update: { profile: { ...now, fontStyle: profile.fontStyle }, updatedById: user.userId },
+    });
+  }
   await audit(user, { action: "print.template_saved", entityType: "settings", entityId: user.organizationId, data: { type, profile } });
   return profile;
 }
 
 export async function resetLabelTemplate(user: UserPrincipal, type: LabelType) {
+  // the typeface is shared by all types: a reset of one type's measurements keeps the chosen typeface
+  const keep = (await getLabelProfiles(user.organizationId))[type]?.fontStyle;
   await db.labelTemplate.deleteMany({ where: { organizationId: user.organizationId, type } });
+  if (keep && keep !== "classic") await db.labelTemplate.create({ data: { organizationId: user.organizationId, type, profile: { fontStyle: keep }, updatedById: user.userId } });
   await audit(user, { action: "print.template_reset", entityType: "settings", entityId: user.organizationId, data: { type } });
-  return DEFAULT_LABEL_PROFILES[type];
+  return { ...DEFAULT_LABEL_PROFILES[type], ...(keep ? { fontStyle: keep } : {}) };
 }
 
 /** Content for the preview and for "הדפסת ניסיון" of each type: realistic Hebrew, a long name, an 8-digit number. */
-export function sampleLabel(type: LabelType | "TEST"): LabelContent {
+export const BOOK_SAMPLES = ["נועם אלימלך", 'שו"ת חתם סופר', "שולחן ערוך — אורח חיים, עם פירוש משנה ברורה ובאר היטב (דפוס וילנא)"] as const;
+export function sampleLabel(type: LabelType | "TEST", sample = 0): LabelContent {
   switch (type) {
     case "BOOK":
-      return { type: "BOOK", code: "10000041", inventoryNumber: "10000041", title: "שולחן ערוך — אורח חיים, עם פירוש משנה ברורה ובאר היטב (דפוס וילנא)" };
+      return { type: "BOOK", code: "10000041", inventoryNumber: "10000041", title: BOOK_SAMPLES[sample] ?? BOOK_SAMPLES[2] };
     case "LOCATION":
-      return { type: "LOCATION", code: "LOC-W1-C4-04", shelf: "מדף 4", path: "מחסן 1 › עמודה 4" };
+      return { type: "LOCATION", code: "LOC-W1-C4-04", shelf: "מדף 4", path: "מחסן 1 · עמודה 4" };
     case "ZONE":
       return { type: "ZONE", code: "COL-W1-C4", name: "עמודה 4", warehouse: "מחסן 1" };
     default:
@@ -68,12 +85,12 @@ export function sampleLabel(type: LabelType | "TEST"): LabelContent {
  */
 export async function previewLabel(
   orgId: string,
-  opts: { type: LabelType; stock: string; dotsPerMm: 8 | 12; profile?: Partial<z.infer<typeof labelProfileSchema>>; content?: LabelContent; scale?: number },
+  opts: { type: LabelType; stock: string; dotsPerMm: 8 | 12; profile?: Partial<z.infer<typeof labelProfileSchema>>; content?: LabelContent; sample?: number; scale?: number },
 ) {
   const stock = LABEL_STOCKS[opts.stock];
   if (!stock) throw new AppError("VALIDATION", "גודל מדבקה לא מוכר");
   const profile = opts.profile ? labelProfileSchema.parse({ ...DEFAULT_LABEL_PROFILES[opts.type], ...opts.profile }) : resolveProfile(opts.type, await getLabelProfiles(orgId));
-  const layout = layoutLabel(opts.content ?? sampleLabel(opts.type), stock, profile);
+  const layout = layoutLabel(opts.content ?? sampleLabel(opts.type, opts.sample), stock, profile);
   const rendered = await renderLabel(layout, opts.dotsPerMm);
   return {
     png: await renderLabelPng(rendered, opts.scale ?? 3),

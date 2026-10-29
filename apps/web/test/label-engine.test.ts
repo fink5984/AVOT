@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
-import { DEFAULT_LABEL_PROFILES, LABEL_STOCKS, barcodeModuleDots, layoutLabel, resolveProfile, type LabelContent, type LayoutBarcode, type LayoutText } from "@avot/shared";
+import { DEFAULT_LABEL_PROFILES, LABEL_STOCKS, labelProfileSchema, barcodeModuleDots, layoutLabel, resolveProfile, type LabelContent, type LayoutBarcode, type LayoutText } from "@avot/shared";
 import { code128Modules } from "@/lib/barcode/code128";
 import { renderLabel, renderLabelPng } from "@/server/labels/render";
 import { renderZpl, layoutFor } from "@/server/labels/zpl";
+import { renderTextBitmap } from "@/server/labels/bitmap";
 
 const book = (title: string, n = "10000041"): LabelContent => ({ type: "BOOK", code: n, inventoryNumber: n, title });
 const LONG = "שולחן ערוך — אורח חיים, עם פירוש משנה ברורה ובאר היטב והגהות הגר״א (דפוס וילנא, תרמ״ה) — כרך ראשון";
@@ -169,5 +170,78 @@ describe("one engine for ZPL, preview and the Windows driver", () => {
     expect(r.widthDots).toBe(684);
     expect(r.barcode!.moduleDots).toBeGreaterThanOrEqual(3);
     expect(r.barcode!.fits).toBe(true);
+  });
+});
+
+describe("label typefaces — classic / traditional / modern", () => {
+  const styles = ["classic", "traditional", "modern"] as const;
+  const titles = ["נועם אלימלך", 'שו"ת חתם סופר', "שולחן ערוך — אורח חיים, עם פירוש משנה ברורה ובאר היטב (דפוס וילנא)", "ספר הזוהר (ג׳ כרכים) 1924"];
+  const bookWith = (title: string, style: (typeof styles)[number], stockKey = "57x32") =>
+    layoutFor({ type: "BOOK", code: "10000041", inventoryNumber: "10000041", title }, LABEL_STOCKS[stockKey]!, { BOOK: { fontStyle: style } });
+
+  it("the default is classic and the choice travels in the layout (so the Windows station draws the same typeface)", () => {
+    expect(DEFAULT_LABEL_PROFILES.BOOK.fontStyle).toBe("classic");
+    for (const s of styles) for (const i of bookWith("x", s).items) if (i.kind === "text") expect(i.font).toBe(s);
+  });
+
+  it("each typeface rasterises differently, and the same inputs always give the same dots (preview = print)", async () => {
+    const seen = new Set<string>();
+    for (const s of styles) {
+      const a = await renderLabel(bookWith(titles[0]!, s), 8);
+      const b = await renderLabel(bookWith(titles[0]!, s), 8);
+      const hex = (r: typeof a) => r.texts.map((t) => t.bitmap.data.toString("hex")).join("|");
+      expect(hex(a)).toBe(hex(b));
+      seen.add(hex(a));
+    }
+    expect(seen.size).toBe(3);
+  });
+
+  it("short, long, gershayim and number titles fit their boxes in every typeface, on every stock, at 203 and 300 dpi", async () => {
+    for (const s of styles)
+      for (const stock of Object.keys(LABEL_STOCKS))
+        for (const dpm of [8, 12])
+          for (const t of titles) {
+            const r = await renderLabel(bookWith(t, s, stock), dpm);
+            for (const p of r.texts) {
+              expect(p.bitmap.height, `${s} ${stock} ${dpm} ${t}`).toBeLessThanOrEqual(Math.round(p.item.h * dpm) + 1);
+              expect(p.bitmap.width).toBe(Math.round(p.item.w * dpm));
+            }
+          }
+  });
+
+  it("a long name is shown whole in two lines when it can be — not cut", async () => {
+    for (const s of styles) {
+      const r = await renderLabel(bookWith('שו"ת חתם סופר על התורה - חלק שלישי', s), 8);
+      const title = r.texts.find((p) => p.item.role === "title")!;
+      // two lines of text, no ellipsis: its height is clearly more than one line's
+      const oneLine = (await renderLabel(bookWith("שו״ת", s), 8)).texts.find((p) => p.item.role === "title")!.bitmap.height;
+      expect(title.bitmap.height, s).toBeGreaterThan(oneLine * 1.5);
+    }
+  });
+
+  it("thermal safe: the strokes of the title are not hair-thin dots (at 203 and 300 dpi)", async () => {
+    for (const dpm of [8, 12])
+      for (const s of styles) {
+        const b = await renderTextBitmap('שו"ת חתם סופר נועם אלימלך', { width: 40 * dpm, maxHeight: 12 * dpm, fontPx: 5 * dpm, minFontPx: 5 * dpm, font: s, bold: true, maxLines: 3 });
+        let ink = 0;
+        let thin = 0;
+        for (let y = 0; y < b.height; y++) {
+          let run = 0;
+          for (let x = 0; x <= b.width; x++) {
+            if (x < b.width && (b.data[y * b.bytesPerRow + (x >> 3)]! & (0x80 >> (x & 7))) !== 0) run++;
+            else {
+              if (run) ink += run;
+              if (run === 1) thin++;
+              run = 0;
+            }
+          }
+        }
+        expect(ink).toBeGreaterThan(2500);
+        expect(thin / ink, `${s} ${dpm}`).toBeLessThan(0.05); // almost no single-dot-wide strokes: they would not print
+      }
+  });
+
+  it("the profile rejects an unknown typeface", () => {
+    expect(() => labelProfileSchema.parse({ fontStyle: "comic" })).toThrow();
   });
 });

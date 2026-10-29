@@ -86,6 +86,7 @@ export async function renderLabel(layout: LabelLayout, dotsPerMm: number): Promi
         minFontPx: Math.max(10, Math.round(item.minSizeMm * dotsPerMm)),
         align: alignOf(item.align),
         bold: item.bold,
+        font: item.font,
         maxLines: item.maxLines,
       });
       const free = Math.max(0, hDots - bitmap.height);

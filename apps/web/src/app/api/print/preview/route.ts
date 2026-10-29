@@ -22,7 +22,7 @@ export const GET = route(async (req) => {
       throw new AppError("VALIDATION", "הגדרות התווית אינן תקינות");
     }
   }
-  const { png, info } = await previewLabel(user.organizationId, { type: type as LabelType, stock: p.get("stock") ?? "57x32", dotsPerMm: p.get("dpm") === "12" ? 12 : 8, profile });
+  const { png, info } = await previewLabel(user.organizationId, { type: type as LabelType, stock: p.get("stock") ?? "57x32", dotsPerMm: p.get("dpm") === "12" ? 12 : 8, profile, sample: Number(p.get("sample") ?? 0) || 0 });
   return new Response(new Uint8Array(png), {
     headers: { "content-type": "image/png", "cache-control": "no-store", "x-label-info": encodeURIComponent(JSON.stringify(info)) },
   });

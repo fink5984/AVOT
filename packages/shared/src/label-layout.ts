@@ -18,7 +18,18 @@ export type LabelType = (typeof LABEL_TYPES)[number];
 
 export const LABEL_TYPE_NAMES: Record<LabelType, string> = { BOOK: "תווית ספר", LOCATION: "תווית מדף", ZONE: "תווית עמודה" };
 
+/** The three ready-made typefaces of the labels (all SIL OFL): classic = Frank Ruhl Libre, traditional = David Libre, modern = Heebo. */
+export const FONT_STYLES = ["classic", "traditional", "modern"] as const;
+export type FontStyle = (typeof FONT_STYLES)[number];
+export const FONT_STYLE_NAMES: Record<FontStyle, { name: string; sub: string; family: string }> = {
+  classic: { name: "קלאסי", sub: "אופי ספרותי ויוקרתי", family: "Frank Ruhl Libre" },
+  traditional: { name: "מסורתי", sub: "אופי עברי מסורתי", family: "David Libre" },
+  modern: { name: "מודרני", sub: "נקי ופשוט", family: "Heebo" },
+};
+
 export const labelProfileSchema = z.object({
+  /** the typeface of every text on the label; one choice for all label types (saving it on one type updates the others) */
+  fontStyle: z.enum(FONT_STYLES).default("classic"),
   /** white border on every side */
   marginMm: z.number().min(1).max(6).default(2),
   /** the big text at the top (book title / shelf / column name) — the starting size, it shrinks to fit two lines */
@@ -84,6 +95,8 @@ export interface LayoutText {
   valign: "middle" | "top" | "bottom";
   /** at most this many lines: the font shrinks first, then the text is cut with an ellipsis */
   maxLines: number;
+  /** the typeface (the drawing side loads the matching bundled file; there is no dependence on installed fonts) */
+  font: FontStyle;
 }
 
 export interface LayoutBarcode {
@@ -191,10 +204,10 @@ function stack(opts: {
     }
   }
   // with a subtitle the title sits right above it; alone it is centred in its zone
-  items.push({ kind: "text", ...opts.title, x: round2(titleX), y: round2(y), w: round2(titleW), h: round2(titleH), bold: true, align: p.titleAlign, valign: opts.subtitle ? "bottom" : "middle", maxLines: 2 });
+  items.push({ kind: "text", ...opts.title, x: round2(titleX), y: round2(y), w: round2(titleW), h: round2(titleH), bold: true, font: p.fontStyle, align: p.titleAlign, valign: opts.subtitle ? "bottom" : "middle", maxLines: 2 });
   y += titleH;
   if (opts.subtitle) {
-    items.push({ kind: "text", ...opts.subtitle, x: m, y: round2(y), w: round2(innerW), h: subtitleH, bold: false, align: p.titleAlign, valign: "top", maxLines: 1 });
+    items.push({ kind: "text", ...opts.subtitle, x: m, y: round2(y), w: round2(innerW), h: subtitleH, bold: false, font: p.fontStyle, align: p.titleAlign, valign: "top", maxLines: 1 });
     y += subtitleH;
   }
   y += gap;
@@ -202,7 +215,7 @@ function stack(opts: {
   y += barH;
   if (opts.number) {
     y += gap;
-    items.push({ kind: "text", role: "number", text: opts.number, x: m, y: round2(y), w: round2(innerW), h: numberH, sizeMm: p.numberSizeMm, minSizeMm: Math.min(p.numberSizeMm, 2.4), bold: false, align: "center", valign: "top", maxLines: 1 });
+    items.push({ kind: "text", role: "number", text: opts.number, x: m, y: round2(y), w: round2(innerW), h: numberH, sizeMm: p.numberSizeMm, minSizeMm: Math.min(p.numberSizeMm, 2.4), bold: false, font: p.fontStyle, align: "center", valign: "top", maxLines: 1 });
   }
   return items;
 }

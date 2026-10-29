@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_LABEL_PROFILES, LABEL_TYPES, LABEL_TYPE_NAMES, type LabelProfile, type LabelType } from "@avot/shared";
+import { DEFAULT_LABEL_PROFILES, FONT_STYLES, FONT_STYLE_NAMES, LABEL_TYPES, LABEL_TYPE_NAMES, type LabelProfile, type LabelType } from "@avot/shared";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/field";
 import { Panel } from "@/components/ui/misc";
@@ -24,6 +24,7 @@ interface Info {
 }
 
 const STOCKS = ["50x25", "57x32", "70x40", "100x50"];
+const BOOK_SAMPLES = ["נועם אלימלך", 'שו"ת חתם סופר', "שם ארוך — בשתי שורות"];
 
 function Slider({ label, value, min, max, step, unit = "מ״מ", onChange }: { label: string; value: number; min: number; max: number; step: number; unit?: string; onChange: (v: number) => void }) {
   return (
@@ -51,6 +52,7 @@ export function LabelCalibration({ printerId, labelSize, dotsPerMm }: { printerI
   const [draft, setDraft] = useState<LabelProfile | null>(null);
   const [info, setInfo] = useState<Info | null>(null);
   const [busy, setBusy] = useState(false);
+  const [sample, setSample] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const reqId = useRef(0);
 
@@ -71,7 +73,7 @@ export function LabelCalibration({ printerId, labelSize, dotsPerMm }: { printerI
     const id = ++reqId.current;
     const t = setTimeout(async () => {
       try {
-        const q = new URLSearchParams({ type, stock, dpm: String(dotsPerMm === 12 ? 12 : 8), profile: JSON.stringify(draft) });
+        const q = new URLSearchParams({ type, stock, dpm: String(dotsPerMm === 12 ? 12 : 8), profile: JSON.stringify(draft), sample: String(sample) });
         const r = await fetch(`/api/print/preview?${q}`, { credentials: "same-origin" });
         if (!r.ok) return;
         const blob = await r.blob();
@@ -87,7 +89,7 @@ export function LabelCalibration({ printerId, labelSize, dotsPerMm }: { printerI
       }
     }, 180);
     return () => clearTimeout(t);
-  }, [draft, type, stock, dotsPerMm]);
+  }, [draft, type, stock, dotsPerMm, sample]);
 
   const dirty = !!draft && !!current && JSON.stringify(draft) !== JSON.stringify(current.profile);
   const set = useCallback((patch: Partial<LabelProfile>) => setDraft((d) => (d ? { ...d, ...patch } : d)), []);
@@ -97,7 +99,8 @@ export function LabelCalibration({ printerId, labelSize, dotsPerMm }: { printerI
     setBusy(true);
     try {
       await api(`/api/print/templates/${type}`, { method: "PUT", json: { profile: draft } });
-      setTemplates((ts) => ts?.map((t) => (t.type === type ? { ...t, profile: draft, customised: true } : t)) ?? ts);
+      // the typeface is one setting for every label type
+      setTemplates((ts) => ts?.map((t) => (t.type === type ? { ...t, profile: draft, customised: true } : { ...t, profile: { ...t.profile, fontStyle: draft.fontStyle } })) ?? ts);
       toast.success("העיצוב נשמר — כל נקודות ההדפסה משתמשות בו");
       return true;
     } catch (err) {
@@ -165,6 +168,30 @@ export function LabelCalibration({ printerId, labelSize, dotsPerMm }: { printerI
         ) : (
           <div className="grid gap-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
             <div className="space-y-3.5">
+              <fieldset className="text-[13px]">
+                <legend className="mb-1">גופן התוויות (לכל סוגי התוויות)</legend>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {FONT_STYLES.map((f) => (
+                    <label key={f} className={cn("cursor-pointer rounded-md border px-2.5 py-2 text-center transition-colors", draft.fontStyle === f ? "border-ink bg-stone-2 ring-1 ring-ink" : "border-rule hover:bg-stone-2")}>
+                      <input type="radio" name="label-font" value={f} checked={draft.fontStyle === f} onChange={() => set({ fontStyle: f })} className="sr-only" />
+                      <span className="block font-medium">{FONT_STYLE_NAMES[f].name}</span>
+                      <span className="block text-[11.5px] text-muted">{FONT_STYLE_NAMES[f].sub}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              {type === "BOOK" && (
+                <label className="block text-[13px]">
+                  <span className="mb-1 block">שם לדוגמה בתצוגה</span>
+                  <Select value={sample} onChange={(e) => setSample(Number(e.target.value))} aria-label="שם לדוגמה בתצוגה">
+                    {BOOK_SAMPLES.map((s, i) => (
+                      <option key={s} value={i}>
+                        {s}
+                      </option>
+                    ))}
+                  </Select>
+                </label>
+              )}
               <Slider label={type === "BOOK" ? "גודל שם הספר" : type === "LOCATION" ? "גודל שם המדף" : "גודל שם העמודה"} value={draft.titleSizeMm} min={2.5} max={14} step={0.5} onChange={(v) => set({ titleSizeMm: v })} />
               <label className="block text-[13px]">
                 <span className="mb-1 block">מיקום השם</span>

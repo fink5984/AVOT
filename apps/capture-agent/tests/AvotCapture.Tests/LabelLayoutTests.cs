@@ -114,4 +114,48 @@ public class LabelLayoutTests
                 if (Dark(bmp, x, y)) ink++;
         Assert.True(ink > 800, "the logo has real ink");
     }
+
+    private static LabelLayoutDto WithFont(LabelLayoutDto l, string font) => l with { Items = l.Items.Select(i => i.Kind == "text" ? i with { Font = font } : i).ToList() };
+
+    private static string Hash(Bitmap b)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var y = 0; y < b.Height; y++)
+            for (var x = 0; x < b.Width; x++) sb.Append(Dark(b, x, y) ? '1' : '0');
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.ASCII.GetBytes(sb.ToString())));
+    }
+
+    [Fact]
+    public void The_three_bundled_typefaces_load_from_the_Fonts_folder_not_from_the_PC()
+    {
+        foreach (var style in new[] { "classic", "traditional", "modern" })
+            foreach (var bold in new[] { true, false })
+                Assert.True(LabelFonts.Available(style, bold), $"{style} {(bold ? "bold" : "regular")} is bundled");
+    }
+
+    [Fact]
+    public void Each_typeface_draws_its_own_letters_and_all_of_them_stay_inside_the_label()
+    {
+        var hashes = new HashSet<string>();
+        foreach (var style in new[] { "classic", "traditional", "modern" })
+        {
+            foreach (var layout in Layouts())
+            {
+                using var bmp = Render(WithFont(layout, style));
+                var ink = 0;
+                for (var y = 0; y < bmp.Height; y += 2)
+                    for (var x = 0; x < bmp.Width; x += 2) if (Dark(bmp, x, y)) ink++;
+                Assert.True(ink > 200, $"{style}: something is printed");
+            }
+            using var one = Render(WithFont(Layouts()[0], style));
+            hashes.Add(Hash(one));
+        }
+        Assert.Equal(3, hashes.Count); // classic, traditional and modern are visibly different pages
+    }
+
+    [Fact]
+    public void Layout_json_carries_the_typeface()
+    {
+        Assert.All(Layouts().SelectMany(l => l.Items).Where(i => i.Kind == "text"), i => Assert.Equal("classic", i.Font));
+    }
 }

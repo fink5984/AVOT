@@ -34,7 +34,9 @@ public sealed record LayoutItemDto(
     [property: JsonPropertyName("maxLines")] int MaxLines,
     [property: JsonPropertyName("moduleMmMin")] double ModuleMmMin,
     [property: JsonPropertyName("moduleMmMax")] double ModuleMmMax,
-    [property: JsonPropertyName("quietModules")] int QuietModules);
+    [property: JsonPropertyName("quietModules")] int QuietModules,
+    /// <summary>"classic" | "traditional" | "modern": which of the bundled label typefaces the text is drawn with.</summary>
+    [property: JsonPropertyName("font")] string? Font = null);
 
 public sealed record LabelLayoutDto(
     [property: JsonPropertyName("widthMm")] double WidthMm,
