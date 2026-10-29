@@ -29,6 +29,7 @@ import { Dialog } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/field";
 import { Kbd } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
+import { downloadOptions } from "@/lib/asset-versions";
 import { ImageViewer, assetViewerDetails, type ViewerItem } from "@/components/image-viewer";
 import { OutboxIndicator } from "@/components/shell/outbox-indicator";
 import { fmt, t } from "@/i18n";
@@ -787,7 +788,8 @@ export function CaptureStudio({
       src: asset?.previewUrl ?? it.src,
       fullSrc: full,
       originalSrc: asset ? `/api/assets/${asset.id}/original` : it.src,
-      downloadHref: asset ? `/api/assets/${asset.id}/original?download=1` : null,
+      download: asset ? downloadOptions(asset) : null,
+      hasProcessed: !!asset?.processed,
       rotation: it.rotation,
       details: [...(d?.details ?? [{ label: "מצב", value: t.uploadStage[it.stage] }]), ...(asset?.processed ? [{ label: "עיבוד", value: processedLabel(asset.processed) }] : [])],
       warnings: [...(d?.warnings ?? []), ...(asset?.processed?.warnings.map(warningLabel) ?? [])],

@@ -197,7 +197,8 @@ async function collect(orgId: string, p: ExportRequest): Promise<ExportRow[]> {
           width: a.width,
           height: a.height,
           files: a.files,
-          processed: a.processedKey ? { key: a.processedKey, ext: a.processedKey.split(".").pop() ?? "jpg" } : null,
+          // only the finished full-resolution file counts: while the photo is queued / preview-only / failed the key may be an older version
+          processed: a.processedKey && (a.imageState === "DONE" || a.imageState === "NEEDS_REVIEW") ? { key: a.processedKey, ext: a.processedKey.split(".").pop() ?? "jpg" } : null,
         }),
       );
     }
@@ -244,6 +245,8 @@ export async function runExportJob(job: Job): Promise<void> {
   const lotFolders = new Map<number, string>();
   const usedLotFolders = new Set<string>();
   const manifest: Record<string, unknown>[] = [];
+  /** processed ZIP: photos that had no finished processed file — their original is included, named and listed as such */
+  const withoutProcessed: string[] = [];
 
   const work = (async () => {
     let done = 0;
@@ -258,6 +261,7 @@ export async function runExportJob(job: Job): Promise<void> {
       const stem = `L${padLotNumber(r.lotNumber)}-${slug}-${padLotNumber(r.index)}`;
       const dir = `${catalogFolder}/${lotFolder}/${slug}`;
       const entryFiles: string[] = [];
+      let version = p.variant === "catalog-jpeg" ? "catalog-jpeg" : p.variant;
       for (const f of r.files) {
         if (f.role === "RAW" && !p.includeRaw) continue;
         if (p.variant === "processed" && f.role === "PRIMARY" && r.processed) {
@@ -278,9 +282,15 @@ export async function runExportJob(job: Job): Promise<void> {
           await appendAndWait(jpeg, name, r.capturedAt);
           entryFiles.push(name);
         } else {
-          const name = `${dir}/${stem}.${f.extension}`;
+          // never present an original as a processed image: in a processed export it is marked in the file name and in the report
+          const missing = p.variant === "processed" && f.role === "PRIMARY";
+          const name = `${dir}/${stem}${missing ? "-ORIGINAL-NOT-PROCESSED" : ""}.${f.extension}`;
           await appendAndWait(await store.getStream(f.storageKey), name, r.capturedAt);
           entryFiles.push(name);
+          if (missing) {
+            version = "original (no processed file)";
+            withoutProcessed.push(name);
+          }
         }
       }
       manifest.push({
@@ -298,6 +308,7 @@ export async function runExportJob(job: Job): Promise<void> {
         captured_at: r.capturedAt.toISOString(),
         captured_by: r.createdBy ?? "",
         sha256_original: r.files.map((f) => `${f.role}:${f.sha256}`).join(" | "),
+        version,
         asset_id: r.assetId,
       });
       done++;
@@ -306,7 +317,13 @@ export async function runExportJob(job: Job): Promise<void> {
     const headers = Object.keys(manifest[0] ?? {});
     const csv = "﻿" + [headers.join(","), ...manifest.map((m) => headers.map((h) => csvCell(m[h])).join(","))].join("\r\n");
     zip.append(csv, { name: `${catalogFolder}/manifest.csv` });
-    zip.append(JSON.stringify({ generatedAt: new Date().toISOString(), variant: p.variant, items: manifest }, null, 2), {
+    if (withoutProcessed.length) {
+      zip.append(
+        ["These photos have no finished processed image (queued, failed or never processed).", "Their ORIGINAL is included instead, marked ORIGINAL-NOT-PROCESSED in the file name.", "", ...withoutProcessed].join("\r\n"),
+        { name: `${catalogFolder}/NOT-PROCESSED.txt` },
+      );
+    }
+    zip.append(JSON.stringify({ generatedAt: new Date().toISOString(), variant: p.variant, withoutProcessedFile: withoutProcessed.length, items: manifest }, null, 2), {
       name: `${catalogFolder}/manifest.json`,
     });
     await zip.finalize();

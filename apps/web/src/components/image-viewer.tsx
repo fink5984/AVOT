@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, Maximize, Minus, Plus, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, Download, Maximize, Minus, Plus, X } from "lucide-react";
+import { PROCESSED_NOT_READY, startDownload, type DownloadOptions } from "@/lib/asset-versions";
 import { fmt, t } from "@/i18n";
 import { cn } from "@/lib/cn";
 
@@ -14,7 +15,10 @@ export interface ViewerItem {
   fullSrc?: string | null;
   /** full-resolution original, loaded on demand for 1:1 inspection */
   originalSrc?: string | null;
-  downloadHref?: string | null;
+  /** the download choices of this photo (null = the user may not download) */
+  download?: DownloadOptions | null;
+  /** the photo has a processed version (even if it is not ready yet): enables the processed | original switch */
+  hasProcessed?: boolean;
   rotation?: number;
   details?: { label: string; value: React.ReactNode }[];
   warnings?: string[];
@@ -31,6 +35,9 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
   const [hires, setHires] = useState(false);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [showInfo, setShowInfo] = useState(true);
+  const [picked, setPicked] = useState<{ key: string; mode: "processed" | "original" } | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
   const stage = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -39,9 +46,13 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
     setZoom(1);
     setPan({ x: 0, y: 0 });
     setNatural(null);
+    setMenuOpen(false);
+    setNotice(null);
   }, [index]);
 
-  const hiResSrc = item?.fullSrc ?? item?.originalSrc ?? null;
+  // processed | original: the choice belongs to one photo — another photo opens in its own default, never showing the previous file
+  const mode: "processed" | "original" = item?.hasProcessed ? (picked?.key === item.key ? picked.mode : "processed") : "original";
+  const hiResSrc = (mode === "original" ? item?.originalSrc : (item?.fullSrc ?? item?.originalSrc)) ?? null;
   // show the fast preview instantly, then swap to the full-resolution picture once it has fully loaded (from cache, so no flash)
   useEffect(() => {
     setHires(false);
@@ -83,7 +94,18 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
   }, [index, items.length, onClose, onIndex, oneToOne]);
 
   if (!item) return null;
-  const src = hires && hiResSrc ? hiResSrc : item.src;
+  // the original has no fast preview: it is the file itself
+  const src = mode === "original" ? (item.originalSrc ?? item.src) : hires && hiResSrc ? hiResSrc : item.src;
+  const dl = item.download;
+  const downloadProcessed = () => {
+    if (dl?.processed) startDownload(dl.processed.href);
+    else setNotice(dl?.processedMessage ?? PROCESSED_NOT_READY);
+  };
+  const downloadCurrent = () => {
+    if (!dl) return;
+    if (mode === "original") startDownload(dl.original.href);
+    else downloadProcessed();
+  };
 
   return (
     <div className="fixed inset-0 z-[90] flex flex-col bg-studio text-studio-text" role="dialog" aria-modal="true" aria-label={item.title}>
@@ -92,6 +114,30 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
         <span className="num text-[12px] text-studio-muted">
           {index + 1}/{items.length}
         </span>
+        {item.hasProcessed && (
+          <div role="group" aria-label="גרסת התמונה" className="flex overflow-hidden rounded-sm border border-studio-rule text-[12px]">
+            {(["processed", "original"] as const).map((m) => (
+              <button
+                key={m}
+                aria-pressed={mode === m}
+                className={cn("px-2.5 py-1 hover:bg-studio-3", mode === m && "bg-studio-3 font-medium")}
+                onClick={() => {
+                  setPicked({ key: item.key, mode: m });
+                  setNatural(null);
+                  setZoom(1);
+                  setPan({ x: 0, y: 0 });
+                }}
+              >
+                {m === "processed" ? "מעובדת" : "מקורית"}
+              </button>
+            ))}
+          </div>
+        )}
+        {notice && (
+          <span role="status" className="truncate rounded-sm bg-[#a8741a]/15 px-2 py-0.5 text-[12px] text-[#e8c27a]">
+            {notice}
+          </span>
+        )}
         <div className="ms-auto flex items-center gap-1">
           <button className="rounded-sm p-1.5 hover:bg-studio-3" onClick={() => setZoom((z) => Math.max(1, z / 1.5))} aria-label="הקטנה">
             <Minus className="size-4" />
@@ -115,10 +161,58 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
           <button className={cn("rounded-sm px-2 py-1 text-[12px] hover:bg-studio-3", showInfo && "bg-studio-3")} onClick={() => setShowInfo((s) => !s)}>
             פרטים
           </button>
-          {item.downloadHref && (
-            <a href={item.downloadHref} className="rounded-sm p-1.5 hover:bg-studio-3" aria-label="הורדת המקור" title="הורדת קובץ המקור">
-              <Download className="size-4" />
-            </a>
+          {dl && (
+            <div className="relative flex items-center">
+              <button
+                className="rounded-s-sm p-1.5 hover:bg-studio-3"
+                onClick={downloadCurrent}
+                aria-label={mode === "original" ? "הורדת המקור" : "הורדת התמונה המעובדת"}
+                title={mode === "original" ? "הורדת התמונה המקורית" : "הורדת התמונה המעובדת"}
+              >
+                <Download className="size-4" />
+              </button>
+              <button className="rounded-e-sm px-0.5 py-1.5 hover:bg-studio-3" onClick={() => setMenuOpen((o) => !o)} aria-label="אפשרויות הורדה" aria-haspopup="menu" aria-expanded={menuOpen}>
+                <ChevronDown className="size-3.5" />
+              </button>
+              {menuOpen && (
+                <div role="menu" className="absolute end-0 top-full z-10 mt-1 w-52 rounded-md border border-studio-rule bg-studio-2 py-1 text-[12.5px] shadow-lg">
+                  {item.hasProcessed && (
+                    <button
+                      role="menuitem"
+                      className="block w-full px-3 py-1.5 text-start hover:bg-studio-3"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        downloadProcessed();
+                      }}
+                    >
+                      הורד תמונה מעובדת
+                    </button>
+                  )}
+                  <button
+                    role="menuitem"
+                    className="block w-full px-3 py-1.5 text-start hover:bg-studio-3"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      startDownload(dl.original.href);
+                    }}
+                  >
+                    הורד תמונה מקורית
+                  </button>
+                  {dl.raw && (
+                    <button
+                      role="menuitem"
+                      className="block w-full px-3 py-1.5 text-start hover:bg-studio-3"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        startDownload(dl.raw!.href);
+                      }}
+                    >
+                      הורד RAW
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           )}
           <button className="ms-2 rounded-sm p-1.5 hover:bg-studio-3" onClick={onClose} aria-label="סגירה (Esc)">
             <X className="size-4.5" />
@@ -144,6 +238,7 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
         >
           {src ? (
             <img
+              key={`${item.key}:${mode}`}
               ref={imgRef}
               src={src}
               alt={item.title}
@@ -189,7 +284,7 @@ export function ImageViewer({ items, index, onIndex, onClose }: { items: ViewerI
                 <div>
                   <dt className="text-[11px] text-studio-muted">רזולוציה מוצגת כעת</dt>
                   <dd className="num text-start">
-                    {natural.w}×{natural.h} {hires ? "(רזולוציה מלאה)" : "(תצוגה מקדימה)"}
+                    {natural.w}×{natural.h} {mode === "original" ? "(מקור)" : hires ? "(רזולוציה מלאה)" : "(תצוגה מקדימה)"}
                   </dd>
                 </div>
               )}

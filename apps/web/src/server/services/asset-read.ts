@@ -2,7 +2,7 @@ import "server-only";
 import { Readable } from "node:stream";
 import { CATEGORY_SLUG, padLotNumber } from "@avot/shared";
 import { db } from "../db";
-import { notFound } from "../errors";
+import { AppError, notFound } from "../errors";
 import { contentDisposition } from "../http";
 import { storage } from "../storage";
 
@@ -34,6 +34,9 @@ export async function serveAsset(
     key = asset.previewKey;
     contentType = "image/jpeg";
   } else if (kind === "processed") {
+    // a download is always the finished full-resolution file; while the photo is queued / preview-only / failed the stored key may be
+    // missing or an older version, and the caller must not silently get something else
+    if (opts.download && !(asset.imageState === "DONE" || asset.imageState === "NEEDS_REVIEW")) throw new AppError("CONFLICT", "התמונה המעובדת עדיין אינה מוכנה להורדה.");
     key = asset.processedKey;
     contentType = asset.processedMime ?? "image/jpeg";
     if (key) filename = `${asset.item.inventoryNumber}-${CATEGORY_SLUG[asset.category]}-${padLotNumber(asset.sequence)}.${key.split(".").pop()}`;
@@ -55,7 +58,7 @@ export async function serveAsset(
       inline: !opts.download,
       expiresInSeconds: 300,
     });
-    return new Response(null, { status: 302, headers: { location: url, "cache-control": "private, max-age=240" } });
+    return new Response(null, { status: 302, headers: { location: url, "cache-control": kind === "original" || kind === "processed" ? "private, no-store" : "private, max-age=240" } });
   }
   // a DB row whose file is absent from local storage (e.g. a DB shared with another machine) is a 404, not a 500
   const stream = await store.getStream(key).catch((err: NodeJS.ErrnoException) => {

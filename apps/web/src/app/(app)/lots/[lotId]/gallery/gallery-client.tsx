@@ -41,6 +41,7 @@ import { Checkbox, Field, Input, Select, Textarea } from "@/components/ui/field"
 import { Menu } from "@/components/ui/menu";
 import { Tabs } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/toast";
+import { PROCESSED_NOT_READY, downloadOptions, processedReady, startDownload } from "@/lib/asset-versions";
 import { ExportDialog } from "@/components/export-dialog";
 import { ImageViewer, assetViewerDetails, type ViewerItem } from "@/components/image-viewer";
 import { fmt, t } from "@/i18n";
@@ -282,7 +283,8 @@ export function Gallery({
       src: a.previewUrl,
       fullSrc: a.processedUrl ?? (a.processed ? a.previewUrl : `/api/assets/${a.id}/original`),
       originalSrc: `/api/assets/${a.id}/original`,
-      downloadHref: perms.download ? `/api/assets/${a.id}/original?download=1` : null,
+      download: perms.download ? downloadOptions(a) : null,
+      hasProcessed: !!a.processed,
       rotation: a.rotation,
       details: d.details,
       warnings: d.warnings,
@@ -503,7 +505,19 @@ export function Gallery({
           await refresh();
         }}
       />
-      {exportReq && <ExportDialog open onClose={() => setExportReq(null)} title={exportReq.title} request={exportReq.req} />}
+      {exportReq && (
+        <ExportDialog
+          open
+          onClose={() => setExportReq(null)}
+          title={exportReq.title}
+          request={exportReq.req}
+          photos={(() => {
+            const r = exportReq.req;
+            const scoped = r.scope === "selection" ? assets.filter((a) => r.assetIds.includes(a.id)) : r.scope === "category" ? assets.filter((a) => a.category === r.category) : assets;
+            return { total: scoped.length, processedReady: scoped.filter(processedReady).length };
+          })()}
+        />
+      )}
     </section>
   );
 }
@@ -588,9 +602,11 @@ function Tile({
   onEdit: () => void;
   onRotate: (delta: number) => void;
   onPrimary: () => void;
-  perms: { organize: boolean };
+  perms: { organize: boolean; download: boolean };
 }) {
+  const toast = useToast();
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: a.id, disabled: !sortable });
+  const dl = downloadOptions(a);
   const flags = [a.quality?.blurSuspect && "טשטוש?", a.quality?.overexposed && "חשיפת יתר?", a.quality?.underexposed && "כהה?", a.quality?.lowResolution && "רזולוציה נמוכה", a.quality?.duplicateOfAssetId && "כפילות", a.quality?.corrupt && "פגום"].filter(Boolean) as string[];
 
   return (
@@ -641,22 +657,34 @@ function Tile({
           </span>
         )}
 
-        {perms.organize && (
+        {(perms.organize || perms.download) && (
           <div className="absolute end-2 top-2 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            {!a.isPrimary && (
+            {perms.download && (
+              <TileAction
+                label={dl.primary?.kind === "original" ? "הורדת המקור (התמונה לא עובדה)" : "הורדת התמונה המעובדת"}
+                onClick={() => (dl.primary ? startDownload(dl.primary.href) : toast.error(dl.processedMessage ?? PROCESSED_NOT_READY))}
+              >
+                <Download />
+              </TileAction>
+            )}
+            {perms.organize && !a.isPrimary && (
               <TileAction label="הגדרה כתמונה ראשית" onClick={onPrimary}>
                 <Star />
               </TileAction>
             )}
-            <TileAction label="סיבוב שמאלה" onClick={() => onRotate(-90)}>
-              <RotateCcw />
-            </TileAction>
-            <TileAction label="סיבוב ימינה" onClick={() => onRotate(90)}>
-              <RotateCw />
-            </TileAction>
-            <TileAction label="פרטים ועריכה" onClick={onEdit}>
-              <Pencil />
-            </TileAction>
+            {perms.organize && (
+              <>
+                <TileAction label="סיבוב שמאלה" onClick={() => onRotate(-90)}>
+                  <RotateCcw />
+                </TileAction>
+                <TileAction label="סיבוב ימינה" onClick={() => onRotate(90)}>
+                  <RotateCw />
+                </TileAction>
+                <TileAction label="פרטים ועריכה" onClick={onEdit}>
+                  <Pencil />
+                </TileAction>
+              </>
+            )}
           </div>
         )}
       </div>

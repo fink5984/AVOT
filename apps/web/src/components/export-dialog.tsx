@@ -23,9 +23,9 @@ export type ExportScope =
  * Starts a background ZIP export and follows its progress. Large exports are
  * built server-side by the job worker — never inside a request that can time out.
  */
-export function ExportDialog({ open, onClose, request, title }: { open: boolean; onClose: () => void; request: ExportScope; title: string }) {
+export function ExportDialog({ open, onClose, request, title, photos }: { open: boolean; onClose: () => void; request: ExportScope; title: string; /** what the caller knows about the photos in the scope, to warn before exporting */ photos?: { total: number; processedReady: number } }) {
   const toast = useToast();
-  const [variant, setVariant] = useState<"original" | "processed" | "catalog-jpeg">("original");
+  const [variant, setVariant] = useState<"original" | "processed" | "catalog-jpeg">("processed");
   const [maxSize, setMaxSize] = useState(3000);
   const [includeRaw, setIncludeRaw] = useState(true);
   const [readable, setReadable] = useState(false);
@@ -73,7 +73,7 @@ export function ExportDialog({ open, onClose, request, title }: { open: boolean;
             {(
               [
                 ["original", "קבצי מקור", "באיכות מלאה, כפי שצולמו."],
-                ["processed", "תמונות מעובדות", "חתוכות וללא רקע ירוק, ברזולוציה מלאה (במקור כשאין עיבוד)."],
+                ["processed", "תמונות מעובדות", "חתוכות וללא רקע ירוק, באיכות מלאה — אותם קבצים כמו בהורדה של תמונה בודדת."],
                 ["catalog-jpeg", "JPEG לקטלוג", "מוקטן לצלע ארוכה מוגדרת, איכות 90."],
               ] as const
             ).map(([v, title, sub]) => (
@@ -89,6 +89,12 @@ export function ExportDialog({ open, onClose, request, title }: { open: boolean;
               </label>
             ))}
           </fieldset>
+          {variant !== "original" && photos && photos.processedReady < photos.total && (
+            <p role="status" className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
+              {photos.total - photos.processedReady} מתוך {photos.total} תמונות אין להן עדיין תמונה מעובדת מוכנה.
+              {variant === "processed" ? " המקור שלהן ייכלל בקובץ בשם שמסומן ORIGINAL-NOT-PROCESSED, וירשם בדוח NOT-PROCESSED.txt." : " ה-JPEG שלהן ייווצר מהמקור."}
+            </p>
+          )}
           {variant === "catalog-jpeg" && (
             <Field label="צלע ארוכה (פיקסלים)">
               {(p) => <Input {...p} type="number" min={400} max={12000} step={100} value={maxSize} onChange={(e) => setMaxSize(Number(e.target.value))} className="num w-32 text-start" />}
