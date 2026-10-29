@@ -112,7 +112,7 @@ export interface LayoutImage {
 }
 
 /** width / height of the logo artwork */
-export const LOGO_ASPECT = 1.5;
+export const LOGO_ASPECT = 1.8;
 
 export type LayoutItem = LayoutText | LayoutBarcode | LayoutImage;
 
