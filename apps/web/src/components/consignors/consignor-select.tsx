@@ -87,8 +87,9 @@ export function ConsignorSelect({
   useEffect(() => setActive(Math.max(0, results.findIndex((r) => r.id === value?.id))), [results, value?.id]);
   useEffect(() => {
     if (!autoFocus) return;
-    // a consignor is already chosen: focus the field with the list closed — Enter then confirms it, typing searches
-    if (value) skipOpen.current = true;
+    // focused on arrival with the list closed (it would cover the dialog's buttons): typing, a click or the arrows open it;
+    // with a consignor already chosen Enter confirms it
+    skipOpen.current = true;
     input.current?.focus();
     skipOpen.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -150,6 +151,7 @@ export function ConsignorSelect({
             setOpen(true);
             e.currentTarget.select?.();
           }}
+          onClick={() => setOpen(true)}
           onChange={(e) => {
             setQuery(e.target.value);
             setOpen(true);

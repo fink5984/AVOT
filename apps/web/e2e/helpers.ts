@@ -57,7 +57,7 @@ export async function pickConsignor(dialog: Locator, name = E2E_CONSIGNOR) {
   if ((await combo.inputValue()) === name) return; // the last consignor is already offered
   await combo.click();
   await combo.fill(name);
-  await dialog.getByRole("option", { name: new RegExp(name) }).first().click();
+  await dialog.getByRole("option", { name: new RegExp(`^${name}`) }).first().click();
   await expect(combo).toHaveValue(name);
 }
 
