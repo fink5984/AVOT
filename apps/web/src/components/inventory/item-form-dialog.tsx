@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BOOK_SIZES, type BookSize } from "@avot/shared";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { useToast } from "@/components/ui/toast";
 import { t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
+import { ConsignorSelect } from "@/components/consignors/consignor-select";
+import type { ConsignorLite } from "@/components/consignors/consignor-dialog";
 
 export interface ItemFormValue {
   id?: string;
@@ -25,6 +27,8 @@ export interface ItemFormValue {
   widthMm: number | null;
   depthMm: number | null;
   sizeCategory: BookSize;
+  /** null on books received before consignors existed: they can be completed here */
+  consignor?: ConsignorLite | null;
   barcode?: string;
   inventoryNumber?: string;
 }
@@ -46,6 +50,17 @@ export function ItemFormDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const editing = !!initial?.id;
+  const [consignor, setConsignor] = useState<ConsignorLite | null>(initial?.consignor ?? null);
+  const [missing, setMissing] = useState(false);
+  // one key per opening: a double click or a retry after a lost response never receives the book twice
+  const opId = useRef(crypto.randomUUID());
+  useEffect(() => {
+    if (!open) return;
+    setConsignor(initial?.consignor ?? null);
+    setMissing(false);
+    opId.current = crypto.randomUUID();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initial?.id]);
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -53,7 +68,14 @@ export function ItemFormDialog({
     const str = (k: string) => String(f.get(k) ?? "").trim() || null;
     const mm = (k: string) => (str(k) ? Number(str(k)) : null);
     const barcode = str("barcode");
+    // a new book always needs a consignor; an existing one keeps its own and may only change it (or get its first)
+    if (!consignor && (!editing || initial?.consignor)) {
+      setMissing(true);
+      setError("יש לבחור מפקיד");
+      return;
+    }
     const body = {
+      ...(consignor ? { consignorId: consignor.id } : {}),
       title: str("title") ?? "",
       subtitle: str("subtitle"),
       author: str("author"),
@@ -78,7 +100,7 @@ export function ItemFormDialog({
         onClose();
         router.refresh();
       } else {
-        const r = await api<{ item: { id: string; inventoryNumber: string; title: string } }>("/api/inventory", { method: "POST", json: body });
+        const r = await api<{ item: { id: string; inventoryNumber: string; title: string } }>("/api/inventory", { method: "POST", json: { ...body, opId: opId.current } });
         toast.success(`נקלט למלאי: ${r.item.inventoryNumber}`, { detail: r.item.title });
         onClose();
         // push alone: a refresh() right after a push re-renders the current page and cancels the navigation
@@ -105,6 +127,20 @@ export function ItemFormDialog({
       <form id="item-form" onSubmit={submit} className="grid grid-cols-6 gap-x-3 gap-y-4">
         <Field label="שם הספר" required className="col-span-6">
           {(p) => <Input {...p} name="title" required maxLength={300} autoFocus defaultValue={initial?.title} />}
+        </Field>
+        <Field label="מפקיד" required={!editing || !!initial?.consignor} hint={editing && !initial?.consignor ? "ספר ישן ללא מפקיד — אפשר להשלים כאן" : undefined} error={missing && !consignor ? "יש לבחור מפקיד" : null} className="col-span-6">
+          {(p) => (
+            <ConsignorSelect
+              id={p.id}
+              value={consignor}
+              onChange={(c) => {
+                setConsignor(c);
+                setMissing(false);
+                setError(null);
+              }}
+              invalid={missing && !consignor}
+            />
+          )}
         </Field>
         <Field label="מחבר" className="col-span-3">
           {(p) => <Input {...p} name="author" maxLength={200} defaultValue={initial?.author ?? ""} />}

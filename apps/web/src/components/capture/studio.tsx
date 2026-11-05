@@ -33,7 +33,8 @@ import { downloadOptions } from "@/lib/asset-versions";
 import { ImageViewer, assetViewerDetails, type ViewerItem } from "@/components/image-viewer";
 import { OutboxIndicator } from "@/components/shell/outbox-indicator";
 import { fmt, t } from "@/i18n";
-import { api, errorMessage } from "@/lib/api";
+import { ApiError, api, errorMessage } from "@/lib/api";
+import { PhotographerNotes } from "@/components/photographer-notes";
 import { cn } from "@/lib/cn";
 import { outbox, sha256Hex, storageHealth, type OutboxEntry, type StorageHealth } from "@/lib/capture/outbox";
 import { uploader } from "@/lib/capture/uploader";
@@ -55,6 +56,7 @@ import { PhotoEditorDialog, warningLabel } from "./photo-editor";
 import { ControlRow } from "./control-row";
 import { ScanOpenDialog } from "./scan-open-dialog";
 import { NewBookDialog } from "./new-book-dialog";
+import { LabelPrintStatus, type PrintWatch } from "./print-status";
 
 interface LocalShot {
   captureId: string;
@@ -105,7 +107,7 @@ export function CaptureStudio({
   serverPrefs,
   simulatorAllowed,
 }: {
-  user: { id: string; name: string; canOrganize: boolean; canStatus: boolean; canDelete: boolean; canCreate: boolean };
+  user: { id: string; name: string; canOrganize: boolean; canStatus: boolean; canDelete: boolean; canCreate: boolean; canNotes: boolean };
   initialContext: CaptureLotContext;
   initialCategory: PhotoCategory;
   serverPrefs: unknown;
@@ -184,6 +186,9 @@ export function CaptureStudio({
   const [scanOpen, setScanOpen] = useState(false);
   const [newBook, setNewBook] = useState<null | "new" | "finish">(null);
   const [completing, setCompleting] = useState(false);
+  const [printWatch, setPrintWatch] = useState<PrintWatch | null>(null);
+  // one key per finish of a book: a double click / a retry after a timeout reuses it, so the label is queued once
+  const finishOp = useRef<{ itemId: string; status: string; opId: string } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
   const [liveStatus, setLiveStatus] = useState<LiveSegStatus | null>(null);
@@ -754,11 +759,41 @@ export function CaptureStudio({
     }
   }, []);
 
+  /**
+   * Finishes the current book: the server marks the photography status and queues ONE book label (idempotent on the
+   * key above). The label never blocks the finish: if it could not be queued the book is still finished and the
+   * photographer is told, with a retry that reuses the same key. Throws only when the finish itself failed.
+   */
   async function markComplete() {
-    // the photo status belongs to the book; a catalog lot mirrors it
-    if (ctxRef.current.target === "item") await api(`/api/inventory/${ctxRef.current.item.id}`, { method: "PATCH", json: { photoStatus: prefs.completeStatus } });
-    else await api(`/api/lots/${ctxRef.current.lot.id}`, { method: "PATCH", json: { status: prefs.completeStatus } });
-    setCtx((c) => ({ ...c, lot: { ...c.lot, status: prefs.completeStatus } }));
+    const c = ctxRef.current;
+    const status = prefs.completeStatus;
+    const label = c.target === "item" ? c.item.inventoryNumber : `פריט ${c.lot.lotNumber}`;
+    if (finishOp.current?.itemId !== c.item.id || finishOp.current.status !== status) finishOp.current = { itemId: c.item.id, status, opId: crypto.randomUUID() };
+    const op = finishOp.current;
+    let r: { print: { jobId: string; status: string } | { error: string } } | null = null;
+    for (let attempt = 0; !r; attempt++) {
+      try {
+        r = await api(`/api/lots/${c.lot.id}/finish-capture`, { method: "POST", json: { status, opId: op.opId } });
+      } catch (err) {
+        // lost connection: the same key is retried, so a request that did reach the server is not repeated
+        if (err instanceof ApiError && err.status === 0 && attempt < 2) {
+          await new Promise((res) => setTimeout(res, 1500 * (attempt + 1)));
+          continue;
+        }
+        throw err;
+      }
+    }
+    setCtx((cur) => (cur.item.id === c.item.id ? { ...cur, lot: { ...cur.lot, status } } : cur));
+    if ("error" in r.print) {
+      toast.warning(`${label} סומן ${t.lotStatus[status]}, אבל המדבקה לא נוספה לתור ההדפסה`, {
+        detail: r.print.error,
+        action: { label: "ניסיון נוסף", onClick: () => void markComplete().catch((e) => toast.error(errorMessage(e))) },
+      });
+      return;
+    }
+    finishOp.current = null;
+    setPrintWatch({ jobId: r.print.jobId, itemId: c.item.id, label: `${c.item.inventoryNumber} · ${c.lot.title}` });
+    toast.success(`${label} סומן ${t.lotStatus[status]} · המדבקה נוספה לתור ההדפסה`);
   }
 
   // ── lot completion / continuous mode ───────────────────────────
@@ -766,7 +801,6 @@ export function CaptureStudio({
     setCompleting(true);
     try {
       await markComplete();
-      toast.success(`${ctx.target === "item" ? ctx.item.inventoryNumber : `פריט ${ctx.lot.lotNumber}`} סומן: ${t.lotStatus[prefs.completeStatus]}`);
       setAdvanceOpen(false);
       if (ctx.next && prefs.continuous) await switchLot(ctx.next.id);
     } catch (err) {
@@ -894,8 +928,8 @@ export function CaptureStudio({
       <div className="flex min-h-0 flex-1">
         {/* side panel */}
         {!hidePanels && (
-          <aside className="flex w-[304px] shrink-0 flex-col overflow-y-auto border-e border-studio-rule bg-studio-2">
-            <section className="px-4 pb-4 pt-4">
+          <aside className="flex w-[304px] shrink-0 flex-col overflow-hidden border-e border-studio-rule bg-studio-2">
+            <section className="shrink-0 px-4 pb-4 pt-4">
               <div className="flex items-center justify-between text-[12px] text-studio-muted">
                 <span>{ctx.target === "lot" ? `קטלוג ${ctx.catalog.number} · ${ctx.item.inventoryNumber}` : "מלאי"}</span>
                 <span className="rounded-full bg-studio-3 px-2 py-0.5">{t.lotStatus[ctx.lot.status]}</span>
@@ -922,8 +956,13 @@ export function CaptureStudio({
                   </Button>
                 )}
               </div>
+              {printWatch && <LabelPrintStatus watch={printWatch} />}
             </section>
 
+            {/* the notes stay put while the rest of the panel scrolls; keyed by book so text never crosses over to another one */}
+            <PhotographerNotes key={ctx.item.id} itemId={ctx.item.id} initialText={ctx.item.photographerNotes} initialRev={ctx.item.photographerNotesRev} canEdit={user.canNotes} variant="studio" />
+
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
             <section className="border-t border-studio-rule px-3 py-3" aria-label="קטגוריה פעילה">
               <SectionTitle>קטגוריה</SectionTitle>
               <div className="grid gap-1" role="radiogroup">
@@ -1035,6 +1074,7 @@ export function CaptureStudio({
                 <p className="mt-3 rounded-md bg-[#4a1d1a] px-2.5 py-2 text-[12.5px] text-[#f6c3bb]">נפח דיסק בעמדה: {fmt.bytes(agentQueue.disk.freeBytes)}</p>
               )}
             </section>
+            </div>
           </aside>
         )}
 

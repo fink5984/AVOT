@@ -26,6 +26,7 @@ const HEADER_MAP: Record<string, string> = {
   width_mm: "widthMm", "רוחב": "widthMm", "רוחב (מ״מ)": "widthMm",
   depth_mm: "depthMm", "עובי": "depthMm", "עובי (מ״מ)": "depthMm",
   barcode: "barcode", "ברקוד": "barcode",
+  consignor: "consignor", depositor: "consignor", "מפקיד": "consignor", "שם מפקיד": "consignor",
 };
 
 export interface ImportRow {
@@ -44,6 +45,10 @@ export interface ImportRow {
   widthMm?: number;
   depthMm?: number;
   barcode?: string;
+  /** the consignor's name as written in the file; resolved against the organization's consignors before anything is imported */
+  consignor?: string;
+  /** set by resolveConsignors */
+  consignorId?: string;
 }
 
 export interface ImportPreview {
@@ -114,6 +119,7 @@ export function parseLotsCsv(text: string): ImportPreview {
       publisher: r.publisher,
       conditionNotes: r.conditionNotes,
       barcode: r.barcode,
+      consignor: r.consignor,
       ...mm,
     });
   });
@@ -122,6 +128,7 @@ export function parseLotsCsv(text: string): ImportPreview {
 
 function itemFields(r: ImportRow) {
   return {
+    consignorId: r.consignorId,
     title: r.title,
     subtitle: r.subtitle ?? null,
     author: r.author ?? null,
@@ -135,6 +142,27 @@ function itemFields(r: ImportRow) {
     depthMm: r.depthMm ?? null,
     barcode: r.barcode,
   };
+}
+
+/**
+ * Every row must name exactly one existing, active consignor of this organization. A missing, unknown or
+ * ambiguous name is an error on that line, so the all-or-nothing import never creates a book without a consignor.
+ */
+export async function resolveConsignors(orgId: string, preview: ImportPreview) {
+  const all = await db.consignor.findMany({ where: { organizationId: orgId }, select: { id: true, name: true, archivedAt: true } });
+  const key = (n: string) => n.trim().replace(/\s+/g, " ").toLowerCase();
+  for (const r of preview.rows) {
+    if (!r.consignor) {
+      preview.errors.push({ line: r.line, message: "חסר מפקיד — כל ספר חייב להיות משויך למפקיד (עמודה ״מפקיד״)" });
+      continue;
+    }
+    const matches = all.filter((c) => key(c.name) === key(r.consignor!));
+    const active = matches.filter((c) => !c.archivedAt);
+    if (active.length === 1) r.consignorId = active[0]!.id;
+    else if (active.length > 1) preview.errors.push({ line: r.line, message: `המפקיד ״${r.consignor}״ אינו חד-משמעי — קיימים ${active.length} מפקידים בשם זה` });
+    else if (matches.length) preview.errors.push({ line: r.line, message: `המפקיד ״${r.consignor}״ בארכיון` });
+    else preview.errors.push({ line: r.line, message: `המפקיד ״${r.consignor}״ לא נמצא — הוסיפו אותו בדף ״מפקידים״ ונסו שוב` });
+  }
 }
 
 async function checkBarcodes(orgId: string, preview: ImportPreview) {
@@ -170,6 +198,7 @@ export async function importLots(user: UserPrincipal, catalogId: string, text: s
     if (r.lotNumber && taken.has(r.lotNumber)) preview.errors.push({ line: r.line, message: `פריט מספר ${r.lotNumber} כבר קיים בקטלוג` });
   }
   await checkBarcodes(user.organizationId, preview);
+  await resolveConsignors(user.organizationId, preview);
   if (dryRun || preview.errors.length) return { ...preview, imported: 0 };
 
   const requirements = (catalog.defaultRequirements ?? DEFAULT_REQUIREMENTS) as unknown as CategoryRequirements;
@@ -224,6 +253,7 @@ export async function importItems(user: UserPrincipal, text: string, dryRun: boo
   const preview = parseLotsCsv(text);
   if (preview.rows.length > 2000) throw new AppError("VALIDATION", "ניתן לייבא עד 2000 ספרים בקובץ אחד");
   await checkBarcodes(user.organizationId, preview);
+  await resolveConsignors(user.organizationId, preview);
   if (dryRun || preview.errors.length) return { ...preview, imported: 0 };
   const imported = await db.$transaction(
     async (tx) => {

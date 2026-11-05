@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/server/db";
-import { createItem } from "@/server/services/inventory";
 import {
   agentTestPrint,
   claimNextPrintJob,
@@ -11,7 +10,7 @@ import {
   reportPrintJob,
   upsertAgentPrinter,
 } from "@/server/services/printing";
-import { hasDb, makeOrg, pairAgent } from "./helpers";
+import { hasDb, makeOrg, pairAgent, createBook } from "./helpers";
 
 /** The label printer is plugged into the capture computer: AVOT Capture Desktop (a CAPTURE device) serves the print queue. */
 describe.skipIf(!hasDb)("central printing through the capture station (real database)", () => {
@@ -21,7 +20,7 @@ describe.skipIf(!hasDb)("central printing through the capture station (real data
     ctx = await makeOrg("station");
     station = await pairAgent(ctx.admin, "CAPTURE", "מחשב הצילום");
   });
-  const book = async (title: string) => (await createItem(ctx.editor, { title })).item;
+  const book = async (title: string) => (await createBook(ctx.editor, { title })).item;
   const drain = async (d = station) => {
     for (let i = 0; i < 30; i++) {
       const c = await claimNextPrintJob(d);

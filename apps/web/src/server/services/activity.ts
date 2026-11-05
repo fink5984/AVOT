@@ -66,6 +66,14 @@ const ACTION_LABEL: Record<string, string> = {
   "warehouse.location_updated": "עדכן מיקום אחסון",
   "warehouse.item_moved": "תיקן מיקום ספר",
   "house.updated": "עדכן הגדרות בית מכירות",
+  "inventory.consignor_changed": "שינה את המפקיד של הספר",
+  "inventory.photographer_notes": "עדכן הערות מצלם",
+  "inventory.capture_finished": "סיים צילום ספר",
+  "consignor.created": "יצר מפקיד",
+  "consignor.updated": "עדכן פרטי מפקיד",
+  "consignor.archived": "העביר מפקיד לארכיון",
+  "consignor.restored": "שחזר מפקיד מהארכיון",
+  "consignor.deleted": "מחק מפקיד",
 };
 
 export function actionLabel(action: string): string {
@@ -81,6 +89,8 @@ export function describeData(action: string, data: unknown): string | null {
   if (action.startsWith("catalog.") && d.name) return String(d.name);
   if (action === "lot.imported_csv" && d.count) return `${d.count} פריטים`;
   if (action === "user.invited" && d.email) return String(d.email);
+  if (action === "inventory.consignor_changed" && typeof d.to === "string") return `${typeof d.from === "string" ? d.from : "ללא מפקיד"} ← ${d.to}`;
+  if (action.startsWith("consignor.") && d.name) return String(d.name);
   if (action === "inventory.created" && d.inventoryNumber) return `${d.inventoryNumber} · ${d.title ?? ""}`;
   if (action === "lot.assigned" && d.catalogNumber) return `קטלוג ${d.catalogNumber} · פריט ${d.lotNumber}`;
   if (action === "lot.commercial_status" && typeof d.to === "string") return he.commercialStatus[d.to as keyof typeof he.commercialStatus] ?? null;

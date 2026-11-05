@@ -4,7 +4,6 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { LABEL_STOCKS, resolveProfile } from "@avot/shared";
 import { db } from "@/server/db";
-import { createItem } from "@/server/services/inventory";
 import { processScan } from "@/server/services/scanning";
 import { globalSearch } from "@/server/services/search";
 import {
@@ -25,7 +24,7 @@ import { locationInclude, locationLabel } from "@/server/services/location-label
 import { claimNextPrintJob, createPrintJobs, createPrinter, createTestPrint } from "@/server/services/printing";
 import { getLabelProfiles, saveLabelTemplate } from "@/server/services/label-templates";
 import { layoutFor } from "@/server/labels/zpl";
-import { hasDb, makeOrg, pairAgent } from "./helpers";
+import { hasDb, makeOrg, pairAgent, createBook } from "./helpers";
 
 const op = (mode: "STORE" | "FIND", code: string, extra: Record<string, unknown> = {}) => ({ opId: randomUUID(), mode, code, clientAt: new Date().toISOString(), ...extra });
 
@@ -106,7 +105,7 @@ describe.skipIf(!hasDb)("shelf-only locations (real database)", () => {
       const shelf = await db.shelf.create({ data: { zoneId: zone.id, code: "01", sortOrder: 1 } });
       const mk = (cell: string) => db.storageLocation.create({ data: { organizationId: m.org.id, shelfId: shelf.id, cell, code: `LOC-W9-C1-01-${cell}`, sortKey: `W9/C1/01/${cell}` } });
       const [c1, c2, c3] = [await mk("01"), await mk("02"), await mk("03")];
-      const [a, b, c] = [await createItem(m.editor, { title: "א" }), await createItem(m.editor, { title: "ב" }), await createItem(m.editor, { title: "ג" })];
+      const [a, b, c] = [await createBook(m.editor, { title: "א" }), await createBook(m.editor, { title: "ב" }), await createBook(m.editor, { title: "ג" })];
       await db.inventoryItem.update({ where: { id: a.item.id }, data: { currentLocationId: c1.id, physicalStatus: "IN_STORAGE" } });
       await db.inventoryItem.update({ where: { id: b.item.id }, data: { currentLocationId: c2.id, physicalStatus: "IN_STORAGE" } });
       await db.inventoryItem.update({ where: { id: c.item.id }, data: { currentLocationId: c2.id, physicalStatus: "IN_STORAGE" } });
@@ -200,7 +199,7 @@ describe.skipIf(!hasDb)("shelf-only locations (real database)", () => {
     it("a shelf with books is refused until the books are moved; the move is recorded and then the shelf goes", async () => {
       const { zones } = await warehouse("מחסן ה", 1, 3);
       const [s1, s2] = [zones[0]!.shelves[0]!, zones[0]!.shelves[1]!];
-      const { item } = await createItem(ctx.editor, { title: "על המדף" });
+      const { item } = await createBook(ctx.editor, { title: "על המדף" });
       await manualMove(ctx.admin, item.id, { locationId: s1.locations[0]!.id });
       const plan = await planShelfDeletion(ctx.admin, [s1.id]);
       expect(plan.books).toBe(1);
@@ -227,7 +226,7 @@ describe.skipIf(!hasDb)("shelf-only locations (real database)", () => {
     it("'delete empty shelves' removes only the empty ones; a column with books needs a target; the column leaves the structure", async () => {
       const { zones } = await warehouse("מחסן ו", 2, 4);
       const [z1, z2] = [zones[0]!, zones[1]!];
-      const { item } = await createItem(ctx.editor, { title: "ספר בעמודה" });
+      const { item } = await createBook(ctx.editor, { title: "ספר בעמודה" });
       await manualMove(ctx.admin, item.id, { locationId: z1.shelves[1]!.locations[0]!.id });
 
       const dry = await deleteEmptyShelves(ctx.admin, z1.id, true);
@@ -271,7 +270,7 @@ describe.skipIf(!hasDb)("shelf-only locations (real database)", () => {
     it("the saved calibration is applied to ZPL and to the layout the Windows station draws; shelf labels show no code text", async () => {
       const { zones } = await warehouse("מחסן ט", 1, 1);
       const loc = zones[0]!.shelves[0]!.locations[0]!;
-      const { item } = await createItem(ctx.editor, { title: "תווית" });
+      const { item } = await createBook(ctx.editor, { title: "תווית" });
       const agent = await pairAgent(ctx.admin, "CAPTURE", "station");
       const zplPrinter = await createPrinter(ctx.admin, { name: "תרמית", connection: "WINDOWS", windowsName: "ZEBRA", labelSize: "57x32", dotsPerMm: 8, language: "ZPL", isPrimary: true, agentId: agent.deviceId });
       const gdiPrinter = await createPrinter(ctx.admin, { name: "דרייבר", connection: "WINDOWS", windowsName: "HP", labelSize: "57x32", dotsPerMm: 8, language: "GDI", isPrimary: false, agentId: agent.deviceId });
@@ -317,7 +316,7 @@ describe.skipIf(!hasDb)("shelf-only locations (real database)", () => {
   describe("search by inventory number (regression: 10000041)", () => {
     it("an exact number is found, shown as a result and opened by Enter; partial, old ITM number, alias, barcode and title work too", async () => {
       const s = await makeOrg("search");
-      const { item } = await createItem(s.editor, { title: "ספר חיפוש 41", author: "מחבר נבדק" });
+      const { item } = await createBook(s.editor, { title: "ספר חיפוש 41", author: "מחבר נבדק" });
       await db.inventoryItem.update({ where: { id: item.id }, data: { inventoryNumber: "10000041", barcode: "10000041" } });
       await db.inventoryNumberAlias.create({ data: { organizationId: s.org.id, inventoryItemId: item.id, alias: "ITM-000041" } });
 
@@ -336,7 +335,7 @@ describe.skipIf(!hasDb)("shelf-only locations (real database)", () => {
 
     it("a scanned full number on the handheld finds the book; an old ITM tag still does", async () => {
       const s = await makeOrg("scan");
-      const { item } = await createItem(s.editor, { title: "סריקה" });
+      const { item } = await createBook(s.editor, { title: "סריקה" });
       await db.inventoryNumberAlias.create({ data: { organizationId: s.org.id, inventoryItemId: item.id, alias: "ITM-000777" } });
       expect((await processScan(s.warehouse, op("FIND", item.inventoryNumber))).item?.id).toBe(item.id);
       expect((await processScan(s.warehouse, op("FIND", "ITM-000777"))).item?.id).toBe(item.id);

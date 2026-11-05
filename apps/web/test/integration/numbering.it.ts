@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { classifyCode } from "@avot/shared";
 import { db } from "@/server/db";
-import { createItem, findItemByCode, listInventory } from "@/server/services/inventory";
+import { findItemByCode, listInventory } from "@/server/services/inventory";
 import { assignToCatalog } from "@/server/services/assignments";
 import { createCatalog } from "@/server/services/catalogs";
 import { processScan } from "@/server/services/scanning";
@@ -12,7 +12,7 @@ import { createWarehouseFromWizard, manualMove } from "@/server/services/warehou
 import { requestDeleteItems, runDeleteItemsJob } from "@/server/services/deletion";
 import { createPrintJobs, createPrinter, claimNextPrintJob } from "@/server/services/printing";
 import { globalSearch } from "@/server/services/search";
-import { hasDb, makeOrg, pairAgent } from "./helpers";
+import { hasDb, makeOrg, pairAgent, createBook } from "./helpers";
 
 /** the data part of the migration (everything after the DDL): alias, barcode, number */
 const MIGRATION = readFileSync(path.join(__dirname, "../../prisma/migrations/20261028090000_numeric_inventory_numbers/migration.sql"), "utf8");
@@ -31,7 +31,7 @@ describe.skipIf(!hasDb)("numeric inventory numbers (real database)", () => {
   });
 
   it("new books get digits-only numbers from an atomic sequence: 25 parallel creations, no duplicates, no gaps", async () => {
-    const made = await Promise.all(Array.from({ length: 25 }, (_, i) => createItem(ctx.editor, { title: `מקבילי ${i}`, opId: randomUUID() })));
+    const made = await Promise.all(Array.from({ length: 25 }, (_, i) => createBook(ctx.editor, { title: `מקבילי ${i}`, opId: randomUUID() })));
     const nums = made.map((m) => m.item.inventoryNumber);
     expect(new Set(nums).size).toBe(25);
     for (const m of made) {
@@ -45,17 +45,17 @@ describe.skipIf(!hasDb)("numeric inventory numbers (real database)", () => {
   });
 
   it("a deleted book's number is never handed out again", async () => {
-    const { item: gone } = await createItem(ctx.editor, { title: "יימחק" });
+    const { item: gone } = await createBook(ctx.editor, { title: "יימחק" });
     const { jobId } = await requestDeleteItems(ctx.admin, [gone.id]);
     await runDeleteItemsJob(await db.job.findUniqueOrThrow({ where: { id: jobId } }));
     expect(await db.inventoryItem.count({ where: { id: gone.id } })).toBe(0);
-    const { item: next } = await createItem(ctx.editor, { title: "אחריו" });
+    const { item: next } = await createBook(ctx.editor, { title: "אחריו" });
     expect(BigInt(next.inventoryNumber)).toBeGreaterThan(BigInt(gone.inventoryNumber));
     expect(next.inventoryNumber).not.toBe(gone.inventoryNumber);
   });
 
   it("one number per book for life: moving between אבות and טבין and between catalogs never changes it", async () => {
-    const { item } = await createItem(ctx.editor, { title: "נודד" });
+    const { item } = await createBook(ctx.editor, { title: "נודד" });
     const a = await createCatalog(ctx.editor, { auctionHouseId: ctx.house.id, number: "N1", name: "אבות" });
     const t = await createCatalog(ctx.editor, { auctionHouseId: ctx.house2.id, number: "N1", name: "טבין" });
     const l1 = await assignToCatalog(ctx.editor, item.id, { catalogId: a.id });
@@ -113,7 +113,7 @@ describe.skipIf(!hasDb)("numeric inventory numbers (real database)", () => {
     it("the phone finds a book by its new number and by its old printed tag; shelving works with either", async () => {
       const wh = await createWarehouseFromWizard(ctx.admin, { name: "מחסן מספור", columns: 1, shelvesPerColumn: 1 });
       const loc = await db.storageLocation.findFirstOrThrow({ where: { organizationId: ctx.org.id, shelf: { zone: { warehouseId: wh.id } } } });
-      const { item } = await createItem(ctx.editor, { title: "סריקה" });
+      const { item } = await createBook(ctx.editor, { title: "סריקה" });
       await db.inventoryNumberAlias.create({ data: { organizationId: ctx.org.id, inventoryItemId: item.id, alias: "ITM-000321" } });
       await manualMove(ctx.admin, item.id, { locationId: loc.id });
       for (const code of [item.inventoryNumber, "ITM-000321", "itm-321"]) {
@@ -131,7 +131,7 @@ describe.skipIf(!hasDb)("numeric inventory numbers (real database)", () => {
     it("a new label prints only the number: native Code 128 of digits, readable number, no ITM text", async () => {
       const agent = await pairAgent(ctx.admin, "PRINT", "num-pc");
       await createPrinter(ctx.admin, { name: "Z", connection: "NETWORK", host: "10.1.1.1", port: 9100, labelSize: "57x32", dotsPerMm: 8 });
-      const { item } = await createItem(ctx.editor, { title: "תווית חדשה" });
+      const { item } = await createBook(ctx.editor, { title: "תווית חדשה" });
       await createPrintJobs(ctx.editor, { items: [{ type: "BOOK", id: item.id }] });
       let zpl = "";
       for (let i = 0; i < 20 && !zpl.includes(item.barcode); i++) {

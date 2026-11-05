@@ -16,6 +16,7 @@ const VIEW_LABEL: Record<InventoryView, string> = {
   no_catalog: "ללא קטלוג",
   no_photos: "ללא צילום",
   no_location: "ללא מיקום",
+  no_consignor: "ללא מפקיד",
   missing: "חסרים במחסן",
   awaiting_pick: "ממתינים לליקוט",
   unsold: "לא נמכרו",
@@ -90,7 +91,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
               type="search"
               name="q"
               defaultValue={sp.q ?? ""}
-              placeholder="חיפוש: שם, מחבר, מספר ספר, ברקוד"
+              placeholder="חיפוש: שם, מחבר, מפקיד, מספר ספר, ברקוד"
               aria-label="חיפוש במלאי"
               className="h-9 min-w-0 flex-1 rounded-md border border-rule-strong bg-paper px-3 text-[13.5px] shadow-card focus:border-ink/40 focus:outline-none focus:ring-[3px] focus:ring-ink/6 sm:w-64"
             />
@@ -125,6 +126,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
             delete: can(user.role, "inventory.delete"),
             relocate: can(user.role, "inventory.relocate"),
             fulfil: can(user.role, "pick.fulfil"),
+            consignors: can(user.role, "consignor.view"),
           }}
           defaultHouse={house?.slug ?? null}
           focusAdd={sp.new === "1"}

@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/server/db";
-import { createItem } from "@/server/services/inventory";
 import { createLot } from "@/server/services/lots";
 import { assignToCatalog } from "@/server/services/assignments";
 import { createCatalog } from "@/server/services/catalogs";
@@ -17,7 +16,7 @@ import {
   listPrintJobs,
 } from "@/server/services/printing";
 import { can } from "@/server/auth/permissions";
-import { hasDb, makeOrg, pairAgent } from "./helpers";
+import { hasDb, makeOrg, pairAgent, createBook, consignorOf } from "./helpers";
 
 describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print queue (real database)", () => {
   let ctx: Awaited<ReturnType<typeof makeOrg>>;
@@ -29,7 +28,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
   /* ───────────── one-line book entry ───────────── */
   describe("creating a book by name only", () => {
     it("gives it an inventory number, barcode and the 'awaiting photography / no location / no catalog' defaults", async () => {
-      const { item, existing } = await createItem(ctx.photographer, { title: "מגילת אסתר", opId: randomUUID() });
+      const { item, existing } = await createBook(ctx.photographer, { title: "מגילת אסתר", opId: randomUUID() });
       expect(existing).toBe(false);
       expect(item.inventoryNumber).toMatch(/^\d{8,}$/);
       expect(item.barcode).toBe(item.inventoryNumber);
@@ -40,15 +39,15 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
 
     it("a double Enter (same opId, even concurrently) creates exactly one book", async () => {
       const opId = randomUUID();
-      const results = await Promise.all(Array.from({ length: 6 }, () => createItem(ctx.photographer, { title: "ספר כפול?", opId })));
+      const results = await Promise.all(Array.from({ length: 6 }, () => createBook(ctx.photographer, { title: "ספר כפול?", opId })));
       expect(new Set(results.map((r) => r.item.id)).size).toBe(1);
       expect(results.filter((r) => !r.existing)).toHaveLength(1);
       expect(await db.inventoryItem.count({ where: { organizationId: ctx.org.id, createOpId: opId } })).toBe(1);
     });
 
     it("different opIds are different books with strictly increasing serials", async () => {
-      const a = await createItem(ctx.photographer, { title: "א", opId: randomUUID() });
-      const b = await createItem(ctx.photographer, { title: "ב", opId: randomUUID() });
+      const a = await createBook(ctx.photographer, { title: "א", opId: randomUUID() });
+      const b = await createBook(ctx.photographer, { title: "ב", opId: randomUUID() });
       expect(b.item.serial).toBeGreaterThan(a.item.serial);
     });
 
@@ -74,7 +73,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
     });
 
     it("assigning an inventory book never creates a second book", async () => {
-      const { item } = await createItem(ctx.editor, { title: "ספר קיים" });
+      const { item } = await createBook(ctx.editor, { title: "ספר קיים" });
       const before = await db.inventoryItem.count({ where: { organizationId: ctx.org.id } });
       const lot = await assignToCatalog(ctx.editor, item.id, { catalogId: cat1.id });
       expect(lot.inventoryItemId).toBe(item.id);
@@ -83,7 +82,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
     });
 
     it("moving to another catalog needs the explicit flag, ends the old assignment and keeps history; no duplicate book", async () => {
-      const { item } = await createItem(ctx.editor, { title: "ספר נודד" });
+      const { item } = await createBook(ctx.editor, { title: "ספר נודד" });
       await assignToCatalog(ctx.editor, item.id, { catalogId: cat1.id });
       await expect(assignToCatalog(ctx.editor, item.id, { catalogId: cat2.id })).rejects.toThrow(/כבר משויך/);
       const moved = await assignToCatalog(ctx.editor, item.id, { catalogId: tavinCat.id, replaceActive: true, endOutcome: "WITHDRAWN" });
@@ -94,17 +93,17 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
     });
 
     it("refuses to move a book that is being offered, is sold, or has an open pick task", async () => {
-      const offered = (await createItem(ctx.editor, { title: "מוצע" })).item;
+      const offered = (await createBook(ctx.editor, { title: "מוצע" })).item;
       const l1 = await assignToCatalog(ctx.editor, offered.id, { catalogId: cat1.id });
       await db.lot.update({ where: { id: l1.id }, data: { commercialStatus: "OFFERED" } });
       await expect(assignToCatalog(ctx.editor, offered.id, { catalogId: cat2.id, replaceActive: true })).rejects.toThrow(/מוצע/);
 
-      const sold = (await createItem(ctx.editor, { title: "נמכר" })).item;
+      const sold = (await createBook(ctx.editor, { title: "נמכר" })).item;
       const l2 = await assignToCatalog(ctx.editor, sold.id, { catalogId: cat1.id });
       await db.lot.update({ where: { id: l2.id }, data: { commercialStatus: "SOLD" } });
       await expect(assignToCatalog(ctx.editor, sold.id, { catalogId: cat2.id, replaceActive: true })).rejects.toThrow(/נמכר/);
 
-      const picking = (await createItem(ctx.editor, { title: "בליקוט" })).item;
+      const picking = (await createBook(ctx.editor, { title: "בליקוט" })).item;
       await assignToCatalog(ctx.editor, picking.id, { catalogId: cat1.id });
       await db.pickTask.create({ data: { organizationId: ctx.org.id, inventoryItemId: picking.id, reason: "test", status: "OPEN" } });
       await expect(assignToCatalog(ctx.editor, picking.id, { catalogId: cat2.id, replaceActive: true })).rejects.toThrow(/ליקוט/);
@@ -112,7 +111,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
 
     it("'create new book' from a catalog is idempotent on opId and also lands in inventory", async () => {
       const opId = randomUUID();
-      const [a, b] = await Promise.all([createLot(ctx.photographer, cat2.id, { title: "חדש מהקטלוג", opId }), createLot(ctx.photographer, cat2.id, { title: "חדש מהקטלוג", opId })]);
+      const [a, b] = await Promise.all([createLot(ctx.photographer, cat2.id, { title: "חדש מהקטלוג", opId, consignorId: await consignorOf(ctx.photographer) }), createLot(ctx.photographer, cat2.id, { title: "חדש מהקטלוג", opId, consignorId: await consignorOf(ctx.photographer) })]);
       expect(a.id).toBe(b.id);
       expect(await db.inventoryItem.count({ where: { organizationId: ctx.org.id, createOpId: opId } })).toBe(1);
       expect(await db.lot.count({ where: { catalogId: cat2.id, inventoryItemId: a.inventoryItemId } })).toBe(1);
@@ -127,9 +126,9 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
       const shelf = await createShelf(ctx.admin, { zoneId: zone.id, code: "01" });
       // a shelf comes with its one location
       const loc = await db.storageLocation.findFirstOrThrow({ where: { shelfId: shelf.id } });
-      const a = (await createItem(ctx.editor, { title: "מ1" })).item;
-      const b = (await createItem(ctx.editor, { title: "מ2" })).item;
-      const shipped = (await createItem(ctx.editor, { title: "נשלח" })).item;
+      const a = (await createBook(ctx.editor, { title: "מ1" })).item;
+      const b = (await createBook(ctx.editor, { title: "מ2" })).item;
+      const shipped = (await createBook(ctx.editor, { title: "נשלח" })).item;
       await db.inventoryItem.update({ where: { id: shipped.id }, data: { physicalStatus: "SHIPPED" } });
 
       const r = await bulkManualMove(ctx.warehouse, { itemIds: [a.id, b.id, shipped.id], locationId: loc.id });
@@ -165,7 +164,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
 
     it("refuses to queue when no printer is configured", async () => {
       const other = await makeOrg("noprinter");
-      const { item } = await createItem(other.admin, { title: "x" });
+      const { item } = await createBook(other.admin, { title: "x" });
       await expect(createPrintJobs(other.admin, { items: [{ type: "BOOK", id: item.id }] })).rejects.toThrow(/מדפסת ראשית/);
     });
 
@@ -178,7 +177,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
     });
 
     it("one click → one job; a double click with the same key does not create or print twice", async () => {
-      const { item } = await createItem(ctx.editor, { title: "מגילת רות — מהדורה ראשונה" });
+      const { item } = await createBook(ctx.editor, { title: "מגילת רות — מהדורה ראשונה" });
       const key = randomUUID();
       const [j1, j2] = await Promise.all([
         createPrintJobs(ctx.editor, { items: [{ type: "BOOK", id: item.id }], idemKey: key }),
@@ -190,7 +189,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
 
     it("agent flow: claim renders ZPL with the stored barcode, SENT is not DONE, reports are idempotent", async () => {
       await drain();
-      const { item } = await createItem(ctx.editor, { title: "תניא" });
+      const { item } = await createBook(ctx.editor, { title: "תניא" });
       const [job] = await createPrintJobs(ctx.editor, { items: [{ type: "BOOK", id: item.id }], copies: 2 });
       const claimed = await claimNextPrintJob(agent);
       expect(claimed).not.toBeNull();
@@ -219,7 +218,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
 
     it("a failed job can be re-printed as a new job and a pending one can be cancelled", async () => {
       await drain();
-      const { item } = await createItem(ctx.editor, { title: "כושל" });
+      const { item } = await createBook(ctx.editor, { title: "כושל" });
       const [job] = await createPrintJobs(ctx.editor, { items: [{ type: "BOOK", id: item.id }] });
       await claimNextPrintJob(agent);
       await reportPrintJob(agent, job!.id, { status: "FAILED", error: "המדפסת כבויה" });
@@ -233,7 +232,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
 
     it("a claim the agent never reported on is handed out again, then given up after 3 attempts", async () => {
       await drain();
-      const { item } = await createItem(ctx.editor, { title: "תקוע" });
+      const { item } = await createBook(ctx.editor, { title: "תקוע" });
       const [job] = await createPrintJobs(ctx.editor, { items: [{ type: "BOOK", id: item.id }] });
       for (let attempt = 1; attempt <= 3; attempt++) {
         const c = await claimNextPrintJob(agent);
@@ -248,7 +247,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
 
     it("big batches are split into jobs of at most 40 labels, in order", async () => {
       const books = [];
-      for (let i = 0; i < 85; i++) books.push((await createItem(ctx.editor, { title: `אצווה ${i}` })).item.id);
+      for (let i = 0; i < 85; i++) books.push((await createBook(ctx.editor, { title: `אצווה ${i}` })).item.id);
       const jobs = await createPrintJobs(ctx.editor, { items: books.map((id) => ({ type: "BOOK" as const, id })), idemKey: randomUUID() });
       expect(jobs.map((j) => j.labelCount)).toEqual([40, 40, 5]);
     });

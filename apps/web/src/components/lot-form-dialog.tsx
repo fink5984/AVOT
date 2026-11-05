@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { PHOTO_CATEGORIES, type CategoryRequirements } from "@avot/shared";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { Field, Input, Textarea } from "@/components/ui/field";
 import { useToast } from "@/components/ui/toast";
 import { t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
+import { ConsignorSelect } from "@/components/consignors/consignor-select";
+import type { ConsignorLite } from "@/components/consignors/consignor-dialog";
 
 export interface LotFormValue {
   id?: string;
@@ -43,9 +45,23 @@ export function LotFormDialog({
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const editing = !!initial?.id;
+  const [consignor, setConsignor] = useState<ConsignorLite | null>(null);
+  const [missing, setMissing] = useState(false);
+  const opId = useRef(crypto.randomUUID());
+  useEffect(() => {
+    if (!open) return;
+    setConsignor(null);
+    setMissing(false);
+    opId.current = crypto.randomUUID();
+  }, [open]);
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (!editing && !consignor) {
+      setMissing(true);
+      setError("יש לבחור מפקיד");
+      return;
+    }
     const f = new FormData(e.currentTarget);
     const str = (k: string) => String(f.get(k) ?? "").trim() || null;
     const num = String(f.get("lotNumber") ?? "").trim();
@@ -69,7 +85,7 @@ export function LotFormDialog({
     try {
       const r = editing
         ? await api<{ lot: { id: string; lotNumber: number } }>(`/api/lots/${initial!.id}`, { method: "PATCH", json: body })
-        : await api<{ lot: { id: string; lotNumber: number } }>(`/api/catalogs/${catalogId}/lots`, { method: "POST", json: body });
+        : await api<{ lot: { id: string; lotNumber: number } }>(`/api/catalogs/${catalogId}/lots`, { method: "POST", json: { ...body, consignorId: consignor!.id, opId: opId.current } });
       toast.success(editing ? "פרטי הפריט נשמרו" : `נוצר פריט מספר ${r.lot.lotNumber}`);
       onSaved?.(r.lot);
       onClose();
@@ -102,6 +118,22 @@ export function LotFormDialog({
         <Field label="שם הספר" required className="col-span-4 sm:col-span-5">
           {(p) => <Input {...p} name="title" required maxLength={300} defaultValue={initial?.title} autoFocus />}
         </Field>
+        {!editing && (
+          <Field label="מפקיד" required error={missing && !consignor ? "יש לבחור מפקיד" : null} hint="המפקיד שייך לספר הפיזי במלאי" className="col-span-6">
+            {(p) => (
+              <ConsignorSelect
+                id={p.id}
+                value={consignor}
+                onChange={(c) => {
+                  setConsignor(c);
+                  setMissing(false);
+                  setError(null);
+                }}
+                invalid={missing && !consignor}
+              />
+            )}
+          </Field>
+        )}
         <Field label="כותרת משנה" className="col-span-6">
           {(p) => <Input {...p} name="subtitle" maxLength={300} defaultValue={initial?.subtitle ?? ""} />}
         </Field>

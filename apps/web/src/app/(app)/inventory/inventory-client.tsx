@@ -13,6 +13,7 @@ import { useToast } from "@/components/ui/toast";
 import { HouseMark } from "@/components/house-mark";
 import { AssignDialog } from "@/components/inventory/assign-dialog";
 import { ItemFormDialog } from "@/components/inventory/item-form-dialog";
+import { QuickBookDialog } from "@/components/consignors/quick-book-dialog";
 import { fmt } from "@/i18n";
 import { ApiError, api, errorMessage } from "@/lib/api";
 import { usePrintLabels } from "@/lib/print";
@@ -31,6 +32,7 @@ export interface InventoryRowDto {
   physicalStatus: PhysicalStatus;
   commercialStatus: CommercialStatus;
   photoCount: number;
+  consignor: { id: string; name: string } | null;
   thumbAssetId: string | null;
   location: { id: string; code: string; label: string } | null;
   assignment:
@@ -65,7 +67,7 @@ export function InventoryActions({ canCreate, canImport, autoOpen }: { canCreate
 }
 
 /** One book as the table shows it. */
-function rowFromCreated(item: { id: string; inventoryNumber: string; barcode: string; title: string; author: string | null; photoStatus: LotStatus; physicalStatus: PhysicalStatus; commercialStatus: CommercialStatus; updatedAt: string }): InventoryRowDto {
+function rowFromCreated(item: { id: string; inventoryNumber: string; barcode: string; title: string; author: string | null; photoStatus: LotStatus; physicalStatus: PhysicalStatus; commercialStatus: CommercialStatus; updatedAt: string }, consignor: { id: string; name: string }): InventoryRowDto {
   return {
     id: item.id,
     inventoryNumber: item.inventoryNumber,
@@ -76,6 +78,7 @@ function rowFromCreated(item: { id: string; inventoryNumber: string; barcode: st
     physicalStatus: item.physicalStatus,
     commercialStatus: item.commercialStatus,
     photoCount: 0,
+    consignor,
     thumbAssetId: null,
     location: null,
     assignment: null,
@@ -86,15 +89,17 @@ function rowFromCreated(item: { id: string; inventoryNumber: string; barcode: st
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * The fixed "הקלד שם ספר ולחץ Enter להוספה…" row. Enter clears the field and keeps the focus there, the new
- * book appears at the top at once, and requests go out one at a time. Every request carries its own key
- * (opId): a double Enter, a retry after a lost response or a second tab can never create a second book.
+ * The fixed "הקלד שם ספר ולחץ Enter להוספה…" row. Enter opens the small window that asks for the (mandatory)
+ * consignor; confirming it clears the field and returns the focus here, the new book appears at the top at once,
+ * and requests go out one at a time. Every request carries its own key (opId): a double Enter, a retry after a
+ * lost response or a second tab can never create a second book.
  */
 function QuickAdd({ onAdded, autoFocus }: { onAdded: (row: InventoryRowDto) => void; autoFocus?: boolean }) {
   const toast = useToast();
   const [value, setValue] = useState("");
   const [pending, setPending] = useState(0);
   const [last, setLast] = useState<{ number: string; title: string } | null>(null);
+  const [asking, setAsking] = useState<string | null>(null);
   const chain = useRef<Promise<void>>(Promise.resolve());
   const lastSubmit = useRef<{ title: string; at: number } | null>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -102,11 +107,11 @@ function QuickAdd({ onAdded, autoFocus }: { onAdded: (row: InventoryRowDto) => v
     if (autoFocus) input.current?.focus();
   }, [autoFocus]);
 
-  async function create(title: string, opId: string) {
+  async function create(title: string, consignor: { id: string; name: string }, opId: string) {
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
-        const r = await api<{ item: Parameters<typeof rowFromCreated>[0]; existing: boolean }>("/api/inventory", { method: "POST", json: { title, opId } });
-        onAdded(rowFromCreated(r.item));
+        const r = await api<{ item: Parameters<typeof rowFromCreated>[0]; existing: boolean }>("/api/inventory", { method: "POST", json: { title, consignorId: consignor.id, opId } });
+        onAdded(rowFromCreated(r.item, consignor));
         setLast({ number: r.item.inventoryNumber, title: r.item.title });
         return;
       } catch (err) {
@@ -124,16 +129,18 @@ function QuickAdd({ onAdded, autoFocus }: { onAdded: (row: InventoryRowDto) => v
 
   function submit() {
     const title = value.trim();
-    if (!title) return;
+    if (!title || asking !== null) return;
     const prev = lastSubmit.current;
     const now = Date.now();
     if (prev && prev.title === title && now - prev.at < 700) return; // key bounce / double press
     lastSubmit.current = { title, at: now };
+    setAsking(title);
+  }
+
+  function confirm(v: { title: string; consignor: { id: string; name: string }; opId: string }) {
     setValue("");
-    const opId = crypto.randomUUID();
     setPending((n) => n + 1);
-    chain.current = chain.current.then(() => create(title, opId)).finally(() => setPending((n) => n - 1));
-    input.current?.focus();
+    chain.current = chain.current.then(() => create(v.title, v.consignor, v.opId)).finally(() => setPending((n) => n - 1));
   }
 
   return (
@@ -171,6 +178,17 @@ function QuickAdd({ onAdded, autoFocus }: { onAdded: (row: InventoryRowDto) => v
           </>
         )}
       </div>
+      <QuickBookDialog
+        open={asking !== null}
+        initialTitle={asking ?? ""}
+        onClose={() => {
+          setAsking(null);
+          requestAnimationFrame(() => input.current?.focus());
+        }}
+        onConfirm={confirm}
+        hint="הספר ייקלט עם מספר מלאי וברקוד קבועים."
+        confirmLabel="הוספה למלאי"
+      />
     </div>
   );
 }
@@ -184,7 +202,7 @@ export function InventoryTable({
 }: {
   rows: InventoryRowDto[];
   total: number;
-  perms: { capture: boolean; assign: boolean; label: boolean; edit: boolean; create: boolean; delete: boolean; relocate: boolean; fulfil?: boolean };
+  perms: { capture: boolean; assign: boolean; label: boolean; edit: boolean; create: boolean; delete: boolean; relocate: boolean; fulfil?: boolean; consignors?: boolean };
   defaultHouse: string | null;
   focusAdd?: boolean;
 }) {
@@ -260,6 +278,17 @@ export function InventoryTable({
                         <span className="num font-mono">{r.inventoryNumber}</span>
                         {r.barcode !== r.inventoryNumber && <span className="num font-mono" title="ברקוד חיצוני">{r.barcode}</span>}
                         {r.author && <span className="truncate">{r.author}</span>}
+                        {r.consignor ? (
+                          perms.consignors ? (
+                            <Link href={`/consignors/${r.consignor.id}`} className="relative z-10 shrink-0 text-ink-2 hover:underline" title="מפקיד">
+                              מפקיד: {r.consignor.name}
+                            </Link>
+                          ) : (
+                            <span className="shrink-0 text-ink-2">מפקיד: {r.consignor.name}</span>
+                          )
+                        ) : (
+                          <span className="shrink-0 text-faint">ללא מפקיד</span>
+                        )}
                         <span className="md:hidden">
                           <PhotoStatusBadge status={r.photoStatus} />
                         </span>
@@ -423,7 +452,7 @@ function ImportDialog({ open, onClose }: { open: boolean; onClose: () => void })
       open={open}
       onClose={onClose}
       title="ייבוא ספרים למלאי מ-CSV"
-      description="עמודות מוכרות: שם ספר, מחבר, כותרת משנה, מקום דפוס, שנת דפוס, הוצאה, מצב, גובה, רוחב, עובי (מ״מ), ברקוד, הערות. כל שורה = עותק פיזי אחד. הייבוא כולו-או-כלום."
+      description="עמודות מוכרות: שם ספר, מפקיד (חובה — שם של מפקיד קיים), מחבר, כותרת משנה, מקום דפוס, שנת דפוס, הוצאה, מצב, גובה, רוחב, עובי (מ״מ), ברקוד, הערות. כל שורה = עותק פיזי אחד. הייבוא כולו-או-כלום."
       width="lg"
     >
       <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed border-rule-strong bg-stone-2 px-4 py-8 text-[13.5px] text-ink-2 hover:border-ink/30 hover:bg-stone">

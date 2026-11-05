@@ -12,6 +12,7 @@ export const GET = route(async (req) => {
       q: p.get("q") ?? undefined,
       view,
       houseId: p.get("houseId") ?? undefined,
+      consignorId: p.get("consignorId") ?? undefined,
       notInCatalogId: p.get("notInCatalogId") ?? undefined,
       photoStatus: p.get("photoStatus") ?? undefined,
       physicalStatus: p.get("physicalStatus") ?? undefined,

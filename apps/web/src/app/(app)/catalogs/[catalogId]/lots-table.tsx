@@ -17,6 +17,8 @@ import { Tabs } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/toast";
 import { LotFormDialog, type LotFormValue } from "@/components/lot-form-dialog";
 import { AddFromInventoryDialog } from "@/components/inventory/add-from-inventory-dialog";
+import { QuickBookDialog } from "@/components/consignors/quick-book-dialog";
+import { ConsignorPickDialog } from "@/components/consignors/consignor-pick-dialog";
 import { fmt, t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -64,15 +66,14 @@ export function LotsTable({
   const [sort, setSort] = useState<Sort>("number");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [quickTitle, setQuickTitle] = useState("");
-  const [adding, setAdding] = useState(false);
+  const [asking, setAsking] = useState<string | null>(null);
+  const [dupFor, setDupFor] = useState<LotRow | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editLot, setEditLot] = useState<LotFormValue | null>(null);
   const [moveIds, setMoveIds] = useState<string[] | null>(null);
   const [removeIds, setRemoveIds] = useState<string[] | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
-  // one key per typed title: a retry after a failed / lost request reuses it, so the book is created once
-  const quickOp = useRef<{ title: string; opId: string } | null>(null);
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -110,25 +111,18 @@ export function LotsTable({
       return n;
     });
 
-  async function quickAdd(e: React.FormEvent) {
+  /** Enter on the quick row: ask for the consignor first, then the book is created (the window keeps the retry key) */
+  function quickAdd(e: React.FormEvent) {
     e.preventDefault();
     const title = quickTitle.trim();
-    if (!title) return;
-    if (adding) return;
-    setAdding(true);
-    if (quickOp.current?.title !== title) quickOp.current = { title, opId: crypto.randomUUID() };
-    try {
-      const r = await api<{ lot: { lotNumber: number } }>(`/api/catalogs/${catalogId}/lots`, { method: "POST", json: { title, opId: quickOp.current.opId } });
-      toast.success(`נוסף ספר חדש: פריט ${r.lot.lotNumber} · ${title}`, { detail: "הספר נקלט גם למלאי" });
-      quickOp.current = null;
-      setQuickTitle("");
-      router.refresh();
-      quickRef.current?.focus();
-    } catch (err) {
-      toast.error(errorMessage(err));
-    } finally {
-      setAdding(false);
-    }
+    if (title && asking === null) setAsking(title);
+  }
+
+  async function quickCreate(v: { title: string; consignor: { id: string; name: string }; opId: string }) {
+    const r = await api<{ lot: { lotNumber: number } }>(`/api/catalogs/${catalogId}/lots`, { method: "POST", json: { title: v.title, consignorId: v.consignor.id, opId: v.opId } });
+    toast.success(`נוסף ספר חדש: פריט ${r.lot.lotNumber} · ${v.title}`, { detail: `הספר נקלט גם למלאי · מפקיד: ${v.consignor.name}` });
+    setQuickTitle("");
+    router.refresh();
   }
 
   async function bulkStatus(next: LotStatus) {
@@ -153,14 +147,10 @@ export function LotsTable({
     }
   }
 
-  async function duplicate(id: string) {
-    try {
-      const r = await api<{ lot: { lotNumber: number } }>(`/api/lots/${id}/duplicate`, { method: "POST" });
-      toast.success(`נוסף עותק פיזי נוסף: פריט ${r.lot.lotNumber}`, { detail: "נוצר ספר מלאי חדש עם אותם פרטים, ללא תמונות." });
-      router.refresh();
-    } catch (err) {
-      toast.error(errorMessage(err));
-    }
+  async function duplicate(id: string, consignor: { id: string; name: string }) {
+    const r = await api<{ lot: { lotNumber: number } }>(`/api/lots/${id}/duplicate`, { method: "POST", json: { consignorId: consignor.id } });
+    toast.success(`נוסף עותק פיזי נוסף: פריט ${r.lot.lotNumber}`, { detail: `נוצר ספר מלאי חדש עם אותם פרטים, ללא תמונות · מפקיד: ${consignor.name}` });
+    router.refresh();
   }
 
   async function setCommercial(lot: LotRow, status: CommercialStatus) {
@@ -190,7 +180,7 @@ export function LotsTable({
     const items: MenuItems = [];
     if (perms.edit) {
       items.push({ label: "עריכת פרטים", icon: <Pencil />, onSelect: () => openEdit(l.id) });
-      items.push({ label: "עותק פיזי נוסף (ספר חדש)", icon: <Copy />, onSelect: () => duplicate(l.id) });
+      items.push({ label: "עותק פיזי נוסף (ספר חדש)", icon: <Copy />, onSelect: () => setDupFor(l) });
       if (otherCatalogs.length && l.assignmentStatus === "ACTIVE") items.push({ label: "העברה לקטלוג אחר", icon: <ArrowRightLeft />, onSelect: () => setMoveIds([l.id]) });
     }
     if (perms.commercial) {
@@ -223,7 +213,7 @@ export function LotsTable({
             aria-label="הוספה מהירה של פריט"
             maxLength={300}
           />
-          <Button type="submit" variant="primary" size="sm" loading={adding} disabled={!quickTitle.trim()} icon={<CornerDownLeft />}>
+          <Button type="submit" variant="primary" size="sm" disabled={!quickTitle.trim()} icon={<CornerDownLeft />}>
             הוספה
           </Button>
           <Button onClick={() => setFormOpen(true)} variant="ghost" size="sm" icon={<BookPlus />} className="hidden sm:inline-flex">
@@ -436,6 +426,25 @@ export function LotsTable({
 
       <AddFromInventoryDialog open={pickerOpen} onClose={() => setPickerOpen(false)} catalogId={catalogId} catalogLabel={catalogLabel} />
       <RemoveLotsDialog catalogId={catalogId} ids={removeIds} lots={lots} onClose={() => setRemoveIds(null)} onDone={() => setSelected(new Set())} />
+      <QuickBookDialog
+        open={asking !== null}
+        initialTitle={asking ?? ""}
+        onClose={() => {
+          setAsking(null);
+          requestAnimationFrame(() => quickRef.current?.focus());
+        }}
+        onConfirm={quickCreate}
+        hint={<>הספר ייווצר במלאי וישויך אוטומטית לקטלוג {catalogLabel}.</>}
+        confirmLabel="הוספה לקטלוג"
+      />
+      <ConsignorPickDialog
+        open={dupFor !== null}
+        onClose={() => setDupFor(null)}
+        heading="עותק פיזי נוסף"
+        description={dupFor ? <>ייווצר ספר מלאי חדש עם הפרטים של פריט {dupFor.lotNumber} · {dupFor.title}. המפקיד של העותק החדש נבחר בנפרד.</> : undefined}
+        confirmLabel="יצירת העותק"
+        onConfirm={(c) => duplicate(dupFor!.id, c)}
+      />
       <LotFormDialog open={formOpen} onClose={() => setFormOpen(false)} catalogId={catalogId} />
       {editLot && <LotFormDialog open onClose={() => setEditLot(null)} catalogId={catalogId} initial={editLot} />}
       <MoveLotsDialog ids={moveIds} onClose={() => setMoveIds(null)} catalogs={otherCatalogs} onDone={() => setSelected(new Set())} />

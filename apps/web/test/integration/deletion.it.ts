@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/server/db";
 import { storage } from "@/server/storage";
-import { createItem, listInventory } from "@/server/services/inventory";
+import { listInventory } from "@/server/services/inventory";
 import { assignToCatalog } from "@/server/services/assignments";
 import { createCatalog } from "@/server/services/catalogs";
 import {
@@ -18,7 +18,7 @@ import {
   runDeleteItemsJob,
 } from "@/server/services/deletion";
 import { can } from "@/server/auth/permissions";
-import { hasDb, makeOrg } from "./helpers";
+import { hasDb, makeOrg, createBook } from "./helpers";
 
 describe.skipIf(!hasDb)("permanent deletion of books and catalogs (real database, local storage)", () => {
   let ctx: Awaited<ReturnType<typeof makeOrg>>;
@@ -29,7 +29,7 @@ describe.skipIf(!hasDb)("permanent deletion of books and catalogs (real database
 
   /** a book with `n` photos, each with an original, a thumbnail, a preview and a processed image on disk */
   async function bookWithPhotos(title: string, n = 2) {
-    const { item } = await createItem(ctx.editor, { title });
+    const { item } = await createBook(ctx.editor, { title });
     const keys: string[] = [];
     for (let i = 0; i < n; i++) {
       const base = `orgs/${ctx.org.id}/it/${item.id}/${i}`;
@@ -135,23 +135,23 @@ describe.skipIf(!hasDb)("permanent deletion of books and catalogs (real database
   });
 
   it("refuses books with an open pick task or a sale awaiting shipment; a double request is refused", async () => {
-    const picking = (await createItem(ctx.editor, { title: "בליקוט" })).item;
+    const picking = (await createBook(ctx.editor, { title: "בליקוט" })).item;
     await db.pickTask.create({ data: { organizationId: ctx.org.id, inventoryItemId: picking.id, reason: "x", status: "OPEN" } });
-    const sold = (await createItem(ctx.editor, { title: "נמכר לא נשלח" })).item;
+    const sold = (await createBook(ctx.editor, { title: "נמכר לא נשלח" })).item;
     await db.inventoryItem.update({ where: { id: sold.id }, data: { commercialStatus: "SOLD" } });
     const p = await previewDeleteItems(ctx.admin, [picking.id, sold.id]);
     expect(p.blocked.map((b) => b.id).sort()).toEqual([picking.id, sold.id].sort());
     await expect(requestDeleteItems(ctx.admin, [picking.id, sold.id])).rejects.toThrow();
     expect(await db.inventoryItem.count({ where: { id: { in: [picking.id, sold.id] }, deletionRequestedAt: null } })).toBe(2);
 
-    const ok = (await createItem(ctx.editor, { title: "כפול" })).item;
+    const ok = (await createBook(ctx.editor, { title: "כפול" })).item;
     await requestDeleteItems(ctx.admin, [ok.id]);
     await expect(requestDeleteItems(ctx.admin, [ok.id])).rejects.toThrow();
   });
 
   it("ids from another organization are never deleted", async () => {
     const other = await makeOrg("del-other");
-    const theirs = (await createItem(other.editor, { title: "של ארגון אחר" })).item;
+    const theirs = (await createBook(other.editor, { title: "של ארגון אחר" })).item;
     await expect(previewDeleteItems(ctx.admin, [theirs.id])).rejects.toThrow();
     await expect(requestDeleteItems(ctx.admin, [theirs.id])).rejects.toThrow();
     expect(await db.inventoryItem.count({ where: { id: theirs.id } })).toBe(1);
@@ -161,7 +161,7 @@ describe.skipIf(!hasDb)("permanent deletion of books and catalogs (real database
     const ids: string[] = [];
     const keys: string[] = [];
     for (let i = 0; i < 150; i++) {
-      const { item } = await createItem(ctx.editor, { title: `המוני ${i}` });
+      const { item } = await createBook(ctx.editor, { title: `המוני ${i}` });
       const key = `orgs/${ctx.org.id}/it-bulk/${item.id}.jpg`;
       await storage().putBuffer(key, Buffer.from("x"), "image/jpeg");
       await db.photoAsset.create({
@@ -220,8 +220,8 @@ describe.skipIf(!hasDb)("permanent deletion of books and catalogs (real database
 
     it("removing items from a catalog never touches the books; items with a sale outcome are refused one by one", async () => {
       const cat = await createCatalog(ctx.editor, { auctionHouseId: ctx.house.id, number: "DC3", name: "הסרה" });
-      const a = (await createItem(ctx.editor, { title: "להסרה" })).item;
-      const b = (await createItem(ctx.editor, { title: "מוצע" })).item;
+      const a = (await createBook(ctx.editor, { title: "להסרה" })).item;
+      const b = (await createBook(ctx.editor, { title: "מוצע" })).item;
       const la = await assignToCatalog(ctx.editor, a.id, { catalogId: cat.id });
       const lb = await assignToCatalog(ctx.editor, b.id, { catalogId: cat.id });
       await db.lot.update({ where: { id: lb.id }, data: { commercialStatus: "OFFERED" } });

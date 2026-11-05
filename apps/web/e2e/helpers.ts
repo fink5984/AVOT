@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 export const ADMIN = {
   email: process.env.E2E_ADMIN_EMAIL ?? "admin@avot.local",
@@ -39,9 +39,35 @@ export async function createCatalog(page: Page, name: string) {
   return { number, catalogId: page.url().split("/catalogs/")[1]!.split(/[?#]/)[0]! };
 }
 
+export const E2E_CONSIGNOR = "מפקיד E2E";
+
+/** A consignor for tests that create books through the API (every new book needs one). Reused by name. */
+export async function apiConsignor(page: Page, name = E2E_CONSIGNOR): Promise<{ id: string; name: string }> {
+  const origin = new URL(page.url()).origin;
+  const found = await page.request.get(`/api/consignors?q=${encodeURIComponent(name)}`).then((r) => r.json());
+  const hit = (found.consignors as { id: string; name: string }[]).find((c) => c.name === name);
+  if (hit) return hit;
+  const made = await page.request.post("/api/consignors", { data: { name }, headers: { origin } }).then((r) => r.json());
+  return made.consignor;
+}
+
+/** Chooses a consignor in the picker inside a dialog (type to search, click the row). */
+export async function pickConsignor(dialog: Locator, name = E2E_CONSIGNOR) {
+  const combo = dialog.getByRole("combobox");
+  if ((await combo.inputValue()) === name) return; // the last consignor is already offered
+  await combo.click();
+  await combo.fill(name);
+  await dialog.getByRole("option", { name: new RegExp(name) }).first().click();
+  await expect(combo).toHaveValue(name);
+}
+
 export async function quickAddLot(page: Page, title: string) {
+  await apiConsignor(page);
   await page.getByLabel("הוספה מהירה של פריט").fill(title);
   await page.getByRole("button", { name: "הוספה", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "ספר חדש" });
+  await pickConsignor(dialog);
+  await dialog.getByRole("button", { name: "הוספה לקטלוג" }).click();
   await expect(page.getByRole("link", { name: title, exact: true })).toBeVisible();
 }
 

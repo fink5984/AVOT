@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Camera, Download, Gavel, Home, Library, LogOut, Menu as MenuIcon, ScanBarcode, ScanLine, Settings, Trash2, Warehouse, X } from "lucide-react";
+import { BarChart3, Camera, Contact, Download, Gavel, Home, Library, LogOut, Menu as MenuIcon, ScanBarcode, ScanLine, Settings, Trash2, Warehouse, X } from "lucide-react";
 import type { Role } from "@avot/shared";
 import { Wordmark } from "@/components/brand";
 import { t } from "@/i18n";
@@ -29,6 +29,7 @@ const ALL_BUT_WAREHOUSE: Role[] = ["ADMIN", "EDITOR", "PHOTOGRAPHER", "VIEWER"];
 const MAIN: NavItem[] = [
   { href: "/", label: "לוח עבודה", icon: Home, exact: true },
   { href: "/inventory", label: "מלאי ספרים", icon: Library, also: ["/search", "/labels"] },
+  { href: "/consignors", label: "מפקידים", icon: Contact, roles: ALL_BUT_WAREHOUSE },
   { href: "/capture", label: "צילום", icon: Camera, roles: ["ADMIN", "EDITOR", "PHOTOGRAPHER"] },
   { href: "/houses", label: "קטלוגים ומכירות", icon: Gavel, roles: ALL_BUT_WAREHOUSE, exact: true, also: ["/catalogs", "/lots"] },
   { href: "/warehouse", label: "מחסן", icon: Warehouse, roles: WAREHOUSE_VIEW_ROLES },

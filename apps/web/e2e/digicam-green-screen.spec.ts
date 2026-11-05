@@ -7,7 +7,7 @@ import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import sharp from "sharp";
 import { leatherFill, renderScene, roundedRect } from "../test/imaging-fixtures";
-import { login } from "./helpers";
+import { apiConsignor, login } from "./helpers";
 
 /**
  * Full chain with everything real except the camera driver: browser ↔ real Capture Agent process
@@ -178,7 +178,7 @@ test("digiCamControl provider end to end: rotated processed live view, 6 rapid s
     await page.request.put("/api/preferences/capture", { data: { value: { agentUrl: `http://127.0.0.1:${AGENT_PORT}`, lastCamera: null, activeProfileId: null, sound: false } }, headers: { origin } });
     await page.evaluate(() => localStorage.removeItem("avot.capturePrefs"));
 
-    const itemRes = await page.request.post("/api/inventory", { data: { title: `Digicam book ${Math.random().toString(36).slice(2)}`, author: `Author ${Math.random().toString(36).slice(2)}` }, headers: { origin } });
+    const itemRes = await page.request.post("/api/inventory", { data: { consignorId: (await apiConsignor(page)).id, title: `Digicam book ${Math.random().toString(36).slice(2)}`, author: `Author ${Math.random().toString(36).slice(2)}` }, headers: { origin } });
     const item = await itemRes.json();
     expect(itemRes.ok(), JSON.stringify(item)).toBe(true);
     const itemId = item.item.id as string;
