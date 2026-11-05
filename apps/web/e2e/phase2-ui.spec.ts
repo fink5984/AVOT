@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { login, pickCamera, resetCapturePrefs, shoot, strip } from "./helpers";
+import { E2E_CONSIGNOR, login, pickCamera, pickConsignor, resetCapturePrefs, shoot, strip } from "./helpers";
 
 /**
  * Phase 2 through the real UI: inventory → scan-to-capture (Webcam driver with
@@ -41,7 +41,14 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   await expect(add).toBeFocused();
   await add.fill(`ספר UI ${RUN}`);
   await add.press("Enter");
-  await expect(add).toHaveValue(""); // cleared at once, focus stays for the next book
+  // a book needs a consignor: the small window asks for it (no consignor → it cannot be confirmed)
+  const quick = page.getByRole("dialog", { name: "ספר חדש" });
+  await expect(quick.getByRole("button", { name: "הוספה למלאי" })).toBeVisible();
+  await quick.getByRole("button", { name: "הוספה למלאי" }).click();
+  await expect(quick.getByText("יש לבחור מפקיד").first()).toBeVisible();
+  await pickConsignor(quick);
+  await quick.getByRole("button", { name: "הוספה למלאי" }).click();
+  await expect(add).toHaveValue(""); // cleared at once, focus returns for the next book
   await expect(add).toBeFocused();
   const row = page.locator("tbody tr", { hasText: `ספר UI ${RUN}` });
   await expect(row).toHaveCount(1, { timeout: 15_000 });
@@ -51,7 +58,9 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   // a double Enter on the same text never makes two books
   await add.fill(`כפול ${RUN}`);
   await add.press("Enter");
-  await add.press("Enter");
+  await expect(quick.getByRole("combobox")).toHaveValue(E2E_CONSIGNOR); // the last consignor is offered, not hidden
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
   await expect(page.locator("tbody tr", { hasText: `כפול ${RUN}` })).toHaveCount(1, { timeout: 15_000 });
 
   // 2. book label: Code 128 SVG + antique-binding warning

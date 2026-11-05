@@ -190,9 +190,11 @@ async function expandRequest(orgId: string, req: z.output<typeof printRequestSch
 }
 
 /** Creates the print job(s) for a click. Idempotent on idemKey. Returns the jobs (several for big batches). */
-export async function createPrintJobs(user: UserPrincipal, input: z.input<typeof printRequestSchema>) {
+export async function createPrintJobs(user: UserPrincipal, input: z.input<typeof printRequestSchema>, opts: { allowNoPrinter?: boolean } = {}) {
   const req = printRequestSchema.parse(input);
-  const printer = await resolvePrinter(user.organizationId, req.printerId);
+  // allowNoPrinter (automatic labels after a photo session): with no primary printer the job is still queued, with no
+  // printer, and waits — the agent only claims it once a primary printer exists. The click that made it is never refused.
+  const printer = opts.allowNoPrinter && !req.printerId ? await db.printer.findFirst({ where: { organizationId: user.organizationId, isPrimary: true, active: true } }) : await resolvePrinter(user.organizationId, req.printerId);
   const items = await expandRequest(user.organizationId, req);
   if (!items.length) throw new AppError("VALIDATION", "לא נבחרו תוויות להדפסה");
 
@@ -233,7 +235,7 @@ export async function createPrintJobs(user: UserPrincipal, input: z.input<typeof
       const job = await db.printJob.create({
         data: {
           organizationId: user.organizationId,
-          printerId: printer.id,
+          printerId: printer?.id ?? null,
           kind: chunk.every((c) => c.type === "BOOK") ? "BOOK" : "LOCATION",
           items: chunk as unknown as Prisma.InputJsonValue,
           copies: req.copies,
@@ -398,6 +400,10 @@ export async function claimNextPrintJob(device: DevicePrincipal) {
       LEFT JOIN "Printer" p ON p.id = j."printerId"
       WHERE j."organizationId" = ${device.organizationId}::uuid AND j.status = 'PENDING'
         AND (p.id IS NULL OR p."agentId" IS NULL OR p."agentId" = ${device.deviceId}::uuid)
+        -- a job queued while no printer was set up waits (PENDING) until a usable primary printer exists, instead of failing
+        AND (p.id IS NOT NULL OR EXISTS (
+          SELECT 1 FROM "Printer" pp
+          WHERE pp."organizationId" = j."organizationId" AND pp."isPrimary" AND pp.active AND (pp."agentId" IS NULL OR pp."agentId" = ${device.deviceId}::uuid)))
       ORDER BY j."createdAt"
       LIMIT 1
       FOR UPDATE OF j SKIP LOCKED
@@ -552,4 +558,25 @@ export async function agentTestPrint(device: DevicePrincipal, printerId: string)
     data: { organizationId: device.organizationId, printerId: printer.id, kind: "TEST", items: [{ type: "TEST" }] as unknown as Prisma.InputJsonValue, copies: 1, labelCount: 1, summary: "הדפסת ניסיון (מהעמדה)" },
   });
   return { id: job.id };
+}
+
+/* ───────────────────────── honest job status for the UI ───────────────────────── */
+
+const AGENT_FRESH_MS = 90 * 1000;
+
+/**
+ * What a person should read about one job. "DONE" is the only word for "printed"; a queued job says it is queued,
+ * and says why it is not moving when there is no primary printer or no print agent has been seen lately.
+ */
+export async function describePrintJob(orgId: string, j: { id: string; status: string; printerId: string | null; attempts: number; error: string | null; sentAt: Date | null; doneAt: Date | null; labelCount: number }) {
+  let waiting: "NO_PRINTER" | "NO_AGENT" | null = null;
+  if (j.status === "PENDING" || j.status === "CLAIMED") {
+    const printer = j.printerId ? await db.printer.findFirst({ where: { id: j.printerId, organizationId: orgId, active: true }, select: { id: true } }) : await db.printer.findFirst({ where: { organizationId: orgId, isPrimary: true, active: true }, select: { id: true } });
+    if (!printer) waiting = "NO_PRINTER";
+    else if (j.status === "PENDING") {
+      const agent = await db.device.findFirst({ where: { organizationId: orgId, revokedAt: null, kind: { in: ["PRINT", "CAPTURE"] }, lastSeenAt: { gte: new Date(Date.now() - AGENT_FRESH_MS) } }, select: { id: true } });
+      if (!agent) waiting = "NO_AGENT";
+    }
+  }
+  return { id: j.id, status: j.status, error: j.error, attempts: j.attempts, labelCount: j.labelCount, sentAt: j.sentAt, doneAt: j.doneAt, waiting };
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/cn";
 
@@ -28,6 +28,8 @@ export function Dialog({
   className?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  // unique per dialog: a dialog opened from inside another one (consignor from the book form) keeps its own accessible name
+  const titleId = useId();
 
   useEffect(() => {
     const el = ref.current;
@@ -41,10 +43,14 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
-      onClose={onClose}
+      // close / cancel bubble through the React tree (also across portals): only this dialog's own events count,
+      // so closing a dialog opened from inside another one (consignor from the book form) leaves the outer one open
+      onClose={(e) => {
+        if (e.target === ref.current) onClose();
+      }}
       onCancel={(e) => {
         e.preventDefault();
-        onClose();
+        if (e.target === ref.current) onClose();
       }}
       onClick={(e) => {
         if (e.target === ref.current) onClose();
@@ -54,13 +60,13 @@ export function Dialog({
         widths[width],
         className,
       )}
-      aria-labelledby="dialog-title"
+      aria-labelledby={titleId}
     >
       {open && (
         <div className="flex max-h-[85vh] flex-col">
           <header className="flex items-start justify-between gap-4 px-6 pb-2 pt-5">
             <div>
-              <h2 id="dialog-title" className="text-[17px] font-semibold tracking-[-0.01em]">
+              <h2 id={titleId} className="text-[17px] font-semibold tracking-[-0.01em]">
                 {title}
               </h2>
               {description && <p className="mt-1 text-[13px] leading-relaxed text-muted">{description}</p>}

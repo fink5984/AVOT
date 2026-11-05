@@ -10,6 +10,7 @@ import type { Principal, UserPrincipal } from "../auth/principal";
 import { canSeeHouse } from "../auth/houses";
 import { changeStatus } from "./item-status";
 import { locationLabel, locationInclude } from "./location-label";
+import { requireConsignor } from "./consignors";
 
 const optionalText = (max: number) => z.string().trim().max(max).nullish().transform((v) => (v ? v : null));
 const optionalMm = z.number().int().min(1).max(5000).nullish();
@@ -30,6 +31,12 @@ export const itemInputSchema = z.object({
   sizeCategory: z.enum(BOOK_SIZES).optional(),
   /** external tag already on the box / sleeve; default = the inventory number */
   barcode: z.string().trim().min(3).max(64).regex(/^[\x21-\x7e]+$/, "ברקוד: תווי ASCII בלבד").optional(),
+  /**
+   * The depositor. Mandatory for a NEW book: `requireConsignor` (called by createItemTx, the one place a book is
+   * inserted) refuses a missing, foreign or archived consignor with a clear message. Optional in the schema only so
+   * that message is ours and not a generic validation error; on an edit it may change but never be cleared.
+   */
+  consignorId: z.string().uuid("מזהה מפקיד לא תקין").optional(),
   /** client-generated key of this create request: a double Enter / retried request returns the same book */
   opId: z.string().uuid().optional(),
 });
@@ -62,6 +69,7 @@ export async function createItemTx(
   input: ItemInput,
   opts: { requirements?: CategoryRequirements } = {},
 ) {
+  const consignorId = await requireConsignor(tx, principal.organizationId, input.consignorId);
   const serial = await allocateSerial(tx, principal.organizationId);
   const inventoryNumber = formatInventoryNumber(serial);
   const barcode = input.barcode ?? inventoryNumber;
@@ -76,6 +84,7 @@ export async function createItemTx(
       serial,
       inventoryNumber,
       barcode,
+      consignorId,
       title: input.title,
       subtitle: input.subtitle ?? null,
       author: input.author ?? null,
@@ -106,7 +115,7 @@ export async function createItemTx(
   });
   await audit(
     principal,
-    { action: "inventory.created", entityType: "inventory", entityId: item.id, inventoryItemId: item.id, data: { inventoryNumber, title: item.title } },
+    { action: "inventory.created", entityType: "inventory", entityId: item.id, inventoryItemId: item.id, data: { inventoryNumber, title: item.title, consignorId } },
     tx,
   );
   return item;
@@ -155,6 +164,13 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
     });
     if (clash) throw new AppError("CONFLICT", `הברקוד ${input.barcode} כבר משויך לספר ${clash.inventoryNumber}`);
   }
+  // a consignor change is validated like a new assignment (same organization, not archived) and logged with names
+  let consignorChange: { from: string | null; to: string } | null = null;
+  if (input.consignorId && input.consignorId !== item.consignorId) {
+    await requireConsignor(db, user.organizationId, input.consignorId);
+    const names = await db.consignor.findMany({ where: { id: { in: [input.consignorId, ...(item.consignorId ? [item.consignorId] : [])] } }, select: { id: true, name: true } });
+    consignorChange = { from: names.find((n) => n.id === item.consignorId)?.name ?? null, to: names.find((n) => n.id === input.consignorId)!.name };
+  }
   const sizeCategory =
     input.sizeCategory ??
     (input.heightMm !== undefined || input.widthMm !== undefined
@@ -174,7 +190,11 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
     }
     return u;
   });
-  await audit(user, { action: "inventory.updated", entityType: "inventory", entityId: id, inventoryItemId: id, data: input as object });
+  const { consignorId: _consignorId, ...otherFields } = input;
+  if (Object.keys(otherFields).length) await audit(user, { action: "inventory.updated", entityType: "inventory", entityId: id, inventoryItemId: id, data: otherFields as object });
+  if (consignorChange) {
+    await audit(user, { action: "inventory.consignor_changed", entityType: "inventory", entityId: id, inventoryItemId: id, data: { consignorId: input.consignorId!, ...consignorChange } });
+  }
   return updated;
 }
 
@@ -187,13 +207,15 @@ export const photoStatusSchema = z.enum(["NOT_STARTED", "IN_PROGRESS", "PENDING_
 
 /* ───────────────────────── listing ───────────────────────── */
 
-export const INVENTORY_VIEWS = ["all", "no_catalog", "no_photos", "no_location", "missing", "awaiting_pick", "unsold"] as const;
+export const INVENTORY_VIEWS = ["all", "no_catalog", "no_photos", "no_location", "no_consignor", "missing", "awaiting_pick", "unsold"] as const;
 export type InventoryView = (typeof INVENTORY_VIEWS)[number];
 
 export interface InventoryListOptions {
   q?: string;
   view?: InventoryView;
   houseId?: string;
+  /** only this consignor's books */
+  consignorId?: string;
   /** hide books that already hold an ACTIVE assignment in this catalog (the "add from inventory" picker) */
   notInCatalogId?: string;
   photoStatus?: string;
@@ -223,6 +245,7 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
         { author: { contains: q, mode: "insensitive" } },
         { printPlace: { contains: q, mode: "insensitive" } },
         { printYear: { contains: q, mode: "insensitive" } },
+        { consignor: { name: { contains: q, mode: "insensitive" } } },
       ],
     });
   }
@@ -236,6 +259,9 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
     case "no_location":
       and.push({ currentLocationId: null, physicalStatus: { notIn: ["SHIPPED", "PACKED", "PICKED"] } });
       break;
+    case "no_consignor":
+      and.push({ consignorId: null });
+      break;
     case "missing":
       and.push({ physicalStatus: "MISSING" });
       break;
@@ -247,6 +273,7 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
       break;
   }
   if (o.notInCatalogId) and.push({ lots: { none: { catalogId: o.notInCatalogId, assignmentStatus: "ACTIVE" } } });
+  if (o.consignorId) and.push({ consignorId: o.consignorId });
   if (o.houseId) and.push({ lots: { some: { assignmentStatus: "ACTIVE", catalog: { auctionHouseId: o.houseId } } } });
   if (o.photoStatus) and.push({ photoStatus: o.photoStatus as never });
   if (o.physicalStatus) and.push({ physicalStatus: o.physicalStatus as never });
@@ -266,6 +293,7 @@ export async function listInventory(user: UserPrincipal, o: InventoryListOptions
       take: pageSize,
       include: {
         currentLocation: { include: locationInclude },
+        consignor: { select: { id: true, name: true } },
         lots: {
           where: { assignmentStatus: "ACTIVE" },
           include: { catalog: { select: { id: true, number: true, name: true, auctionHouse: { select: { id: true, slug: true, name: true, accentColor: true } } } } },
@@ -300,6 +328,7 @@ export async function listInventory(user: UserPrincipal, o: InventoryListOptions
         physicalStatus: r.physicalStatus,
         commercialStatus: r.commercialStatus,
         photoCount: r.photoCount,
+        consignor: r.consignor,
         thumbAssetId: r.primaryAssetId ?? firstThumbs.find((t) => t.inventoryItemId === r.id)?.id ?? null,
         location: r.currentLocation ? { id: r.currentLocation.id, code: r.currentLocation.code, label: locationLabel(r.currentLocation) } : null,
         assignment: lot
@@ -351,6 +380,7 @@ export async function getItemDetail(user: UserPrincipal, id: string) {
     where: { id, organizationId: user.organizationId },
     include: {
       currentLocation: { include: locationInclude },
+      consignor: { select: { id: true, name: true, archivedAt: true } },
       categoryNotes: true,
       lots: {
         orderBy: { assignedAt: "desc" },

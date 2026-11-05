@@ -2,12 +2,11 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/server/db";
 import { can } from "@/server/auth/permissions";
-import { createItem } from "@/server/services/inventory";
 import { bulkCheckout } from "@/server/services/checkout";
 import { processScan } from "@/server/services/scanning";
 import { startCount } from "@/server/services/counting";
 import { bulkManualMove, createWarehouseFromWizard } from "@/server/services/warehouse";
-import { hasDb, makeOrg } from "./helpers";
+import { hasDb, makeOrg, createBook } from "./helpers";
 
 const op = (mode: "STORE" | "COUNT" | "PICK", code: string, extra: Record<string, unknown> = {}) => ({ opId: randomUUID(), mode, code, clientAt: new Date().toISOString(), ...extra });
 
@@ -20,7 +19,7 @@ describe.skipIf(!hasDb)("warehouse actions from the desktop = the phone's action
     const wh = await createWarehouseFromWizard(ctx.admin, { name: "מחסן 1", columns: 2, shelvesPerColumn: 2 });
     shelfA = await db.storageLocation.findFirstOrThrow({ where: { organizationId: ctx.org.id, shelf: { zone: { warehouseId: wh.id, code: "C1" }, code: "01" } } });
   });
-  const book = async (title: string) => (await createItem(ctx.editor, { title })).item;
+  const book = async (title: string) => (await createBook(ctx.editor, { title })).item;
 
   it("put away / move: bulk relocation from the inventory screen writes the same movement as a phone scan", async () => {
     const a = await book("מהמחשב");

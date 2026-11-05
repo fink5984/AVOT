@@ -1,6 +1,8 @@
 import { db } from "@/server/db";
 import type { DevicePrincipal, UserPrincipal } from "@/server/auth/principal";
 import { createPairingCode, pairDevice } from "@/server/services/devices";
+import { createConsignor } from "@/server/services/consignors";
+import { createItem, type ItemInput } from "@/server/services/inventory";
 import { API_VERSION } from "@avot/shared";
 
 export const hasDb = !!process.env.IT_DATABASE_URL;
@@ -22,4 +24,20 @@ export async function pairAgent(admin: UserPrincipal, kind: "CAPTURE" | "PRINT",
   const { code } = await createPairingCode(admin, name, undefined, kind);
   const paired = await pairDevice({ code, name, machineName: "IT-PC", agentVersion: "0.0.0-it", apiVersion: API_VERSION });
   return { kind: "device", deviceId: paired.deviceId, organizationId: paired.organizationId, deviceName: paired.name };
+}
+
+const consignors = new Map<string, Promise<string>>();
+/** One shared consignor per test organization: every book needs one now. */
+export function consignorOf(p: UserPrincipal): Promise<string> {
+  let c = consignors.get(p.organizationId);
+  if (!c) {
+    c = createConsignor(p, { name: "מפקיד בדיקות" }).then((x) => x.id);
+    consignors.set(p.organizationId, c);
+  }
+  return c;
+}
+
+/** createItem for tests that are not about consignors: receives the book with the organization's test consignor. */
+export async function createBook(p: UserPrincipal, input: ItemInput) {
+  return createItem(p, { consignorId: await consignorOf(p), ...input });
 }

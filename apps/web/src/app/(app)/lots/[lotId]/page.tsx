@@ -13,6 +13,7 @@ import { CommercialStatusBadge, LotStatusBadge } from "@/components/ui/badge";
 import { canSeeHouse } from "@/server/auth/houses";
 import { HouseMark } from "@/components/house-mark";
 import { PageHeader } from "@/components/ui/misc";
+import { PhotographerNotes } from "@/components/photographer-notes";
 import { fmt, t } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { Gallery } from "./gallery/gallery-client";
@@ -37,7 +38,7 @@ export default async function LotPage({ params, searchParams }: { params: Promis
   if (!/^[0-9a-f-]{36}$/i.test(lotId)) notFound();
   const lot = await db.lot.findFirst({
     where: { id: lotId, organizationId: user.organizationId },
-    include: { catalog: { include: { auctionHouse: true } }, item: { include: { currentLocation: { include: locationInclude } } } },
+    include: { catalog: { include: { auctionHouse: true } }, item: { include: { currentLocation: { include: locationInclude }, consignor: { select: { id: true, name: true } } } } },
   });
   if (!lot || !canSeeHouse(user, lot.catalog.auctionHouseId)) notFound();
 
@@ -174,6 +175,28 @@ export default async function LotPage({ params, searchParams }: { params: Promis
         <div className="space-y-4">
           <LotDetails lot={formValue} catalogId={lot.catalogId} canEdit={canEdit} />
           <LotNotes lotId={lot.id} initial={lot.internalNotes ?? ""} canEdit={canEdit} />
+          <PhotographerNotes
+            key={lot.inventoryItemId}
+            itemId={lot.inventoryItemId}
+            initialText={lot.item.photographerNotes ?? ""}
+            initialRev={lot.item.photographerNotesRev === null ? null : Number(lot.item.photographerNotesRev)}
+            canEdit={can(user.role, "photographerNotes.edit")}
+            variant="panel"
+          />
+          <p className="px-1 text-[12.5px] text-muted">
+            מפקיד:{" "}
+            {lot.item.consignor ? (
+              can(user.role, "consignor.view") ? (
+                <Link href={`/consignors/${lot.item.consignor.id}`} className="font-medium text-ink-2 hover:underline">
+                  {lot.item.consignor.name}
+                </Link>
+              ) : (
+                <span className="font-medium text-ink-2">{lot.item.consignor.name}</span>
+              )
+            ) : (
+              <span className="text-warn">ללא מפקיד (ספר ישן) — ניתן להשלים במסך המלאי</span>
+            )}
+          </p>
           {lot.photoCount > 0 && <LotDisplayPanel lotId={lot.id} canEdit={canEdit} />}
           <p className="px-1 text-[12px] leading-relaxed text-faint">
             נוצר {fmt.dateTime(lot.createdAt)} · עודכן {fmt.dateTime(lot.updatedAt)}

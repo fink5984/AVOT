@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { login } from "./helpers";
+import { apiConsignor, login } from "./helpers";
 
 /**
  * Round of fixes 16–25 through the real UI: sidebar handheld link, search by inventory number (+ fast Enter), the
@@ -11,7 +11,7 @@ const RUN = Date.now().toString(36).slice(-5).toUpperCase();
 const origin = (page: Page) => new URL(page.url()).origin;
 
 async function newBook(page: Page, title: string) {
-  const r = await page.request.post("/api/inventory", { data: { title }, headers: { origin: origin(page) } });
+  const r = await page.request.post("/api/inventory", { data: { title, consignorId: (await apiConsignor(page)).id }, headers: { origin: origin(page) } });
   const { item } = await r.json();
   return item as { id: string; inventoryNumber: string };
 }

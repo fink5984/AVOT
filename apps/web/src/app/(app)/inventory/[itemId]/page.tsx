@@ -15,6 +15,7 @@ import { HouseMark } from "@/components/house-mark";
 import { fmt, t } from "@/i18n";
 import { Gallery } from "../../lots/[lotId]/gallery/gallery-client";
 import { InventoryItemActions } from "@/components/inventory/item-actions";
+import { PhotographerNotes } from "@/components/photographer-notes";
 import { locationLabel } from "@/server/services/location-label";
 
 export async function generateMetadata({ params }: { params: Promise<{ itemId: string }> }) {
@@ -151,6 +152,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
                   widthMm: item.widthMm,
                   depthMm: item.depthMm,
                   sizeCategory: item.sizeCategory,
+                  consignor: item.consignor ? { id: item.consignor.id, name: item.consignor.name } : null,
                   barcode: item.barcode,
                 },
               }}
@@ -210,6 +212,20 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
 
           <Panel title="פרטים">
             <dl className="grid grid-cols-[110px_1fr] gap-x-3 gap-y-2 px-5 py-4 text-[13px]">
+              <dt className="text-muted">מפקיד</dt>
+              <dd>
+                {item.consignor ? (
+                  can(user.role, "consignor.view") ? (
+                    <Link href={`/consignors/${item.consignor.id}`} className="font-medium hover:underline">
+                      {item.consignor.name}
+                    </Link>
+                  ) : (
+                    item.consignor.name
+                  )
+                ) : (
+                  <span className="text-warn">ללא מפקיד{perms.edit ? " — אפשר להשלים בעריכת הספר" : ""}</span>
+                )}
+              </dd>
               <dt className="text-muted">קטגוריית גודל</dt>
               <dd>{t.bookSize[item.sizeCategory]}</dd>
               {dims && (
@@ -252,6 +268,15 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
               <dd>{fmt.dateTime(item.receivedAt)}</dd>
             </dl>
           </Panel>
+
+          <PhotographerNotes
+            key={item.id}
+            itemId={item.id}
+            initialText={item.photographerNotes ?? ""}
+            initialRev={item.photographerNotesRev === null ? null : Number(item.photographerNotesRev)}
+            canEdit={can(user.role, "photographerNotes.edit")}
+            variant="panel"
+          />
 
           {item.pickTasks.length > 0 && (
             <Panel title="ליקוט ומשלוח">

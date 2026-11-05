@@ -15,7 +15,15 @@ import { toAssetDto, type AssetDto } from "./asset-dto";
  */
 export interface CaptureLotContext {
   target: "lot" | "item";
-  item: { id: string; inventoryNumber: string; serial: number };
+  item: {
+    id: string;
+    inventoryNumber: string;
+    serial: number;
+    consignor: { id: string; name: string } | null;
+    /** the photographer's notes of this book and the edit counter of the saved text (see photographer-notes.ts) */
+    photographerNotes: string;
+    photographerNotesRev: number | null;
+  };
   lot: { id: string; lotNumber: number; title: string; subtitle: string | null; author: string | null; status: LotStatus; catalogId: string };
   catalog: { id: string; number: string; name: string };
   prev: { id: string; lotNumber: number; title: string } | null;
@@ -23,10 +31,20 @@ export interface CaptureLotContext {
   assets: AssetDto[];
 }
 
+type ItemRow = { id: string; inventoryNumber: string; serial: bigint; photographerNotes: string | null; photographerNotesRev: bigint | null; consignor: { id: string; name: string } | null };
+const itemInfo = (i: ItemRow): CaptureLotContext["item"] => ({
+  id: i.id,
+  inventoryNumber: i.inventoryNumber,
+  serial: Number(i.serial),
+  consignor: i.consignor,
+  photographerNotes: i.photographerNotes ?? "",
+  photographerNotesRev: i.photographerNotesRev === null ? null : Number(i.photographerNotesRev),
+});
+
 export const INVENTORY_CATALOG_NUMBER = "INV";
 
 export async function loadCaptureContext(orgId: string, targetId: string): Promise<CaptureLotContext | null> {
-  const lot = await db.lot.findFirst({ where: { id: targetId, organizationId: orgId }, include: { catalog: true, item: true } });
+  const lot = await db.lot.findFirst({ where: { id: targetId, organizationId: orgId }, include: { catalog: true, item: { include: { consignor: { select: { id: true, name: true } } } } } });
   if (lot) {
     const [prev, next, assets] = await Promise.all([
       db.lot.findFirst({ where: { catalogId: lot.catalogId, lotNumber: { lt: lot.lotNumber } }, orderBy: { lotNumber: "desc" }, select: { id: true, lotNumber: true, title: true } }),
@@ -35,7 +53,7 @@ export async function loadCaptureContext(orgId: string, targetId: string): Promi
     ]);
     return {
       target: "lot",
-      item: { id: lot.item.id, inventoryNumber: lot.item.inventoryNumber, serial: Number(lot.item.serial) },
+      item: itemInfo(lot.item),
       lot: { id: lot.id, lotNumber: lot.lotNumber, title: lot.title, subtitle: lot.subtitle, author: lot.author, status: lot.item.photoStatus, catalogId: lot.catalogId },
       catalog: { id: lot.catalog.id, number: lot.catalog.number, name: lot.catalog.name },
       prev,
@@ -43,7 +61,7 @@ export async function loadCaptureContext(orgId: string, targetId: string): Promi
       assets: assets.map(toAssetDto),
     };
   }
-  const item = await db.inventoryItem.findFirst({ where: { id: targetId, organizationId: orgId } });
+  const item = await db.inventoryItem.findFirst({ where: { id: targetId, organizationId: orgId }, include: { consignor: { select: { id: true, name: true } } } });
   if (!item) return null;
   const [prev, next, assets] = await Promise.all([
     db.inventoryItem.findFirst({ where: { organizationId: orgId, deletionRequestedAt: null, serial: { lt: item.serial } }, orderBy: { serial: "desc" }, select: { id: true, serial: true, title: true } }),
@@ -53,7 +71,7 @@ export async function loadCaptureContext(orgId: string, targetId: string): Promi
   const nav = (x: { id: string; serial: bigint; title: string } | null) => (x ? { id: x.id, lotNumber: Number(x.serial), title: x.title } : null);
   return {
     target: "item",
-    item: { id: item.id, inventoryNumber: item.inventoryNumber, serial: Number(item.serial) },
+    item: itemInfo(item),
     lot: { id: item.id, lotNumber: Number(item.serial), title: item.title, subtitle: item.subtitle, author: item.author, status: item.photoStatus, catalogId: item.id },
     catalog: { id: item.id, number: INVENTORY_CATALOG_NUMBER, name: "מלאי" },
     prev: nav(prev),

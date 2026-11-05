@@ -34,12 +34,15 @@ export const lotInputSchema = z.object({
   printYear: optionalText(50),
   printPlace: optionalText(200),
   requirements: requirementsSchema.optional(),
+  /** the depositor of the new physical book (mandatory; checked by createItemTx) */
+  consignorId: z.string().uuid("מזהה מפקיד לא תקין").optional(),
   /** request key (see createItem): a retried quick-add returns the lot it already created */
   opId: z.string().uuid().optional(),
 });
 export type LotInput = z.input<typeof lotInputSchema>;
 
-export const lotPatchSchema = lotInputSchema.partial().extend({
+// the consignor belongs to the physical book (changed from the inventory screen), never to a catalog lot
+export const lotPatchSchema = lotInputSchema.omit({ consignorId: true }).partial().extend({
   status: z.enum(["NOT_STARTED", "IN_PROGRESS", "PENDING_REVIEW", "COMPLETED", "NEEDS_RESHOOT"]).optional(),
 });
 
@@ -95,7 +98,7 @@ async function createLotTx(user: UserPrincipal, catalog: { id: string; number: s
     const item = await createItemTx(
       tx,
       user,
-      { title: input.title, subtitle: input.subtitle, author: input.author, printYear: input.printYear, printPlace: input.printPlace, internalNotes: input.internalNotes, opId: input.opId },
+      { title: input.title, subtitle: input.subtitle, author: input.author, printYear: input.printYear, printPlace: input.printPlace, internalNotes: input.internalNotes, consignorId: input.consignorId, opId: input.opId },
       { requirements },
     );
     const created = await tx.lot.create({
@@ -164,9 +167,11 @@ export async function updateLot(user: UserPrincipal, lotId: string, input: z.inf
 }
 
 /** A second physical copy: a NEW inventory book with the same metadata, as the next lot. Photos are not copied. */
-export async function duplicateLot(user: UserPrincipal, lotId: string) {
+export async function duplicateLot(user: UserPrincipal, lotId: string, consignorId: string | undefined) {
   const lot = await getLotForUser(user, lotId);
+  // never assumed: the second copy may belong to somebody else, so the caller must name its consignor
   return createLot(user, lot.catalogId, {
+    consignorId,
     title: `${lot.title} (עותק)`,
     subtitle: lot.subtitle,
     shortDescription: lot.shortDescription,

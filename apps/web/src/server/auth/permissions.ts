@@ -34,6 +34,8 @@ export const PERMISSIONS = {
   "inventory.create": ["ADMIN", "EDITOR", "PHOTOGRAPHER"],
   "inventory.edit": ["ADMIN", "EDITOR"],
   "inventory.import": ["ADMIN", "EDITOR"],
+  /** the photographer's notes on a book: a focused permission, so a photographer can write them without being able to edit the book */
+  "photographerNotes.edit": ["ADMIN", "EDITOR", "PHOTOGRAPHER"],
   /** permanent deletion of books (database rows and every stored file) */
   "inventory.delete": ["ADMIN"],
   /** change a book's shelf from inventory / catalog screens (movement history is always written) */
@@ -42,6 +44,12 @@ export const PERMISSIONS = {
   "catalog.assign": ["ADMIN", "EDITOR"],
   /** offered / sold / unsold / withdrawn */
   "commercial.edit": ["ADMIN", "EDITOR"],
+  /** consignors page, cards and the picker (contact details are not shown to warehouse staff) */
+  "consignor.view": ["ADMIN", "EDITOR", "PHOTOGRAPHER", "VIEWER"],
+  /** a new consignor can be created while receiving a book (also from the capture screen) */
+  "consignor.create": ["ADMIN", "EDITOR", "PHOTOGRAPHER"],
+  /** edit details, archive, delete an empty consignor */
+  "consignor.manage": ["ADMIN", "EDITOR"],
   "label.print": ["ADMIN", "EDITOR", "PHOTOGRAPHER", "WAREHOUSE"],
   "house.manage": ["ADMIN"],
   /** printers, print queue administration, test prints, re-print of any job */

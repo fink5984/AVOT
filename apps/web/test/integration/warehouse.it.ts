@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 import { classifyCode } from "@avot/shared";
 import { db } from "@/server/db";
-import { createItem } from "@/server/services/inventory";
 import { processScan } from "@/server/services/scanning";
 import { createPrintJobs, createPrinter, claimNextPrintJob, reportPrintJob } from "@/server/services/printing";
 import {
@@ -17,7 +16,7 @@ import {
   shelfContents,
   warehouseTree,
 } from "@/server/services/warehouse";
-import { hasDb, makeOrg, pairAgent } from "./helpers";
+import { hasDb, makeOrg, pairAgent, createBook } from "./helpers";
 
 const op = (mode: "STORE" | "TRANSFER" | "FIND" | "COUNT" | "PICK", code: string, extra: Record<string, unknown> = {}) => ({
   opId: randomUUID(),
@@ -86,7 +85,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
   it("a shelf with books cannot be disabled; an empty one can, and scanners then refuse it", async () => {
     const shelf = await db.shelf.findFirstOrThrow({ where: { zone: { warehouseId: wh.id, code: "C2" }, code: "01" }, include: { locations: true } });
     const loc = shelf.locations[0]!;
-    const { item } = await createItem(ctx.editor, { title: "על המדף" });
+    const { item } = await createBook(ctx.editor, { title: "על המדף" });
     await manualMove(ctx.admin, item.id, { locationId: loc.id });
     await expect(setShelfActive(ctx.admin, shelf.id, false)).rejects.toThrow(/ספרים/);
     const contents = await shelfContents(ctx.org.id, shelf.id);
@@ -109,7 +108,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
 
     it("put-away: scan shelf, then books in a row — each book gets that exact shelf and a movement record", async () => {
       const books = [];
-      for (let i = 0; i < 3; i++) books.push((await createItem(ctx.editor, { title: `קליטה ${i}` })).item);
+      for (let i = 0; i < 3; i++) books.push((await createBook(ctx.editor, { title: `קליטה ${i}` })).item);
       const s = await processScan(ctx.warehouse, op("STORE", shelfA.code));
       expect(s).toMatchObject({ result: "OK", codeType: "LOCATION" });
       for (const b of books) {
@@ -132,7 +131,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
       expect(col.result).toBe("ERROR");
       expect(col.codeType).toBe("ZONE");
       expect(col.message).toMatch(/עמודה/);
-      const { item } = await createItem(ctx.editor, { title: "בלי מדף" });
+      const { item } = await createBook(ctx.editor, { title: "בלי מדף" });
       const r = await processScan(ctx.warehouse, op("STORE", item.barcode));
       expect(r.result).toBe("ERROR");
       expect(r.message).toMatch(/מדף/);
@@ -140,7 +139,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
     });
 
     it("the same scan sent twice (lost response, offline retry) is applied once and answered the same", async () => {
-      const { item } = await createItem(ctx.editor, { title: "פעמיים" });
+      const { item } = await createBook(ctx.editor, { title: "פעמיים" });
       const s = await processScan(ctx.warehouse, op("STORE", shelfA.code));
       const same = op("STORE", item.barcode, { contextLocationId: s.activeLocation!.id });
       const [r1, r2] = [await processScan(ctx.warehouse, same), await processScan(ctx.warehouse, same)];
@@ -150,7 +149,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
     });
 
     it("find: shows the exact place; late (offline) sync never overwrites a newer move — it becomes a conflict", async () => {
-      const { item } = await createItem(ctx.editor, { title: "מתעדכן מאוחר" });
+      const { item } = await createBook(ctx.editor, { title: "מתעדכן מאוחר" });
       const s = await processScan(ctx.warehouse, op("STORE", shelfA.code));
       const scannedAt = new Date(Date.now() - 60_000).toISOString();
       // someone else moves the book to B after the (offline) scan happened
@@ -164,7 +163,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
 
     it("stock count lists discrepancies but never moves books by itself", async () => {
       const { startCount } = await import("@/server/services/counting");
-      const { item } = await createItem(ctx.editor, { title: "בספירה" });
+      const { item } = await createBook(ctx.editor, { title: "בספירה" });
       await manualMove(ctx.admin, item.id, { locationId: shelfA.id });
       const session = await startCount(ctx.admin, { warehouseId: wh.id });
       const s = await processScan(ctx.warehouse, op("COUNT", shelfB.code, { countSessionId: session.id }));
@@ -174,7 +173,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
     });
 
     it("taking a book out: temporary removal leaves it 'awaiting storage' and shelving it again works; final removal ships a sold book only", async () => {
-      const { item } = await createItem(ctx.editor, { title: "יוצא ונכנס" });
+      const { item } = await createBook(ctx.editor, { title: "יוצא ונכנס" });
       await manualMove(ctx.admin, item.id, { locationId: shelfA.id });
 
       const out = await processScan(ctx.warehouse, op("PICK", item.barcode, { intent: "TEMP_OUT" }));
@@ -211,7 +210,7 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
     });
 
     it("permissions: only warehouse operators scan to store; viewers and photographers cannot", async () => {
-      const { item } = await createItem(ctx.editor, { title: "הרשאות" });
+      const { item } = await createBook(ctx.editor, { title: "הרשאות" });
       await expect(processScan(ctx.viewer, op("STORE", shelfA.code))).rejects.toThrow();
       await expect(processScan(ctx.photographer, op("STORE", item.barcode))).rejects.toThrow();
     });
