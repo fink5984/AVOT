@@ -5,7 +5,7 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { ApiError, api, errorMessage } from "@/lib/api";
-import { ConsignorSelect, lastConsignor } from "@/components/consignors/consignor-select";
+import { ConsignorSelect } from "@/components/consignors/consignor-select";
 import type { ConsignorLite } from "@/components/consignors/consignor-dialog";
 
 export type NewBookTarget = { kind: "inventory" } | { kind: "catalog"; catalogId: string; catalogLabel: string };
@@ -47,7 +47,7 @@ export function NewBookDialog({
   useEffect(() => {
     if (!open) return;
     setTitle("");
-    setConsignor(lastConsignor());
+    setConsignor(null);
     setMissing(false);
     setError(null);
     setBusy("idle");

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Field, Input } from "@/components/ui/field";
 import { errorMessage } from "@/lib/api";
-import { ConsignorSelect, lastConsignor } from "./consignor-select";
+import { ConsignorSelect } from "./consignor-select";
 import type { ConsignorLite } from "./consignor-dialog";
 
 interface Props {
@@ -20,8 +20,7 @@ interface Props {
 
 /**
  * The small window of every "type a name and press Enter" intake (inventory, catalog): the typed name plus a
- * mandatory consignor. The consignor chosen last is offered as a starting point (shown, never hidden), so a run of
- * books from one consignor is two Enters per book: the name, then confirm. `onConfirm` may be async and throw — the
+ * mandatory consignor. Nothing is preselected: the consignor is always chosen explicitly. `onConfirm` may be async and throw — the
  * message is shown here and the same `opId` is reused by the retry, so a book is never created twice.
  */
 export function QuickBookDialog(props: Props) {
@@ -37,7 +36,7 @@ export function QuickBookDialog(props: Props) {
 
 function QuickBookForm({ onClose, initialTitle, onConfirm, hint, confirmLabel = "הוספה", onBusy }: Props & { onBusy: (b: boolean) => void }) {
   const [title, setTitle] = useState(initialTitle);
-  const [consignor, setConsignor] = useState<ConsignorLite | null>(() => lastConsignor());
+  const [consignor, setConsignor] = useState<ConsignorLite | null>(null);
   const [busy, setBusyState] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [missing, setMissing] = useState(false);
@@ -103,7 +102,7 @@ function QuickBookForm({ onClose, initialTitle, onConfirm, hint, confirmLabel = 
           />
         )}
       </Field>
-      <Field label="מפקיד" required error={missing && !consignor ? "יש לבחור מפקיד" : null} hint={consignor && initialTitle ? "המפקיד האחרון שנבחר — אפשר להחליף" : undefined}>
+      <Field label="מפקיד" required error={missing && !consignor ? "יש לבחור מפקיד" : null}>
         {(p) => (
           <ConsignorSelect
             id={p.id}

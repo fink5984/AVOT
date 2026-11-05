@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { E2E_CONSIGNOR, login, pickCamera, pickConsignor, resetCapturePrefs, shoot, strip } from "./helpers";
+import { login, pickCamera, pickConsignor, resetCapturePrefs, shoot, strip } from "./helpers";
 
 /**
  * Phase 2 through the real UI: inventory → scan-to-capture (Webcam driver with
@@ -58,9 +58,9 @@ test("phase 2 UI: inventory → scan to capture → labels → handheld (incl. o
   // a double Enter on the same text never makes two books
   await add.fill(`כפול ${RUN}`);
   await add.press("Enter");
-  await expect(quick.getByRole("combobox")).toHaveValue(E2E_CONSIGNOR); // the last consignor is offered, not hidden
-  await page.keyboard.press("Enter");
-  await page.keyboard.press("Enter");
+  await expect(quick.getByRole("combobox")).toHaveValue(""); // nothing is preselected
+  await pickConsignor(quick);
+  await quick.getByRole("button", { name: "הוספה למלאי" }).dblclick();
   await expect(page.locator("tbody tr", { hasText: `כפול ${RUN}` })).toHaveCount(1, { timeout: 15_000 });
 
   // 2. book label: Code 128 SVG + antique-binding warning
