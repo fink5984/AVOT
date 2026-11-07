@@ -17,6 +17,8 @@ import { Gallery } from "../../lots/[lotId]/gallery/gallery-client";
 import { InventoryItemActions } from "@/components/inventory/item-actions";
 import { PhotographerNotes } from "@/components/photographer-notes";
 import { locationLabel } from "@/server/services/location-label";
+import { getAiState } from "@/server/services/ai-analysis";
+import { ItemReviewPanel } from "@/components/ai/item-review-panel";
 
 export async function generateMetadata({ params }: { params: Promise<{ itemId: string }> }) {
   const { itemId } = await params;
@@ -32,9 +34,9 @@ const MOVE_KIND: Record<string, string> = {
   COUNT_ADJUST: "תוקן בספירת מלאי",
   MANUAL: "תיקון ידני",
 };
-const DIMENSION: Record<string, string> = { PHOTO: "צילום", PHYSICAL: "מחסן", COMMERCIAL: "מסחרי" };
+const DIMENSION: Record<string, string> = { PHOTO: "צילום", PHYSICAL: "מחסן", COMMERCIAL: "מסחרי", REVIEW: "פרטי הפריט" };
 const statusName = (dim: string, s: string | null) =>
-  !s ? "—" : dim === "PHOTO" ? (t.photoStatus as Record<string, string>)[s] ?? s : dim === "PHYSICAL" ? (t.physicalStatus as Record<string, string>)[s] ?? s : (t.commercialStatus as Record<string, string>)[s] ?? s;
+  !s ? "—" : dim === "REVIEW" ? (t.reviewStatus as Record<string, string>)[s] ?? s : dim === "PHOTO" ? (t.photoStatus as Record<string, string>)[s] ?? s : dim === "PHYSICAL" ? (t.physicalStatus as Record<string, string>)[s] ?? s : (t.commercialStatus as Record<string, string>)[s] ?? s;
 // already shown through the status / movement rows of the timeline
 const SKIP_AUDIT = new Set(["lot.status_changed", "inventory.photo_status", "lot.commercial_status", "warehouse.item_moved"]);
 
@@ -45,7 +47,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
   const detail = await getItemDetail(user, itemId);
   if (!detail) notFound();
   const { item, lots, events, moves, audit, categoryCounts } = detail;
-  const [assets, progress] = await Promise.all([listAssets(user.organizationId, item.id), itemProgress(item.id)]);
+  const [assets, progress, ai] = await Promise.all([listAssets(user.organizationId, item.id), itemProgress(item.id), getAiState(user, item.id)]);
   const active = lots.find((l) => l.assignmentStatus === "ACTIVE");
   const openPick = item.pickTasks.find((p) => ["OPEN", "PICKED", "PACKED"].includes(p.status));
   const { category } = await searchParams;
@@ -136,6 +138,8 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
                 assignment: active ? "active" : null,
                 hasOpenPick: !!openPick,
                 captureHref: `/capture/${item.id}${category ? `?category=${category}` : ""}`,
+                ai: { aiStatus: item.aiStatus, hasAiResult: item.aiCompletedAt !== null, aiError: item.aiError },
+                approverEmail: can(user.role, "ai.reanalyze.approve") ? user.email : undefined,
                 edit: {
                   id: item.id,
                   inventoryNumber: item.inventoryNumber,
@@ -156,13 +160,14 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
                   barcode: item.barcode,
                 },
               }}
-              perms={{ ...perms, relocate: perms.move, fulfil: can(user.role, "pick.fulfil"), delete: can(user.role, "inventory.delete") }}
+              perms={{ ...perms, relocate: perms.move, fulfil: can(user.role, "pick.fulfil"), delete: can(user.role, "inventory.delete"), ai: can(user.role, "ai.analyze") }}
             />
           </>
         }
       />
 
       <div className="grid items-start gap-6 px-4 pb-10 lg:px-8 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="min-w-0 space-y-6">
         <Gallery
           lot={{ id: item.id, lotNumber: Number(item.serial), catalogId: item.id, catalogNumber: "INV", title: item.title, name: item.inventoryNumber }}
           initialAssets={assets.map(toAssetDto)}
@@ -178,6 +183,31 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
             mark: can(user.role, "lot.status"),
           }}
         />
+        <ItemReviewPanel
+          key={item.id}
+          itemId={item.id}
+          values={{
+            itemType: item.itemType,
+            title: item.title,
+            subtitle: item.subtitle,
+            author: item.author,
+            printPlace: item.printPlace,
+            printYear: item.printYear,
+            publisher: item.publisher,
+            edition: item.edition,
+            extent: item.extent,
+            bibliographicNotes: item.bibliographicNotes,
+            conditionNotes: item.conditionNotes,
+            catalogHeadline: item.catalogHeadline,
+            catalogDescription: item.catalogDescription,
+          }}
+          detailsVersion={item.detailsVersion}
+          ai={ai}
+          canEdit={perms.edit}
+          canReview={can(user.role, "item.review")}
+          canRestore={can(user.role, "ai.restore")}
+        />
+        </div>
 
         <div className="space-y-4">
           <Panel title="שיוכים לקטלוגים">

@@ -13,6 +13,7 @@ import { LocationDialog } from "@/components/warehouse/location-dialog";
 import { DeleteDialog } from "@/components/deletion/delete-dialog";
 import { api, errorMessage } from "@/lib/api";
 import { usePrintLabels } from "@/lib/print";
+import { AiAnalyzeButton, type AiButtonState } from "@/components/ai/ai-button";
 
 export interface ItemActionsSubject {
   id: string;
@@ -28,6 +29,10 @@ export interface ItemActionsSubject {
   captureHref?: string;
   /** full details; only the book page passes it, and only there is "עריכה" offered */
   edit?: ItemFormValue;
+  /** the AI analysis state (item.aiStatus …); the AI button is shown when given and permitted */
+  ai?: AiButtonState;
+  /** prefilled approver email of the re-analysis dialog (the current user, when they are a manager) */
+  approverEmail?: string;
 }
 
 export interface ItemActionsPerms {
@@ -39,6 +44,8 @@ export interface ItemActionsPerms {
   fulfil?: boolean;
   delete?: boolean;
   pick?: boolean;
+  /** start an AI analysis */
+  ai?: boolean;
 }
 
 /** The same service as the phone scanner's "הוצאה זמנית / הוצאה סופית", also used by the bulk bar of the table. */
@@ -63,7 +70,7 @@ export function useItemCheckout() {
 }
 
 /**
- * The one set of per-book actions, in the inventory table and at the top of the book page: photograph,
+ * The one set of per-book actions, in the inventory table and at the top of the book page: photograph, AI analysis,
  * print the label (one click, the shop's printer), assign to a catalog, change location (warehouse → column →
  * shelf), edit, and the rest in a menu. Same logic and same permissions everywhere; only the density differs.
  */
@@ -121,6 +128,7 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
             <Camera className="text-accent" />
           </IconButtonLink>
         )}
+        {perms.ai && subject.ai && <AiAnalyzeButton itemId={subject.id} inventoryNumber={subject.inventoryNumber} initial={subject.ai} size={size} defaultApproverEmail={subject.approverEmail} />}
         {perms.label && (
           <IconButton label={`הדפסת תווית ${subject.inventoryNumber}`} size={size} disabled={printing} onClick={() => void printLabel()}>
             <Printer />

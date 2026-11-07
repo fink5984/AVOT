@@ -60,6 +60,42 @@ enum StatusDimension {
   PHOTO
   PHYSICAL
   COMMERCIAL
+  /// "מצב פרטי הפריט": human review of the item's details (see ItemReviewStatus)
+  REVIEW
+}
+
+/// What the physical item is. UNKNOWN until a person or the AI analysis decides; a book is the common case.
+enum ItemType {
+  UNKNOWN
+  BOOK
+  MANUSCRIPT
+  LETTER
+  DOCUMENT
+  POSTER
+  PERIODICAL
+  PHOTOGRAPH
+  MAP
+  JUDAICA
+  ARTWORK
+  EPHEMERA
+  OTHER
+}
+
+/// "מצב פרטי הפריט": human review of the details, separate from photo / physical / commercial status and from the AI run.
+enum ItemReviewStatus {
+  NOT_STARTED
+  PENDING_REVIEW
+  IN_REVIEW
+  APPROVED
+}
+
+/// State of the item's AI analysis (the latest run). Also the state of one InventoryAnalysis run.
+enum AiAnalysisStatus {
+  NOT_RUN
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
 }
 
 enum DescriptionSource {
@@ -189,6 +225,8 @@ enum JobType {
   DELETE_ITEMS
   /// permanent deletion of catalogs (books stay in inventory)
   DELETE_CATALOGS
+  /// AI analysis of one item's photos and details (see services/ai-analysis.ts)
+  AI_ANALYZE
 }
 
 enum PrintJobKind {
@@ -320,59 +358,83 @@ model UserHouseAccess {
 /// One physical copy. Two copies of the same title are two items. The serial /
 /// inventory number never changes, whichever house or catalog the book is in.
 model InventoryItem {
-  id                    String           @id @default(uuid()) @db.Uuid
-  organizationId        String           @db.Uuid
+  id                       String             @id @default(uuid()) @db.Uuid
+  organizationId           String             @db.Uuid
   /// sequence number; the public inventory number is 10000000 + serial and is never reused
-  serial                BigInt
+  serial                   BigInt
   /// "ITM-000184" — brand-neutral, printed on the book's tag
-  inventoryNumber       String
+  inventoryNumber          String
   /// Code 128 payload; equals inventoryNumber unless an external tag was registered
-  barcode               String
-  title                 String
-  subtitle              String?
-  author                String?
-  printPlace            String?
-  printYear             String?
-  publisher             String?
-  bibliographicNotes    String?
-  internalNotes         String?
+  barcode                  String
+  title                    String
+  subtitle                 String?
+  author                   String?
+  printPlace               String?
+  printYear                String?
+  publisher                String?
+  /// book, manuscript, poster … (UNKNOWN until decided)
+  itemType                 ItemType           @default(UNKNOWN)
+  /// edition statement, only when it can be established ("מהדורה שנייה")
+  edition                  String?
+  /// pagination / extent as verified ("[2], קפ דף")
+  extent                   String?
+  bibliographicNotes       String?
+  internalNotes            String?
   /// physical condition of the copy (binding, foxing …)
-  conditionNotes        String?
+  conditionNotes           String?
+  /// catalog draft kept on the physical item (AI or manual): the lot heading and long description. A lot of a DRAFT
+  /// catalog receives it; a new assignment starts from it. Never published by itself.
+  catalogHeadline          String?
+  catalogDescription       String?
+  catalogDescriptionSource DescriptionSource?
+  /// grows on every change of the details (human or AI): optimistic concurrency for autosave and AI results
+  detailsVersion           Int                @default(0)
+  /// "מצב פרטי הפריט" (human review); transitions are InventoryStatusEvent rows with dimension REVIEW
+  reviewStatus             ItemReviewStatus   @default(NOT_STARTED)
+  reviewChangedAt          DateTime?
+  reviewChangedById        String?            @db.Uuid
+  approvedAt               DateTime?
+  approvedById             String?            @db.Uuid
+  /// state of the latest AI analysis run (InventoryAnalysis id in aiRunId); aiCompletedAt = the last successful one
+  aiStatus                 AiAnalysisStatus   @default(NOT_RUN)
+  aiRunId                  String?            @db.Uuid
+  aiCompletedAt            DateTime?
+  aiError                  String?
   /// who deposited the book for sale. Required for every NEW book (enforced in createItemTx); null only on books that predate consignors
-  consignorId           String?          @db.Uuid
+  consignorId              String?            @db.Uuid
   /// the photographer's notes on this physical copy ("missing title page"); separate from internalNotes, never exported
-  photographerNotes     String?
+  photographerNotes        String?
   /// client edit counter (ms timestamp): a delayed older save can never overwrite a newer note
-  photographerNotesRev  BigInt?
-  photographerNotesAt   DateTime?
-  photographerNotesById String?          @db.Uuid
-  heightMm              Int?
-  widthMm               Int?
-  depthMm               Int?
-  sizeCategory          BookSize         @default(UNKNOWN)
+  photographerNotesRev     BigInt?
+  photographerNotesAt      DateTime?
+  photographerNotesById    String?            @db.Uuid
+  heightMm                 Int?
+  widthMm                  Int?
+  depthMm                  Int?
+  sizeCategory             BookSize           @default(UNKNOWN)
   /// photography workflow (same values as the legacy Lot.status)
-  photoStatus           LotStatus        @default(NOT_STARTED)
-  physicalStatus        PhysicalStatus   @default(AWAITING_STORAGE)
-  commercialStatus      CommercialStatus @default(UNASSIGNED)
+  photoStatus              LotStatus          @default(NOT_STARTED)
+  physicalStatus           PhysicalStatus     @default(AWAITING_STORAGE)
+  commercialStatus         CommercialStatus   @default(UNASSIGNED)
   /// CategoryRequirements for photography
-  requirements          Json
+  requirements             Json
   /// denormalised, maintained transactionally with PhotoAsset writes
-  photoCount            Int              @default(0)
-  primaryAssetId        String?          @db.Uuid
-  currentLocationId     String?          @db.Uuid
-  locationUpdatedAt     DateTime?
+  photoCount               Int                @default(0)
+  primaryAssetId           String?            @db.Uuid
+  currentLocationId        String?            @db.Uuid
+  locationUpdatedAt        DateTime?
   /// set when the item was created by the Phase 2 migration from a legacy lot
-  migratedFromLotId     String?          @unique @db.Uuid
+  migratedFromLotId        String?            @unique @db.Uuid
   /// client-generated key of the "create" request — a double Enter / retried request never creates a second book
-  createOpId            String?          @db.Uuid
+  createOpId               String?            @db.Uuid
   /// set when a permanent deletion was requested: the book is hidden from everyday work until its files are gone
-  deletionRequestedAt   DateTime?
-  deletionRequestedById String?          @db.Uuid
-  receivedAt            DateTime         @default(now())
-  photoCompletedAt      DateTime?
-  createdById           String?          @db.Uuid
-  createdAt             DateTime         @default(now())
-  updatedAt             DateTime         @updatedAt
+  deletionRequestedAt      DateTime?
+  deletionRequestedById    String?            @db.Uuid
+  receivedAt               DateTime           @default(now())
+  photoCompletedAt         DateTime?
+  createdById              String?            @db.Uuid
+  createdAt                DateTime           @default(now())
+  updatedAt                DateTime           @updatedAt
 
   organization    Organization                @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   currentLocation StorageLocation?            @relation(fields: [currentLocationId], references: [id], onDelete: Restrict)
@@ -395,6 +457,7 @@ model InventoryItem {
   @@index([organizationId, commercialStatus])
   @@index([organizationId, photoStatus])
   @@index([organizationId, consignorId])
+  @@index([organizationId, reviewStatus])
   @@index([currentLocationId])
 }
 
@@ -454,21 +517,65 @@ model InventoryStatusEvent {
   @@index([inventoryItemId, createdAt])
 }
 
-/// Results of automated analysis of an item's source photos (future AI module).
+/// One AI analysis run of an item (kind "catalog_ai"): what was sent, what came back, what was written, what it cost.
+/// At most one QUEUED/RUNNING run per item — partial unique index "InventoryAnalysis_item_active_key" (raw SQL).
 model InventoryAnalysis {
-  id              String   @id @default(uuid()) @db.Uuid
-  organizationId  String   @db.Uuid
-  inventoryItemId String   @db.Uuid
-  kind            String
-  model           String?
-  input           Json?
-  result          Json
-  createdById     String?  @db.Uuid
-  createdAt       DateTime @default(now())
+  id                String           @id @default(uuid()) @db.Uuid
+  organizationId    String           @db.Uuid
+  inventoryItemId   String           @db.Uuid
+  kind              String
+  status            AiAnalysisStatus @default(QUEUED)
+  provider          String?
+  model             String?
+  /// item context + image manifest that was sent (no image bytes)
+  input             Json?
+  /// the validated model answer (null until it succeeded)
+  result            Json?
+  promptVersion     String?
+  examplesVersion   String?
+  examplesHash      String?
+  examplesCount     Int?
+  /// client key of the click that requested the run: a double click never queues two runs
+  requestKey        String?          @db.Uuid
+  jobId             String?          @db.Uuid
+  /// a run over an item that already had a successful analysis (needs a manager's approval)
+  isReanalysis      Boolean          @default(false)
+  approvedById      String?          @db.Uuid
+  imageCount        Int              @default(0)
+  requestCount      Int              @default(0)
+  inputTokens       Int?
+  cachedInputTokens Int?
+  outputTokens      Int?
+  /// thinking tokens (OpenAI: included in outputTokens; Gemini: billed in addition)
+  reasoningTokens   Int?
+  costUsd           Decimal?         @db.Decimal(12, 6)
+  /// true when the cost is not computed from provider-reported usage with a known price
+  costEstimated     Boolean          @default(true)
+  /// provider calls, per-call usage, image preparation report, warnings
+  usage             Json?
+  durationMs        Int?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  error             String?
+  /// AI-writable values when the run started (to detect human edits made during the run)
+  baseValues        Json?
+  /// every AI-writable value just before the result was written (restore point)
+  snapshot          Json?
+  /// fields actually written, kept, or flagged, with the values written
+  applied           Json?
+  /// filled when a person approves the item: which AI values they changed (provider comparison)
+  reviewOutcome     Json?
+  restoredAt        DateTime?
+  restoredById      String?          @db.Uuid
+  createdById       String?          @db.Uuid
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @default(now()) @updatedAt
 
   item InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
 
+  @@unique([organizationId, requestKey])
   @@index([inventoryItemId, createdAt])
+  @@index([organizationId, createdAt])
 }
 
 model Session {

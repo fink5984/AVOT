@@ -100,6 +100,20 @@ export type ScanMode = (typeof SCAN_MODES)[number];
 export const PICK_STATUSES = ["OPEN", "PICKED", "PACKED", "SHIPPED", "CANCELLED"] as const;
 export type PickStatus = (typeof PICK_STATUSES)[number];
 
+/* ───────────── AI analysis and human review of item details ───────────── */
+
+/** What the physical item is (not every item is a book). */
+export const ITEM_TYPES = ["UNKNOWN", "BOOK", "MANUSCRIPT", "LETTER", "DOCUMENT", "POSTER", "PERIODICAL", "PHOTOGRAPH", "MAP", "JUDAICA", "ARTWORK", "EPHEMERA", "OTHER"] as const;
+export type ItemType = (typeof ITEM_TYPES)[number];
+
+/** "מצב פרטי הפריט": the human review of an item's details, separate from photo / physical / commercial status. */
+export const ITEM_REVIEW_STATUSES = ["NOT_STARTED", "PENDING_REVIEW", "IN_REVIEW", "APPROVED"] as const;
+export type ItemReviewStatus = (typeof ITEM_REVIEW_STATUSES)[number];
+
+/** State of an item's (latest) AI analysis run. */
+export const AI_ANALYSIS_STATUSES = ["NOT_RUN", "QUEUED", "RUNNING", "COMPLETED", "FAILED"] as const;
+export type AiAnalysisStatus = (typeof AI_ANALYSIS_STATUSES)[number];
+
 /** The numbering scheme: the public inventory number is INVENTORY_BASE + serial (1 → 10000001). Digits only, any length. */
 export const INVENTORY_BASE = 10_000_000n;
 /** 35 → "10000035". Digits only, brand-neutral, never changes when the book moves between houses or catalogs. */

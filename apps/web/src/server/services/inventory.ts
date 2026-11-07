@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
-import { BOOK_SIZES, DEFAULT_REQUIREMENTS, PHOTO_CATEGORIES, classifyCode, formatInventoryNumber, type CategoryRequirements, type PhotoCategory } from "@avot/shared";
+import { BOOK_SIZES, DEFAULT_REQUIREMENTS, ITEM_REVIEW_STATUSES, ITEM_TYPES, PHOTO_CATEGORIES, classifyCode, formatInventoryNumber, type CategoryRequirements, type PhotoCategory } from "@avot/shared";
 import { db, type Tx } from "../db";
 import { asJson } from "../json";
 import { AppError, notFound } from "../errors";
@@ -11,6 +11,7 @@ import { canSeeHouse } from "../auth/houses";
 import { changeStatus } from "./item-status";
 import { locationLabel, locationInclude } from "./location-label";
 import { requireConsignor } from "./consignors";
+import { changedMaterialFields, reviewAfterHumanEdit } from "./item-review";
 
 const optionalText = (max: number) => z.string().trim().max(max).nullish().transform((v) => (v ? v : null));
 const optionalMm = z.number().int().min(1).max(5000).nullish();
@@ -22,9 +23,15 @@ export const itemInputSchema = z.object({
   printPlace: optionalText(200),
   printYear: optionalText(50),
   publisher: optionalText(200),
+  itemType: z.enum(ITEM_TYPES).optional(),
+  edition: optionalText(200),
+  extent: optionalText(200),
   bibliographicNotes: optionalText(5000),
   internalNotes: optionalText(5000),
   conditionNotes: optionalText(2000),
+  /** the catalog draft kept on the item (see schema.prisma); a person's edit marks it MANUAL */
+  catalogHeadline: optionalText(500),
+  catalogDescription: optionalText(20000),
   heightMm: optionalMm,
   widthMm: optionalMm,
   depthMm: optionalMm,
@@ -91,9 +98,15 @@ export async function createItemTx(
       printPlace: input.printPlace ?? null,
       printYear: input.printYear ?? null,
       publisher: input.publisher ?? null,
+      itemType: input.itemType ?? "UNKNOWN",
+      edition: input.edition ?? null,
+      extent: input.extent ?? null,
       bibliographicNotes: input.bibliographicNotes ?? null,
       internalNotes: input.internalNotes ?? null,
       conditionNotes: input.conditionNotes ?? null,
+      catalogHeadline: input.catalogHeadline ?? null,
+      catalogDescription: input.catalogDescription ?? null,
+      catalogDescriptionSource: input.catalogHeadline || input.catalogDescription ? "MANUAL" : null,
       heightMm: input.heightMm ?? null,
       widthMm: input.widthMm ?? null,
       depthMm: input.depthMm ?? null,
@@ -154,9 +167,16 @@ export async function getItemOrThrow(orgId: string, id: string, tx: Tx = db) {
  * Updates the book. Bibliographic changes flow into the ACTIVE lot only where
  * the lot still holds the previous item value — a catalog-specific edit of the
  * lot's title (or author …) is never overwritten.
+ *
+ * Every change of the details raises detailsVersion. With `expectedVersion` (autosave of the review panel) the
+ * save is refused with 409 when the details changed since the client loaded them (an AI result, another user):
+ * nothing newer is overwritten silently. A material change withdraws an approval (see item-review.ts).
  */
-export async function updateItem(user: UserPrincipal, id: string, input: z.infer<typeof itemPatchSchema>) {
+export async function updateItem(user: UserPrincipal, id: string, input: z.infer<typeof itemPatchSchema>, opts: { expectedVersion?: number } = {}) {
   const item = await getItemOrThrow(user.organizationId, id);
+  if (opts.expectedVersion !== undefined && opts.expectedVersion !== item.detailsVersion) {
+    throw new AppError("CONFLICT", "פרטי הפריט עודכנו בינתיים (ניתוח AI או משתמש אחר). השינויים שלך לא נשמרו כדי לא לדרוס אותם.", { detailsVersion: item.detailsVersion, code: "STALE_DETAILS" });
+  }
   if (input.barcode && input.barcode !== item.barcode) {
     const clash = await db.inventoryItem.findFirst({
       where: { organizationId: user.organizationId, id: { not: id }, OR: [{ barcode: input.barcode }, { inventoryNumber: input.barcode }] },
@@ -178,8 +198,27 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
         ? sizeFromDimensions(input.heightMm === undefined ? item.heightMm : input.heightMm, input.widthMm === undefined ? item.widthMm : input.widthMm)
         : undefined
       : undefined);
+  const material = changedMaterialFields(item, input);
+  const catalogEdited = (input.catalogHeadline !== undefined || input.catalogDescription !== undefined) && material.some((f) => f === "catalogHeadline" || f === "catalogDescription");
   const updated = await db.$transaction(async (tx) => {
-    const u = await tx.inventoryItem.update({ where: { id }, data: { ...input, ...(sizeCategory ? { sizeCategory } : {}) } });
+    await tx.$queryRaw`SELECT id FROM "InventoryItem" WHERE id = ${id}::uuid FOR UPDATE`;
+    if (opts.expectedVersion !== undefined) {
+      const now = await tx.inventoryItem.findUniqueOrThrow({ where: { id }, select: { detailsVersion: true } });
+      if (now.detailsVersion !== opts.expectedVersion) {
+        throw new AppError("CONFLICT", "פרטי הפריט עודכנו בינתיים (ניתוח AI או משתמש אחר). השינויים שלך לא נשמרו כדי לא לדרוס אותם.", { detailsVersion: now.detailsVersion, code: "STALE_DETAILS" });
+      }
+    }
+    const u = await tx.inventoryItem.update({
+      where: { id },
+      data: {
+        ...input,
+        ...(sizeCategory ? { sizeCategory } : {}),
+        ...(material.length ? { detailsVersion: { increment: 1 } } : {}),
+        ...(catalogEdited ? { catalogDescriptionSource: "MANUAL" as const } : {}),
+      },
+    });
+    const review = await reviewAfterHumanEdit(tx, user, item, material);
+    if (review) Object.assign(u, await tx.inventoryItem.findUniqueOrThrow({ where: { id }, select: { reviewStatus: true, reviewChangedAt: true, reviewChangedById: true, approvedAt: true, approvedById: true } }));
     const active = await tx.lot.findFirst({ where: { inventoryItemId: id, assignmentStatus: "ACTIVE" } });
     if (active) {
       const lotPatch: Record<string, string | null> = {};
@@ -207,7 +246,7 @@ export const photoStatusSchema = z.enum(["NOT_STARTED", "IN_PROGRESS", "PENDING_
 
 /* ───────────────────────── listing ───────────────────────── */
 
-export const INVENTORY_VIEWS = ["all", "no_catalog", "no_photos", "no_location", "no_consignor", "missing", "awaiting_pick", "unsold"] as const;
+export const INVENTORY_VIEWS = ["all", "needs_review", "no_catalog", "no_photos", "no_location", "no_consignor", "missing", "awaiting_pick", "unsold"] as const;
 export type InventoryView = (typeof INVENTORY_VIEWS)[number];
 
 export interface InventoryListOptions {
@@ -220,6 +259,8 @@ export interface InventoryListOptions {
   notInCatalogId?: string;
   photoStatus?: string;
   physicalStatus?: string;
+  /** "מצב פרטי הפריט" */
+  reviewStatus?: string;
   sort?: "updated" | "number" | "title";
   page?: number;
   pageSize?: number;
@@ -250,6 +291,10 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
     });
   }
   switch (o.view) {
+    case "needs_review":
+      // "דורשים בדיקה אנושית"
+      and.push({ reviewStatus: { in: ["PENDING_REVIEW", "IN_REVIEW"] } });
+      break;
     case "no_catalog":
       and.push({ lots: { none: { assignmentStatus: "ACTIVE" } }, physicalStatus: { not: "SHIPPED" }, commercialStatus: { not: "SOLD" } });
       break;
@@ -277,6 +322,7 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
   if (o.houseId) and.push({ lots: { some: { assignmentStatus: "ACTIVE", catalog: { auctionHouseId: o.houseId } } } });
   if (o.photoStatus) and.push({ photoStatus: o.photoStatus as never });
   if (o.physicalStatus) and.push({ physicalStatus: o.physicalStatus as never });
+  if (o.reviewStatus && (ITEM_REVIEW_STATUSES as readonly string[]).includes(o.reviewStatus)) and.push({ reviewStatus: o.reviewStatus as never });
   return { AND: and };
 }
 
@@ -327,6 +373,10 @@ export async function listInventory(user: UserPrincipal, o: InventoryListOptions
         photoStatus: r.photoStatus,
         physicalStatus: r.physicalStatus,
         commercialStatus: r.commercialStatus,
+        reviewStatus: r.reviewStatus,
+        aiStatus: r.aiStatus,
+        hasAiResult: r.aiCompletedAt !== null,
+        aiError: r.aiError,
         photoCount: r.photoCount,
         consignor: r.consignor,
         thumbAssetId: r.primaryAssetId ?? firstThumbs.find((t) => t.inventoryItemId === r.id)?.id ?? null,

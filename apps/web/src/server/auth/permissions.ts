@@ -51,6 +51,14 @@ export const PERMISSIONS = {
   /** edit details, archive, delete an empty consignor */
   "consignor.manage": ["ADMIN", "EDITOR"],
   "label.print": ["ADMIN", "EDITOR", "PHOTOGRAPHER", "WAREHOUSE"],
+  /** start the AI analysis of a book (first run, or a retry after a failed first run) */
+  "ai.analyze": ["ADMIN", "EDITOR", "PHOTOGRAPHER"],
+  /** a manager who may approve (with their password) a re-analysis that replaces the previous AI details */
+  "ai.reanalyze.approve": ["ADMIN"],
+  /** restore the details an AI run replaced */
+  "ai.restore": ["ADMIN", "EDITOR"],
+  /** "מצב פרטי הפריט": start the human review, approve the details */
+  "item.review": ["ADMIN", "EDITOR"],
   "house.manage": ["ADMIN"],
   /** printers, print queue administration, test prints, re-print of any job */
   "print.manage": ["ADMIN"],

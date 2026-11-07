@@ -1,4 +1,4 @@
-import type { CatalogStatus, CommercialStatus, LotStatus, PhysicalStatus } from "@avot/shared";
+import type { CatalogStatus, CommercialStatus, ItemReviewStatus, LotStatus, PhysicalStatus } from "@avot/shared";
 import { t } from "@/i18n";
 import { cn } from "@/lib/cn";
 
@@ -99,6 +99,22 @@ export function PhotoStatusBadge({ status, className }: { status: LotStatus; cla
   return (
     <Badge tone={LOT_TONE[status]} className={className}>
       {t.photoStatus[status]}
+    </Badge>
+  );
+}
+
+export const REVIEW_TONE: Record<ItemReviewStatus, Tone> = {
+  NOT_STARTED: "neutral",
+  PENDING_REVIEW: "warn",
+  IN_REVIEW: "info",
+  APPROVED: "green",
+};
+
+/** "מצב פרטי הפריט" */
+export function ReviewStatusBadge({ status, className }: { status: ItemReviewStatus; className?: string }) {
+  return (
+    <Badge tone={REVIEW_TONE[status]} className={className}>
+      {t.reviewStatus[status]}
     </Badge>
   );
 }

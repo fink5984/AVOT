@@ -2,10 +2,11 @@ import Link from "next/link";
 import { z } from "zod";
 import { requirePageUser } from "@/server/auth/principal";
 import { can } from "@/server/auth/permissions";
+import { ITEM_REVIEW_STATUSES } from "@avot/shared";
 import { INVENTORY_VIEWS, inventoryCounts, listInventory, type InventoryView } from "@/server/services/inventory";
 import { listHouses } from "@/server/services/houses";
 import { PageBody, PageHeader } from "@/components/ui/misc";
-import { fmt } from "@/i18n";
+import { fmt, t } from "@/i18n";
 import { cn } from "@/lib/cn";
 import { InventoryActions, InventoryTable } from "./inventory-client";
 
@@ -13,6 +14,7 @@ export const metadata = { title: "מלאי" };
 
 const VIEW_LABEL: Record<InventoryView, string> = {
   all: "הכול",
+  needs_review: "דורשים בדיקה אנושית",
   no_catalog: "ללא קטלוג",
   no_photos: "ללא צילום",
   no_location: "ללא מיקום",
@@ -29,6 +31,8 @@ interface Search {
   sort?: string;
   page?: string;
   new?: string;
+  /** "מצב פרטי הפריט" */
+  review?: string;
 }
 
 /**
@@ -43,14 +47,15 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
   const house = houses.find((h) => h.slug === sp.house);
   const page = Math.max(1, Number(sp.page ?? 1) || 1);
   const sort = (["updated", "number", "title"].includes(sp.sort ?? "") ? sp.sort : "updated") as "updated" | "number" | "title";
+  const review = (ITEM_REVIEW_STATUSES as readonly string[]).includes(sp.review ?? "") ? sp.review : undefined;
   const [data, counts] = await Promise.all([
-    listInventory(user, { q: sp.q, view, houseId: house?.id, sort, page, pageSize: 100 }),
+    listInventory(user, { q: sp.q, view, houseId: house?.id, reviewStatus: review, sort, page, pageSize: 100 }),
     inventoryCounts(user.organizationId),
   ]);
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
   const qs = (patch: Partial<Search>) => {
     const p = new URLSearchParams();
-    const merged = { q: sp.q, view: view === "all" ? undefined : view, house: sp.house, sort: sort === "updated" ? undefined : sort, ...patch };
+    const merged = { q: sp.q, view: view === "all" ? undefined : view, house: sp.house, review, sort: sort === "updated" ? undefined : sort, ...patch };
     for (const [k, v] of Object.entries(merged)) if (v) p.set(k, String(v));
     const s = p.toString();
     return s ? `/inventory?${s}` : "/inventory";
@@ -105,6 +110,14 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
                 ))}
               </select>
             )}
+            <select name="review" defaultValue={review ?? ""} aria-label="מצב פרטי הפריט" className="h-9 rounded-md border border-rule-strong bg-paper px-2 text-[13px] shadow-card">
+              <option value="">כל מצבי הפרטים</option>
+              {ITEM_REVIEW_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {t.reviewStatus[s]}
+                </option>
+              ))}
+            </select>
             <select name="sort" defaultValue={sort} aria-label="מיון" className="h-9 rounded-md border border-rule-strong bg-paper px-2 text-[13px] shadow-card">
               <option value="updated">עודכנו לאחרונה</option>
               <option value="number">לפי מספר מלאי</option>
@@ -119,6 +132,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
           total={data.total}
           perms={{
             capture: can(user.role, "photo.capture"),
+            ai: can(user.role, "ai.analyze"),
             assign: can(user.role, "catalog.assign"),
             label: can(user.role, "label.print"),
             edit: can(user.role, "inventory.edit"),

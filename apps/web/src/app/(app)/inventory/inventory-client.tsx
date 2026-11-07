@@ -4,9 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BookPlus, BookUp, Camera, FileUp, Gavel, Library, Loader2, MapPin, MoreHorizontal, Plus, Printer, Tag, Trash2, X } from "lucide-react";
-import type { CommercialStatus, LotStatus, PhysicalStatus } from "@avot/shared";
+import type { AiAnalysisStatus, CommercialStatus, ItemReviewStatus, LotStatus, PhysicalStatus } from "@avot/shared";
 import { Button, IconButton } from "@/components/ui/button";
-import { CommercialStatusBadge, PhotoStatusBadge, PhysicalStatusBadge } from "@/components/ui/badge";
+import { CommercialStatusBadge, PhotoStatusBadge, PhysicalStatusBadge, ReviewStatusBadge } from "@/components/ui/badge";
 import { Dialog } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
@@ -31,6 +31,10 @@ export interface InventoryRowDto {
   photoStatus: LotStatus;
   physicalStatus: PhysicalStatus;
   commercialStatus: CommercialStatus;
+  reviewStatus: ItemReviewStatus;
+  aiStatus: AiAnalysisStatus;
+  hasAiResult: boolean;
+  aiError: string | null;
   photoCount: number;
   consignor: { id: string; name: string } | null;
   thumbAssetId: string | null;
@@ -77,6 +81,10 @@ function rowFromCreated(item: { id: string; inventoryNumber: string; barcode: st
     photoStatus: item.photoStatus,
     physicalStatus: item.physicalStatus,
     commercialStatus: item.commercialStatus,
+    reviewStatus: "NOT_STARTED",
+    aiStatus: "NOT_RUN",
+    hasAiResult: false,
+    aiError: null,
     photoCount: 0,
     consignor,
     thumbAssetId: null,
@@ -202,7 +210,7 @@ export function InventoryTable({
 }: {
   rows: InventoryRowDto[];
   total: number;
-  perms: { capture: boolean; assign: boolean; label: boolean; edit: boolean; create: boolean; delete: boolean; relocate: boolean; fulfil?: boolean; consignors?: boolean };
+  perms: { capture: boolean; ai?: boolean; assign: boolean; label: boolean; edit: boolean; create: boolean; delete: boolean; relocate: boolean; fulfil?: boolean; consignors?: boolean };
   defaultHouse: string | null;
   focusAdd?: boolean;
 }) {
@@ -254,6 +262,7 @@ export function InventoryTable({
                   <th className="w-12 px-1 py-2.5" aria-label="תמונה" />
                   <th className="px-2 py-2.5 text-start font-medium">שם הספר</th>
                   <th className="hidden w-28 px-2 py-2.5 text-start font-medium md:table-cell">צילום</th>
+                  <th className="hidden w-32 px-2 py-2.5 text-start font-medium md:table-cell">מצב פרטי הפריט</th>
                   <th className="hidden w-44 px-2 py-2.5 text-start font-medium lg:table-cell">מיקום</th>
                   <th className="hidden w-48 px-2 py-2.5 text-start font-medium xl:table-cell">קטלוג</th>
                   <th className="w-px pe-3 ps-2 py-2.5" aria-label="פעולות" />
@@ -298,6 +307,9 @@ export function InventoryTable({
                       <PhotoStatusBadge status={r.photoStatus} />
                       <div className="num mt-0.5 text-[11.5px] text-muted">{r.photoCount} תמונות</div>
                     </td>
+                    <td className="hidden px-2 py-1.5 md:table-cell">
+                      <ReviewStatusBadge status={r.reviewStatus} />
+                    </td>
                     <td className="hidden px-2 py-1.5 lg:table-cell">
                       {r.location ? (
                         <span className="text-[12.5px]">{r.location.label}</span>
@@ -336,6 +348,7 @@ export function InventoryTable({
                             commercialStatus: r.commercialStatus,
                             hasLocation: !!r.location,
                             assignment: r.assignment === null ? null : "hidden" in r.assignment ? "hidden" : "active",
+                            ai: { aiStatus: r.aiStatus, hasAiResult: r.hasAiResult, aiError: r.aiError },
                           }}
                           perms={perms}
                         />
