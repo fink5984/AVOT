@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Prisma, type InventoryAnalysis, type InventoryItem, type Job } from "@prisma/client";
 import { db, type Tx } from "../db";
@@ -16,10 +17,10 @@ import { LOT_COPY_FIELDS } from "./inventory";
 import { reviewAfterHumanEdit } from "./item-review";
 import { activeProvider, aiConfig, type AiConfig } from "../ai/config";
 import { batchImages, photosFingerprint, prepareImages, type PreparedImage } from "../ai/images";
-import { AI_MAX_LENGTH, AI_WRITABLE, mapResult, type AiValues, type AiWritable } from "../ai/mapper";
-import { PROMPT_VERSION, SYSTEM_PROMPT } from "../ai/catalog-prompt";
-import { buildAnalysisText, buildInstructions, buildObservationText, cacheKeyFor, HEBREW_AGAIN, redactPersonal, type ItemContext } from "../ai/prompt-builder";
-import { ANALYSIS_JSON_SCHEMA, analysisResultZ, englishExplanations, InvalidAnswerError, OBSERVATION_JSON_SCHEMA, observationResultZ, parseAnswer, type AnalysisResult, type ObservationResult } from "../ai/schema";
+import { AI_MAX_LENGTH, AI_WRITABLE, mapResult, ensureParagraphs, stripImageIds, stripMeasurements, type AiValues, type AiWritable } from "../ai/mapper";
+import { PROMPT_VERSION, REWRITE_PROMPT, REWRITE_PROMPT_VERSION, SYSTEM_PROMPT } from "../ai/catalog-prompt";
+import { buildAnalysisText, buildInstructions, buildObservationText, cacheKeyFor, HEBREW_AGAIN, HEBREW_ONLY, redactPersonal, type ItemContext } from "../ai/prompt-builder";
+import { ANALYSIS_JSON_SCHEMA, analysisResultZ, englishExplanations, InvalidAnswerError, isEnglishProse, REWRITE_FIELDS, REWRITE_JSON_SCHEMA, rewriteResultZ, type RewriteField, OBSERVATION_JSON_SCHEMA, observationResultZ, parseAnswer, type AnalysisResult, type ObservationResult } from "../ai/schema";
 import { estimateTokens, loadStyleLibrary } from "../ai/style-examples";
 import { computeCost, type UsageTotals } from "../ai/pricing";
 import { providerForRun, type AiProvider } from "../ai/providers";
@@ -183,6 +184,8 @@ export async function getAiState(user: UserPrincipal, itemId: string) {
           id: latest.id,
           result: latest.result as AnalysisResult | null,
           applied: latest.applied as AppliedReport | null,
+          /** values when the run started: "ביטול ההחלה" of a proposal puts the field back to this */
+          base: (latest.baseValues ?? null) as AiValues | null,
           images: ((latest.input as { images?: unknown } | null)?.images ?? []) as ImageManifestEntry[],
         }
       : null,
@@ -780,4 +783,115 @@ export async function listRunsForReport(orgId: string, opts: { from?: Date; to?:
       error: r.error ?? "",
     };
   });
+}
+
+/* ───────────────────────── rewrite ("שכתוב ב-AI") ───────────────────────── */
+
+export const REWRITE_KIND = "catalog_rewrite";
+/** a rewrite takes seconds; one still RUNNING after this was interrupted */
+const REWRITE_STALE_MS = 3 * 60 * 1000;
+
+export const rewriteSchema = z.object({
+  /** facts the reviewer adds (a signature they identified, the copy's provenance, background) */
+  additions: z.string().trim().max(4000).default(""),
+});
+
+/**
+ * Rewrites every text field (details, notes, catalog headline and description) from the item's current (checked)
+ * values and the reviewer's additions. Text only, synchronous (a few seconds). Nothing is written to the item: the answer is a
+ * proposal the reviewer applies in the panel. Each rewrite is a run of its own (cost, model, versions) and is logged.
+ */
+export async function rewriteCatalog(user: UserPrincipal, itemId: string, input: z.infer<typeof rewriteSchema>) {
+  const item = await db.inventoryItem.findFirst({ where: { id: itemId, organizationId: user.organizationId } });
+  if (!item) throw notFound("הספר");
+  const provider = activeProvider();
+  if (item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI פעיל על הפריט. נסו לשכתב בסיומו.");
+  const cfg = aiConfig();
+  const lib = loadStyleLibrary();
+  const startedAt = new Date();
+  // a rewrite left RUNNING (server restarted mid-request) would block the item: it is abandoned after a few minutes
+  await db.inventoryAnalysis.updateMany({
+    where: { inventoryItemId: itemId, kind: REWRITE_KIND, status: "RUNNING", updatedAt: { lt: new Date(Date.now() - REWRITE_STALE_MS) } },
+    data: { status: "FAILED", error: "השכתוב הופסק (הפעלה מחדש של השרת)", finishedAt: new Date() },
+  });
+  let run: InventoryAnalysis;
+  try {
+    run = await db.inventoryAnalysis.create({
+      data: {
+        organizationId: user.organizationId,
+        inventoryItemId: itemId,
+        kind: REWRITE_KIND,
+        status: "RUNNING",
+        provider: provider.provider,
+        model: provider.model,
+        promptVersion: REWRITE_PROMPT_VERSION,
+        examplesVersion: lib.version,
+        examplesHash: lib.hash,
+        examplesCount: lib.examples.length,
+        requestKey: randomUUID(),
+        createdById: user.userId,
+        startedAt,
+        input: asJson({ additions: input.additions }),
+      },
+    });
+  } catch (err) {
+    // one active run per item (an analysis or another rewrite)
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") throw new AppError("CONFLICT", "פעולת AI אחרת פעילה על הפריט. נסו שוב בעוד רגע.");
+    throw err;
+  }
+
+  const ctx = new RunContext(run, null, cfg, providerForRun(cfg));
+  const v = aiValuesOf(item);
+  const details: Record<string, string | null> = { itemType: v.itemType === "UNKNOWN" ? null : he.itemType[v.itemType] };
+  for (const f of REWRITE_FIELDS) details[f] = v[f] as string | null;
+  const userText = [
+    "# שדות הפריט כרגע (נבדקו בידי אדם; null = ריק)",
+    "```json",
+    JSON.stringify(details, null, 2),
+    "```",
+    "",
+    "# פרטים שהבודק הוסיף",
+    input.additions ? `"""\n${redactPersonal(input.additions)}\n"""` : "(אין - שפר את הניסוח בלבד)",
+    "",
+    HEBREW_ONLY,
+  ].join("\n");
+  const req: ProviderRequest = {
+    instructions: lib.block ? `${REWRITE_PROMPT}\n\n${lib.block}` : REWRITE_PROMPT,
+    cacheKey: `avot-${REWRITE_PROMPT_VERSION}-${lib.hash}`,
+    userText,
+    images: [],
+    schemaName: "catalog_rewrite",
+    schema: REWRITE_JSON_SCHEMA as unknown as Record<string, unknown>,
+    maxOutputTokens: 8000,
+    timeoutMs: cfg.BOOK_AI_TIMEOUT_SECONDS * 1000,
+  };
+  try {
+    let r = await ctx.call("rewrite", req, rewriteResultZ);
+    if (REWRITE_FIELDS.some((f) => isEnglishProse(r[f]))) r = await ctx.call("rewrite-hebrew", { ...req, userText: userText + HEBREW_AGAIN }, rewriteResultZ);
+    // cleaned like every AI text; only the fields that actually change are proposed (a null never empties a field)
+    const fields: Partial<Record<RewriteField, string>> = {};
+    for (const f of REWRITE_FIELDS) {
+      const raw = f === "catalogHeadline" || f === "catalogDescription" ? stripImageIds(r[f]) : r[f];
+      const cleaned = f === "title" || f === "catalogHeadline" ? raw : stripMeasurements(raw);
+      const value = cleanAiText(f === "catalogDescription" ? ensureParagraphs(cleaned) : cleaned, AI_MAX_LENGTH[f]);
+      if (value && !sameText(value, v[f] as string | null)) fields[f] = value;
+    }
+    const usage = ctx.usageColumns();
+    const costUsd = usage.costUsd === null ? null : Number(usage.costUsd);
+    await db.inventoryAnalysis.update({
+      where: { id: run.id },
+      data: { status: "COMPLETED", result: asJson({ fields }), finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime(), ...omitPrice(usage), usage: asJson({ calls: ctx.calls, price: usage.price }) },
+    });
+    await audit(user, { action: "ai.rewrite", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: run.id, provider: provider.provider, model: provider.model, costUsd, additions: input.additions.length > 0, fields: Object.keys(fields) } });
+    return { runId: run.id, fields, costUsd };
+  } catch (err) {
+    const message = err instanceof AppError || err instanceof ProviderError || err instanceof InvalidAnswerError ? err.message : "שגיאה פנימית בשכתוב";
+    log.warn("ai rewrite failed", { runId: run.id, itemId, err });
+    const usage = ctx.usageColumns();
+    await db.inventoryAnalysis.update({
+      where: { id: run.id },
+      data: { status: "FAILED", error: message.slice(0, 1000), finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime(), ...omitPrice(usage), usage: asJson({ calls: ctx.calls, price: usage.price }) },
+    });
+    throw new AppError("CONFLICT", `השכתוב נכשל: ${message}`);
+  }
 }

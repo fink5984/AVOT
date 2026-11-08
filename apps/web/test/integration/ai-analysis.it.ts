@@ -9,7 +9,7 @@ import { createCatalog } from "@/server/services/catalogs";
 import { assignToCatalog } from "@/server/services/assignments";
 import { listInventory, updateItem } from "@/server/services/inventory";
 import { approveReview, startReview } from "@/server/services/item-review";
-import { getAiState, recoverOrphanRuns, requestAnalysis, restoreRun, runAnalysis, listRunsForReport } from "@/server/services/ai-analysis";
+import { getAiState, recoverOrphanRuns, requestAnalysis, restoreRun, rewriteCatalog, runAnalysis, listRunsForReport } from "@/server/services/ai-analysis";
 import { setProviderOverride } from "@/server/ai/providers";
 import { ProviderError, type AiProvider, type ProviderRequest, type ProviderResponse } from "@/server/ai/providers/types";
 import { AI_FIELD_NAMES, type AnalysisResult } from "@/server/ai/schema";
@@ -139,7 +139,9 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     const run = await analyse(ctx.photographer, item.id);
     expect(run.status).toBe("COMPLETED");
     const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
-    expect(after).toMatchObject({ title: "ספר חובות הלבבות", author: "רבינו בחיי אבן פקודה", printPlace: "זולקווא", itemType: "BOOK", aiStatus: "COMPLETED", reviewStatus: "PENDING_REVIEW", catalogDescriptionSource: "AI" });
+    // the name stays the person's: the AI's reading is a proposal
+    expect(after).toMatchObject({ title: "ספר ישן מנחה", author: "רבינו בחיי אבן פקודה", printPlace: "זולקווא", itemType: "BOOK", aiStatus: "COMPLETED", reviewStatus: "PENDING_REVIEW", catalogDescriptionSource: "AI" });
+    expect((run.applied as { decisions: Record<string, unknown> }).decisions.title).toMatchObject({ action: "kept", proposed: "ספר חובות הלבבות" });
     expect(after.aiCompletedAt).not.toBeNull();
     // the dash rule on everything written
     for (const v of [after.conditionNotes, after.catalogHeadline, after.catalogDescription]) expect(hasForbiddenDash(v ?? "")).toBe(false);
@@ -275,7 +277,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(run.status).toBe("COMPLETED");
     const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
     expect(after.author).toBe("תיקון ידני");
-    expect(after.title).toBe("ספר חובות הלבבות");
+    expect(after.printPlace).toBe("זולקווא");
     const applied = run.applied as { decisions: Record<string, { action: string }>; review: { field: string }[] };
     expect(applied.decisions.author!.action).toBe("skipped_human_edit");
     expect(applied.review.some((r) => r.field === "author")).toBe(true);
@@ -323,15 +325,15 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
   it("restore puts back the values from before the run (including manual ones), and is logged", async () => {
     const { item } = await createBook(ctx.editor, { title: "שם שהוזן ידנית", conditionNotes: "כריכה קרועה" });
     const run = await analyse(ctx.editor, item.id);
-    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).title).toBe("ספר חובות הלבבות");
+    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).conditionNotes).toBe("כתמים - בלאי. קרעים בשוליים.");
     const r = await restoreRun(ctx.editor, run.id);
-    expect(r.fields).toEqual(expect.arrayContaining(["title", "conditionNotes", "catalogDescription"]));
+    expect(r.fields).toEqual(expect.arrayContaining(["conditionNotes", "catalogDescription"]));
     const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
     expect(after).toMatchObject({ title: "שם שהוזן ידנית", conditionNotes: "כריכה קרועה", catalogDescription: null, author: null });
     await expect(restoreRun(ctx.editor, run.id)).rejects.toThrow(/כבר שוחזר/);
     await expect(restoreRun(other.admin, run.id)).rejects.toThrow(/לא נמצא/);
     const log = await db.auditLog.findFirstOrThrow({ where: { inventoryItemId: item.id, action: "ai.restored" } });
-    expect((log.data as { replacedValues: { title: string } }).replacedValues.title).toBe("ספר חובות הלבבות");
+    expect((log.data as { replacedValues: { conditionNotes: string } }).replacedValues.conditionNotes).toBe("כתמים - בלאי. קרעים בשוליים.");
   });
 
   it("catalog: a lot in preparation gets the draft as a new AI description version; an offered lot is never touched", async () => {
@@ -340,7 +342,8 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     const lot = await assignToCatalog(ctx.editor, item.id, { catalogId: draft.id });
     await analyse(ctx.editor, item.id);
     const l = await db.lot.findUniqueOrThrow({ where: { id: lot.id }, include: { descriptionVersions: { orderBy: { version: "asc" } } } });
-    expect(l.title).toBe("ספר חובות הלבבות");
+    expect(l.title).toBe("בקטלוג טיוטה"); // the name is only proposed, so the lot keeps it too
+    expect(l.author).toBe("רבינו בחיי אבן פקודה");
     expect(l.description).toContain("ספר חובות הלבבות. זולקווא");
     expect(l.descriptionVersions.map((v) => v.source)).toEqual(["MANUAL", "AI"]);
 
@@ -406,7 +409,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(fake.requests[0]!.userText).toContain("לא צורפו תמונות");
     expect(run.imageCount).toBe(0);
     const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
-    expect(after).toMatchObject({ itemType: "POSTER", title: "כרזה - קריאה לאסיפה", printPlace: "ירושלים", author: null });
+    expect(after).toMatchObject({ itemType: "POSTER", title: "כרזה", printPlace: "ירושלים", author: null });
   });
 
   it("no title-page photo (a poster): the first photo is the main page - detail and zooms; the others stay ordinary", async () => {
@@ -477,6 +480,51 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     fake.answer = () => goodResult({}, { publisher: f("Nela Stamparia Bragadina", { note: "נדפס בשולי השער בלועזית: 'Nela Stamparia Bragadina'" }) });
     await analyse(ctx.editor, other.id);
     expect(fake.requests).toHaveLength(1);
+  });
+
+  it("rewrite: the reviewer's additions and the checked details are sent; a proposal comes back, the item is untouched, cost is recorded", async () => {
+    const { item } = await createBook(ctx.editor, { title: "ספר לשכתוב", author: "רבי יוסף קולון", printPlace: "לבוב" });
+    await db.inventoryItem.update({ where: { id: item.id }, data: { catalogDescription: "טיוטה ישנה — עם מקף ארוך", internalNotes: "סודי" } });
+    fake.answer = () => ({
+      title: "ספר לשכתוב",
+      subtitle: null,
+      author: "רבי יוסף קולון",
+      printPlace: "לבוב",
+      printYear: null,
+      publisher: null,
+      edition: null,
+      bibliographicNotes: "בשער חתימת בעלים של רבי משה.",
+      conditionNotes: "קנב דף. 22 ס\"מ. מצב טוב.",
+      catalogHeadline: "ספר לשכתוב - לבוב (img-02)",
+      // "\n" written as two characters instead of a line break: becomes real paragraphs
+      catalogDescription: "ספר לשכתוב, מאת רבי יוסף קולון. לבוב.\\n\\nבשער חתימת בעלים של רבי משה. מצב טוב.",
+    });
+    const r = await rewriteCatalog(ctx.editor, item.id, { additions: "בשער חתימת בעלים של רבי משה. טל' 050-1234567" });
+    const req = fake.requests[0]!;
+    expect(req.images).toHaveLength(0);
+    expect(req.schemaName).toBe("catalog_rewrite");
+    expect(req.userText).toContain("חתימת בעלים של רבי משה");
+    expect(req.userText).toContain("רבי יוסף קולון");
+    expect(req.userText).toContain("טיוטה ישנה");
+    expect(req.userText).not.toContain("050-1234567");
+    expect(req.userText).not.toContain("סודי");
+    // cleaned like every AI text: no image ids, no extent or sizes, plain hyphen
+    // unchanged fields (title, author, place) are not returned; nulls never empty a field
+    expect(Object.keys(r.fields).sort()).toEqual(["bibliographicNotes", "catalogDescription", "catalogHeadline", "conditionNotes"]);
+    expect(r.fields.catalogHeadline).toBe("ספר לשכתוב - לבוב");
+    expect(r.fields.conditionNotes).toBe("מצב טוב.");
+    expect(r.fields.catalogDescription).toBe("ספר לשכתוב, מאת רבי יוסף קולון. לבוב.\n\nבשער חתימת בעלים של רבי משה. מצב טוב.");
+    // the server only returns the values; the panel applies them (and keeps the old ones for "ביטול השכתוב")
+    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).catalogDescription).toBe("טיוטה ישנה — עם מקף ארוך");
+    const run = await db.inventoryAnalysis.findUniqueOrThrow({ where: { id: r.runId } });
+    expect(run).toMatchObject({ kind: "catalog_rewrite", status: "COMPLETED", requestCount: 1 });
+    expect(Number(run.costUsd)).toBeGreaterThan(0);
+    expect(await db.auditLog.count({ where: { inventoryItemId: item.id, action: "ai.rewrite" } })).toBe(1);
+    // a rewrite is not an analysis: the AI button state and the analysis history are unchanged
+    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).aiStatus).toBe("NOT_RUN");
+    expect((await getAiState(ctx.editor, item.id)).runs).toHaveLength(0);
+    // org isolation
+    await expect(rewriteCatalog(other.admin, item.id, { additions: "" })).rejects.toThrow(/לא נמצא/);
   });
 
   it("BOOK_AI_INLINE: the job is never QUEUED (no worker can claim it); the request process runs and closes it", async () => {

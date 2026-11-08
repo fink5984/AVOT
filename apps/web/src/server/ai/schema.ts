@@ -244,3 +244,16 @@ export function englishExplanations(r: AnalysisResult): string[] {
   ];
   return texts.filter((t): t is string => isEnglishProse(t));
 }
+
+/** "שכתוב ב-AI": every text field the reviewer can apply (extent and item type stay with the person). */
+export const REWRITE_FIELDS = ["title", "subtitle", "author", "printPlace", "printYear", "publisher", "edition", "bibliographicNotes", "conditionNotes", "catalogHeadline", "catalogDescription"] as const;
+export type RewriteField = (typeof REWRITE_FIELDS)[number];
+
+export const REWRITE_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [...REWRITE_FIELDS],
+  properties: Object.fromEntries(REWRITE_FIELDS.map((f) => [f, { type: ["string", "null"], description: "הערך המשוכתב; null = אין ערך" }])),
+} as const;
+export const rewriteResultZ = z.object(Object.fromEntries(REWRITE_FIELDS.map((f) => [f, z.string().nullable()])) as Record<RewriteField, z.ZodNullable<z.ZodString>>);
+export type RewriteResult = z.infer<typeof rewriteResultZ>;

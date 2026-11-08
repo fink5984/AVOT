@@ -18,6 +18,8 @@ import { cleanAiText, sameText } from "./text";
  *     (read in the photos, confidence high / medium); otherwise kept and flagged. A replaced manual value is in the
  *     run's snapshot and can be restored.
  * The catalog draft (headline, description) written by a person is never replaced.
+ * The item's name (title) is never replaced either: the AI's reading is a proposal the reviewer applies or ignores.
+ * Extent and sizes are never written (a person counts and measures).
  */
 
 export const AI_WRITABLE = [...AI_FIELD_NAMES, "itemType", "catalogHeadline", "catalogDescription"] as const;
@@ -121,6 +123,18 @@ export function stripMeasurements(text: string | null): string | null {
     .trim();
 }
 
+/**
+ * A catalog description comes in paragraphs (as in the examples). Models sometimes return one block, or the
+ * two characters "\n" instead of a line break: those become real breaks, and a long single block at least gets the
+ * condition ("מצב ...") as its own last paragraph.
+ */
+export function ensureParagraphs(text: string | null): string | null {
+  if (!text) return text;
+  let s = text.replace(/\\n/g, "\n");
+  if (!s.includes("\n") && s.length > 350) s = s.replace(/(?<=[.!?"״])\s+(?=מצב\s)/, "\n\n");
+  return s;
+}
+
 const NOT_READ: Partial<Record<string, string>> = { general_knowledge: "לפי ידע כללי", inference: "בהסקה" };
 /** "חלק שני על פרשה צו", "ובו צדי"ק שערים": a real subtitle is a short line; more is the rest of the title page */
 const SUBTITLE_MAX_WORDS = 15;
@@ -174,6 +188,17 @@ export function mapResult(inp: MapInput): MapOutcome {
       continue;
     }
     const value = stripMeasurements(r.status === "found" ? r.value : null);
+    // the item's name is the person's: the AI only proposes one, the reviewer applies it (and can undo) in the panel
+    if (f === "title" && value && !isEmpty(current.title)) {
+      const proposed = cleanAiText(value, AI_MAX_LENGTH.title);
+      if (sameText(proposed, current.title)) decisions[f] = { action: "unchanged" };
+      else if (editedDuringRun(f)) decisions[f] = { action: "skipped_human_edit", proposed };
+      else {
+        decisions[f] = { action: "kept", reason: "שם הפריט אינו מוחלף אוטומטית", proposed };
+        review.push({ field: f, reason: `${FIELD_LABEL.title}: ה-AI מציע "${proposed!.slice(0, 120)}" - אפשר להחיל את ההצעה בלחיצה` });
+      }
+      continue;
+    }
     // a "subtitle" of a whole title page (poems, acrostics, earlier editions...) is not a subtitle: it stays a
     // proposal the reviewer can apply, and the field is left alone
     if (f === "subtitle" && value && value.trim().split(/\s+/).length > SUBTITLE_MAX_WORDS) {
@@ -206,7 +231,7 @@ export function mapResult(inp: MapInput): MapOutcome {
   // catalog draft: AI may replace its own earlier draft, never a person's
   const lowCatalog = result.catalog.confidence === "low";
   decideText("catalogHeadline", stripImageIds(result.catalog.headline), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
-  decideText("catalogDescription", stripMeasurements(stripImageIds(result.catalog.description)), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
+  decideText("catalogDescription", ensureParagraphs(stripMeasurements(stripImageIds(result.catalog.description))), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
 
   for (const r of result.requiresReview) review.push({ field: r.field, reason: cleanAiText(r.reason, 500) ?? r.reason });
   for (const c of result.identification.conflicts) review.push({ field: "identification", reason: cleanAiText(c, 500) ?? c });
