@@ -212,6 +212,16 @@ describe("mapping the result to item fields", () => {
     expect(mapResult({ result: r2, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false }).patch.catalogDescription).toBe("מצב כללי טוב.");
   });
 
+  it("a whole title page offered as subtitle is not written; a short subtitle is", () => {
+    const long = "זמרן יקשן מדן מדין ישבק שוח סופי תיבות בגימטריא אברהם הכהן אשר (כל מקום שנאמר אלה) פסל הראשונים ואלה מוסיף שבת קול הפסול בנאמו";
+    const out = mapResult({ result: result({}, { subtitle: field(long) }), current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false });
+    expect(out.patch).not.toHaveProperty("subtitle");
+    expect(out.decisions.subtitle).toMatchObject({ action: "kept", proposed: long });
+    expect(out.review.some((x) => x.field === "subtitle")).toBe(true);
+    const short = mapResult({ result: result({}, { subtitle: field("חלק שני על פרשה צו") }), current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false });
+    expect(short.patch.subtitle).toBe("חלק שני על פרשה צו");
+  });
+
   it("image ids never reach the catalog text", () => {
     const r = result({ catalog: { headline: "שפע טל (img-02)", description: "כולל תרשים (img-10).\n\nבכותרת ב-img-02-top נדפס השם, וגם img-03, img-04.", confidence: "medium" } });
     const out = mapResult({ result: r, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false });
@@ -311,6 +321,12 @@ describe("prompt building", () => {
 
   it("an item without photos is still analysed, with an explicit instruction", () => {
     expect(buildAnalysisText(ctx, [], { skipped: [] })).toContain("לא צורפו תמונות");
+  });
+
+  it("values an earlier AI run wrote are marked as not evidence, so a re-analysis does not confirm itself", () => {
+    const text = buildAnalysisText({ ...ctx, printYear: "תס\"א [1701]", aiFilled: ["title", "printYear", "publisher"] }, [], { skipped: [] });
+    expect(text).toMatch(/השדות title, printYear מולאו בניתוח AI קודם ולא נבדקו בידי אדם/); // publisher is empty here: not listed
+    expect(buildAnalysisText(ctx, [], { skipped: [] })).not.toContain("מולאו בניתוח AI קודם");
   });
 
   it("the main prompt carries the mandatory rules", () => {

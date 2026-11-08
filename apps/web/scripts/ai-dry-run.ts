@@ -18,7 +18,7 @@ import { createProvider } from "../src/server/ai/providers";
 import { analysisResultZ, ANALYSIS_JSON_SCHEMA, parseAnswer } from "../src/server/ai/schema";
 import { loadStyleLibrary } from "../src/server/ai/style-examples";
 import { computeCost } from "../src/server/ai/pricing";
-import { itemContext } from "../src/server/services/ai-analysis";
+import { aiFilledFields, itemContext } from "../src/server/services/ai-analysis";
 
 async function main() {
   const [num, out] = process.argv.slice(2);
@@ -35,7 +35,7 @@ async function main() {
   const started = Date.now();
   const res = await provider.generate({
     instructions: buildInstructions(lib),
-    userText: buildAnalysisText(itemContext(item, item.categoryNotes), images, { skipped: [] }),
+    userText: buildAnalysisText(itemContext(item, item.categoryNotes, await aiFilledFields(item)), images, { skipped: [] }),
     images: images.map((i) => ({ id: i.id, label: i.label, data: i.data, mime: i.mime, detail: i.detail })),
     schemaName: "item_analysis",
     schema: ANALYSIS_JSON_SCHEMA as unknown as Record<string, unknown>,

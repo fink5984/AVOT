@@ -58,8 +58,21 @@ export function aiValuesOf(item: Pick<InventoryItem, AiWritable>): AiValues {
   return Object.fromEntries(AI_WRITABLE.map((f) => [f, item[f] ?? null])) as AiValues;
 }
 
-export function itemContext(item: InventoryItem, categoryNotes: { category: string; note: string | null }[]): ItemContext {
+/** Fields whose value is still what the previous successful AI run wrote (no person changed it since). */
+export async function aiFilledFields(item: InventoryItem): Promise<string[]> {
+  const previous = await db.inventoryAnalysis.findFirst({
+    where: { inventoryItemId: item.id, kind: AI_KIND, status: "COMPLETED", restoredAt: null },
+    orderBy: { finishedAt: "desc" },
+    select: { applied: true },
+  });
+  const written = ((previous?.applied as AppliedReport | null)?.written ?? {}) as Partial<AiValues>;
+  const now = aiValuesOf(item);
+  return (Object.keys(written) as AiWritable[]).filter((f) => f !== "itemType" && written[f] !== null && written[f] !== undefined && sameText(String(written[f]), now[f] as string | null));
+}
+
+export function itemContext(item: InventoryItem, categoryNotes: { category: string; note: string | null }[], aiFilled: string[] = []): ItemContext {
   return {
+    aiFilled,
     itemType: item.itemType === "UNKNOWN" ? null : he.itemType[item.itemType],
     title: item.title,
     subtitle: item.subtitle,
@@ -475,7 +488,7 @@ async function analyse(ctx: RunContext, startedAt: Date): Promise<AppliedReport>
   const item = await db.inventoryItem.findFirst({ where: { id: run.inventoryItemId, organizationId: run.organizationId }, include: { categoryNotes: true } });
   if (!item) throw new AppError("NOT_FOUND", "הפריט לא נמצא (נמחק?)");
   const base = aiValuesOf(item);
-  const context = itemContext(item, item.categoryNotes);
+  const context = itemContext(item, item.categoryNotes, await aiFilledFields(item));
   const lib = loadStyleLibrary();
   const prepared = await prepareImages(run.organizationId, item.id, cfg);
   const instructions = buildInstructions(lib);

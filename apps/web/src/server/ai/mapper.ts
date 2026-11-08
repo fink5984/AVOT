@@ -122,6 +122,8 @@ export function stripMeasurements(text: string | null): string | null {
 }
 
 const NOT_READ: Partial<Record<string, string>> = { general_knowledge: "לפי ידע כללי", inference: "בהסקה" };
+/** "חלק שני על פרשה צו", "ובו צדי"ק שערים": a real subtitle is a short line; more is the rest of the title page */
+const SUBTITLE_MAX_WORDS = 15;
 
 export function mapResult(inp: MapInput): MapOutcome {
   const { result, current, base, previousAi } = inp;
@@ -172,6 +174,13 @@ export function mapResult(inp: MapInput): MapOutcome {
       continue;
     }
     const value = stripMeasurements(r.status === "found" ? r.value : null);
+    // a "subtitle" of a whole title page (poems, acrostics, earlier editions...) is not a subtitle: it stays a
+    // proposal the reviewer can apply, and the field is left alone
+    if (f === "subtitle" && value && value.trim().split(/\s+/).length > SUBTITLE_MAX_WORDS) {
+      decisions[f] = { action: "kept", reason: "ההצעה ארוכה מכדי להיות כותרת משנה", proposed: cleanAiText(value, AI_MAX_LENGTH.subtitle) };
+      review.push({ field: f, reason: `${FIELD_LABEL.subtitle}: ה-AI הציע את נוסח השער כולו ולא שורת כותרת משנה; השדה לא מולא` });
+      continue;
+    }
     decideText(f, value, r.source === "image", r.confidence === "low" || r.confidence === null);
     if (r.status === "found" && r.confidence === "low" && decisions[f]?.action === "written") review.push({ field: f, reason: `${FIELD_LABEL[f]}: רמת ביטחון נמוכה${r.note ? ` - ${r.note}` : ""}` });
     // a value the model did not read in the photos (identified from knowledge or inferred) always needs a person,
