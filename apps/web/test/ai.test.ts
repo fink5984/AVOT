@@ -199,15 +199,17 @@ describe("mapping the result to item fields", () => {
     expect(out.review.some((x) => x.field === "printYear")).toBe(false);
   });
 
-  it("without measured dimensions, sizes the model guessed are removed; with dimensions they stay", () => {
-    const desc = "ספר ספרא. זיטאמיר, תרכ\"ו [1866].\n\n239, [1] עמ'. 21 ס\"מ בקירוב. מצב בינוני. כתמים.";
-    const r = result({ catalog: { headline: "ספרא", description: desc, confidence: "high" } }, { extent: field("239, [1] עמ'. 22 ס\"מ"), conditionNotes: field("46.5X31 ס\"מ. מצב טוב.") });
-    const none = mapResult({ result: r, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false, hasDimensions: false });
-    expect(none.patch.catalogDescription).toBe("ספר ספרא. זיטאמיר, תרכ\"ו [1866].\n\n239, [1] עמ'. מצב בינוני. כתמים.");
-    expect(none.patch.extent).toBe("239, [1] עמ'.");
-    expect(none.patch.conditionNotes).toBe("מצב טוב.");
-    const measured = mapResult({ result: r, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false, hasDimensions: true });
-    expect(measured.patch.catalogDescription).toBe(desc);
+  it("extent and sizes are never written by the AI: the extent field is left alone, page counts and cm are removed from the text", () => {
+    const desc = "ספר ספרא. זיטאמיר, תרכ\"ו [1866].\n\nבדף השער חותמת. בראש כל דף נדפס שם הספר.\n\n239, [1] עמ'. 21 ס\"מ בקירוב. מצב בינוני. כתמים.";
+    const r = result({ catalog: { headline: "ספרא", description: desc, confidence: "high" } }, { extent: field("239, [1] עמ'"), conditionNotes: field("[2], רלו דף. 46.5X31 ס\"מ. מצב טוב.") });
+    const out = mapResult({ result: r, current: values({ extent: "קנב דף" }), base: values({ extent: "קנב דף" }), previousAi: null, imageIds: ids, catalogIsManual: false });
+    expect(out.patch.catalogDescription).toBe("ספר ספרא. זיטאמיר, תרכ\"ו [1866].\n\nבדף השער חותמת. בראש כל דף נדפס שם הספר.\n\nמצב בינוני. כתמים.");
+    expect(out.patch).not.toHaveProperty("extent");
+    expect(out.decisions.extent?.action).toBe("kept");
+    expect(out.patch.conditionNotes).toBe("מצב טוב.");
+    // labels left without their value go too
+    const r2 = result({ catalog: { headline: "ח", description: "חותם: 2X1.5 ס\"מ בקירוב; גובה (כולל זיז): 4 ס\"מ. מצב כללי טוב.", confidence: "high" } });
+    expect(mapResult({ result: r2, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false }).patch.catalogDescription).toBe("מצב כללי טוב.");
   });
 
   it("image ids never reach the catalog text", () => {

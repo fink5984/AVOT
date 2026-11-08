@@ -81,8 +81,6 @@ export interface MapInput {
   imageIds: Set<string>;
   /** the catalog draft on the item was written by a person */
   catalogIsManual: boolean;
-  /** the item has measured dimensions; without them any size the model wrote is a guess and is removed */
-  hasDimensions?: boolean;
 }
 
 const isEmpty = (v: string | null | undefined) => !v || !v.trim();
@@ -97,21 +95,33 @@ export function stripImageIds(text: string | null): string | null {
     .trim();
 }
 
+/* a collation token: 239 | [1] | רלו | ב-כב | 19.5-20.5 */
+const LEAF = String.raw`(?:\[\d+\]|\d+(?:-\d+)?|[א-ת]{1,4}(?:-[א-ת]{1,4})?)`;
+const COLLATION = new RegExp(String.raw`(?<=^|[\n.:]\s?|^\s)[ \t]*${LEAF}(?:,\s*${LEAF})*\s+(?:דף|דפים|עמ'|עמודים)(?:\s*\([^)\n]*\))?\s*(?:[.,;]|$)`, "gm");
+const DANGLING_LABEL = /(?<=^|[\n.]\s?)[^.\n:"\s][^.\n:"]{0,49}:\s*(?=[^.\n:"]{1,50}:|מצב|$)/gm;
+const SIZE = /[ \t]*(?:כ-)?\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?(?:\s*[Xx×]\s*\d+(?:[.,]\d+)?)*\s*ס"מ(?:\s+בקירוב)?\s*[.,;]?/g;
+
 /**
- * Sizes in cm ("22 ס"מ בקירוב.", "46.5X31 ס"מ.", "כ-35 ס"מ") when the item has no measured dimensions: the model
- * cannot measure a book from a photo, a person fills them in. The rest of the sentence stays.
+ * Extent and sizes are filled in by a person who counts and measures the item: the model's "239, [1] עמ'.",
+ * "[2], רלו דף." or "22 ס"מ בקירוב." are guesses from photos (a page count from the last photographed page) and are
+ * removed. Only whole collation statements go; "בדף השער", "בכל דף נדפס" stay.
  */
-export function stripGuessedSizes(text: string | null): string | null {
+export function stripMeasurements(text: string | null): string | null {
   if (!text) return text;
-  return text
-    .replace(/[ \t]*(?:כ-)?\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?(?:\s*[Xx×]\s*\d+(?:[.,]\d+)?)*\s*ס"מ(?:\s+בקירוב)?\s*[.,;]?/g, "")
+  let out = text.replace(SIZE, "").replace(COLLATION, "");
+  // labels left without their value ("סידור: תהלים: מצב טוב", "גובה התצלום: מצב טוב")
+  for (let before = ""; before !== out; ) {
+    before = out;
+    out = out.replace(DANGLING_LABEL, "");
+  }
+  return out
     .replace(/[ \t]{2,}/g, " ")
-    .replace(/[ \t]+\n/g, "\n")
+    .replace(/^[ \t]+|[ \t]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
 const NOT_READ: Partial<Record<string, string>> = { general_knowledge: "לפי ידע כללי", inference: "בהסקה" };
-const SIZE_FIELDS = new Set<string>(["extent", "conditionNotes", "bibliographicNotes"]);
 
 export function mapResult(inp: MapInput): MapOutcome {
   const { result, current, base, previousAi } = inp;
@@ -156,8 +166,12 @@ export function mapResult(inp: MapInput): MapOutcome {
 
   for (const f of AI_FIELD_NAMES) {
     const r = result.fields[f];
-    const found = r.status === "found" ? r.value : null;
-    const value = inp.hasDimensions === false && SIZE_FIELDS.has(f) ? stripGuessedSizes(found) : found;
+    // extent (pages) is never filled by the AI: a person counts it
+    if (f === "extent") {
+      decisions[f] = { action: "kept", reason: "ההיקף נקבע בידי אדם", proposed: null };
+      continue;
+    }
+    const value = stripMeasurements(r.status === "found" ? r.value : null);
     decideText(f, value, r.source === "image", r.confidence === "low" || r.confidence === null);
     if (r.status === "found" && r.confidence === "low" && decisions[f]?.action === "written") review.push({ field: f, reason: `${FIELD_LABEL[f]}: רמת ביטחון נמוכה${r.note ? ` - ${r.note}` : ""}` });
     // a value the model did not read in the photos (identified from knowledge or inferred) always needs a person,
@@ -183,8 +197,7 @@ export function mapResult(inp: MapInput): MapOutcome {
   // catalog draft: AI may replace its own earlier draft, never a person's
   const lowCatalog = result.catalog.confidence === "low";
   decideText("catalogHeadline", stripImageIds(result.catalog.headline), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
-  const description = stripImageIds(result.catalog.description);
-  decideText("catalogDescription", inp.hasDimensions === false ? stripGuessedSizes(description) : description, true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
+  decideText("catalogDescription", stripMeasurements(stripImageIds(result.catalog.description)), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
 
   for (const r of result.requiresReview) review.push({ field: r.field, reason: cleanAiText(r.reason, 500) ?? r.reason });
   for (const c of result.identification.conflicts) review.push({ field: "identification", reason: cleanAiText(c, 500) ?? c });
