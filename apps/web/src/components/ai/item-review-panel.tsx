@@ -386,17 +386,32 @@ export function ItemReviewPanel({
     // why a field stayed empty is in the review list once; repeating it under every empty field is noise
     const note = e?.note && (doubtful || (flagged.has(f) && e.status === "found")) ? e.note : null;
     if (note) parts.push(<span key="n" className="text-ink-2" title={note}>{note.length > 160 ? `${note.slice(0, 160)}…` : note}</span>);
-    const proposal = (d?.action === "kept" || d?.action === "skipped_human_edit") && d.proposed && !same(d.proposed, values[f]) ? d.proposed : null;
-    if (!parts.length && !proposal) return null;
+    const offered = (d?.action === "kept" || d?.action === "skipped_human_edit") && d.proposed ? d.proposed : null;
+    const proposal = offered && !same(offered, values[f]) ? offered : null;
+    // applied by the reviewer: offer to undo, back to the value from before the analysis
+    const before = latest?.base ? ((latest.base as Record<string, string | null>)[f] ?? null) : null;
+    const undo = offered && !proposal && !same(before, offered) ? before : undefined;
+    if (!parts.length && !proposal && undo === undefined) return null;
     return (
       <span className="flex flex-col gap-1">
         {parts.length > 0 && <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">{parts.map((p, i) => <span key={i} className="inline-flex items-center gap-2">{i > 0 && <span aria-hidden>·</span>}{p}</span>)}</span>}
         {proposal && (
           <span className="rounded bg-info-soft px-2 py-1 text-ink-2">
-            הצעת AI שלא הוחלה: <span className="whitespace-pre-line">{proposal.length > 300 ? `${proposal.slice(0, 300)}…` : proposal}</span>
+            <Sparkles className="me-1 inline size-3 text-info" aria-hidden />
+            הצעת AI: <span className="whitespace-pre-line text-ink">{proposal.length > 300 ? `${proposal.slice(0, 300)}…` : proposal}</span>
             {canEdit && (
               <button type="button" className="ms-2 font-medium text-info underline" onClick={() => change(f, proposal as ReviewValues[typeof f])}>
                 החלת ההצעה
+              </button>
+            )}
+          </span>
+        )}
+        {undo !== undefined && (
+          <span className="text-ink-2">
+            הוחלה הצעת ה-AI
+            {canEdit && (
+              <button type="button" className="ms-2 font-medium text-info underline" onClick={() => change(f, (undo ?? (f === "title" ? "" : null)) as ReviewValues[typeof f])}>
+                ביטול ההחלה{undo ? ` (חזרה ל"${undo.length > 60 ? `${undo.slice(0, 60)}…` : undo}")` : ""}
               </button>
             )}
           </span>

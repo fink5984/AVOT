@@ -183,6 +183,8 @@ export async function getAiState(user: UserPrincipal, itemId: string) {
           id: latest.id,
           result: latest.result as AnalysisResult | null,
           applied: latest.applied as AppliedReport | null,
+          /** values when the run started: "ביטול ההחלה" of a proposal puts the field back to this */
+          base: (latest.baseValues ?? null) as AiValues | null,
           images: ((latest.input as { images?: unknown } | null)?.images ?? []) as ImageManifestEntry[],
         }
       : null,

@@ -164,12 +164,16 @@ describe("answer schema (one format for both providers)", () => {
 /* ───────────── result → item fields ───────────── */
 
 describe("mapping the result to item fields", () => {
-  it("fills empty fields and replaces the photographer's provisional title with the title-page reading", () => {
+  it("fills empty fields; the item's name is only proposed, never replaced", () => {
     const r = result({}, { title: field("ספר חובות הלבבות"), author: field("בחיי אבן פקודה"), printPlace: field("זולקווא") });
     const out = mapResult({ result: r, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false });
-    expect(out.patch).toMatchObject({ title: "ספר חובות הלבבות", author: "בחיי אבן פקודה", printPlace: "זולקווא", itemType: "BOOK", catalogDescription: "תיאור קטלוגי" });
-    expect(out.decisions.title).toMatchObject({ action: "written", replacedManual: true });
-    expect(out.review.some((x) => x.field === "title" && x.reason.includes("שם זמני"))).toBe(true);
+    expect(out.patch).toMatchObject({ author: "בחיי אבן פקודה", printPlace: "זולקווא", itemType: "BOOK", catalogDescription: "תיאור קטלוגי" });
+    expect(out.patch).not.toHaveProperty("title");
+    expect(out.decisions.title).toMatchObject({ action: "kept", proposed: "ספר חובות הלבבות" });
+    expect(out.review.some((x) => x.field === "title" && x.reason.includes("ה-AI מציע"))).toBe(true);
+    // the same name: nothing to propose
+    const same = mapResult({ result: r, current: values({ title: "ספר חובות הלבבות" }), base: values({ title: "ספר חובות הלבבות" }), previousAi: null, imageIds: ids, catalogIsManual: false });
+    expect(same.decisions.title).toMatchObject({ action: "unchanged" });
   });
 
   it("never replaces an existing value with null (unknown / not checked / not applicable)", () => {
@@ -239,11 +243,11 @@ describe("mapping the result to item fields", () => {
   });
 
   it("a field a person edited while the analysis ran is never overwritten", () => {
-    const r = result({}, { author: field("AI author"), title: field("AI title") });
+    const r = result({}, { author: field("AI author"), printPlace: field("AI place") });
     const out = mapResult({ result: r, current: values({ author: "נערך עכשיו" }), base: values({ author: null }), previousAi: null, imageIds: ids, catalogIsManual: false });
     expect(out.patch.author).toBeUndefined();
     expect(out.decisions.author?.action).toBe("skipped_human_edit");
-    expect(out.patch.title).toBe("AI title"); // untouched fields still get the result
+    expect(out.patch.printPlace).toBe("AI place"); // untouched fields still get the result
   });
 
   it("a catalog draft written by a person is never replaced", () => {
