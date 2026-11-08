@@ -123,6 +123,18 @@ export function stripMeasurements(text: string | null): string | null {
     .trim();
 }
 
+/**
+ * A catalog description comes in paragraphs (as in the examples). Models sometimes return one block, or the
+ * two characters "\n" instead of a line break: those become real breaks, and a long single block at least gets the
+ * condition ("מצב ...") as its own last paragraph.
+ */
+export function ensureParagraphs(text: string | null): string | null {
+  if (!text) return text;
+  let s = text.replace(/\\n/g, "\n");
+  if (!s.includes("\n") && s.length > 350) s = s.replace(/(?<=[.!?"״])\s+(?=מצב\s)/, "\n\n");
+  return s;
+}
+
 const NOT_READ: Partial<Record<string, string>> = { general_knowledge: "לפי ידע כללי", inference: "בהסקה" };
 /** "חלק שני על פרשה צו", "ובו צדי"ק שערים": a real subtitle is a short line; more is the rest of the title page */
 const SUBTITLE_MAX_WORDS = 15;
@@ -219,7 +231,7 @@ export function mapResult(inp: MapInput): MapOutcome {
   // catalog draft: AI may replace its own earlier draft, never a person's
   const lowCatalog = result.catalog.confidence === "low";
   decideText("catalogHeadline", stripImageIds(result.catalog.headline), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
-  decideText("catalogDescription", stripMeasurements(stripImageIds(result.catalog.description)), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
+  decideText("catalogDescription", ensureParagraphs(stripMeasurements(stripImageIds(result.catalog.description))), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
 
   for (const r of result.requiresReview) review.push({ field: r.field, reason: cleanAiText(r.reason, 500) ?? r.reason });
   for (const c of result.identification.conflicts) review.push({ field: "identification", reason: cleanAiText(c, 500) ?? c });

@@ -9,7 +9,7 @@ import { createCatalog } from "@/server/services/catalogs";
 import { assignToCatalog } from "@/server/services/assignments";
 import { listInventory, updateItem } from "@/server/services/inventory";
 import { approveReview, startReview } from "@/server/services/item-review";
-import { getAiState, recoverOrphanRuns, requestAnalysis, restoreRun, runAnalysis, listRunsForReport } from "@/server/services/ai-analysis";
+import { getAiState, recoverOrphanRuns, requestAnalysis, restoreRun, rewriteCatalog, runAnalysis, listRunsForReport } from "@/server/services/ai-analysis";
 import { setProviderOverride } from "@/server/ai/providers";
 import { ProviderError, type AiProvider, type ProviderRequest, type ProviderResponse } from "@/server/ai/providers/types";
 import { AI_FIELD_NAMES, type AnalysisResult } from "@/server/ai/schema";
@@ -480,6 +480,51 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     fake.answer = () => goodResult({}, { publisher: f("Nela Stamparia Bragadina", { note: "נדפס בשולי השער בלועזית: 'Nela Stamparia Bragadina'" }) });
     await analyse(ctx.editor, other.id);
     expect(fake.requests).toHaveLength(1);
+  });
+
+  it("rewrite: the reviewer's additions and the checked details are sent; a proposal comes back, the item is untouched, cost is recorded", async () => {
+    const { item } = await createBook(ctx.editor, { title: "ספר לשכתוב", author: "רבי יוסף קולון", printPlace: "לבוב" });
+    await db.inventoryItem.update({ where: { id: item.id }, data: { catalogDescription: "טיוטה ישנה — עם מקף ארוך", internalNotes: "סודי" } });
+    fake.answer = () => ({
+      title: "ספר לשכתוב",
+      subtitle: null,
+      author: "רבי יוסף קולון",
+      printPlace: "לבוב",
+      printYear: null,
+      publisher: null,
+      edition: null,
+      bibliographicNotes: "בשער חתימת בעלים של רבי משה.",
+      conditionNotes: "קנב דף. 22 ס\"מ. מצב טוב.",
+      catalogHeadline: "ספר לשכתוב - לבוב (img-02)",
+      // "\n" written as two characters instead of a line break: becomes real paragraphs
+      catalogDescription: "ספר לשכתוב, מאת רבי יוסף קולון. לבוב.\\n\\nבשער חתימת בעלים של רבי משה. מצב טוב.",
+    });
+    const r = await rewriteCatalog(ctx.editor, item.id, { additions: "בשער חתימת בעלים של רבי משה. טל' 050-1234567" });
+    const req = fake.requests[0]!;
+    expect(req.images).toHaveLength(0);
+    expect(req.schemaName).toBe("catalog_rewrite");
+    expect(req.userText).toContain("חתימת בעלים של רבי משה");
+    expect(req.userText).toContain("רבי יוסף קולון");
+    expect(req.userText).toContain("טיוטה ישנה");
+    expect(req.userText).not.toContain("050-1234567");
+    expect(req.userText).not.toContain("סודי");
+    // cleaned like every AI text: no image ids, no extent or sizes, plain hyphen
+    // unchanged fields (title, author, place) are not returned; nulls never empty a field
+    expect(Object.keys(r.fields).sort()).toEqual(["bibliographicNotes", "catalogDescription", "catalogHeadline", "conditionNotes"]);
+    expect(r.fields.catalogHeadline).toBe("ספר לשכתוב - לבוב");
+    expect(r.fields.conditionNotes).toBe("מצב טוב.");
+    expect(r.fields.catalogDescription).toBe("ספר לשכתוב, מאת רבי יוסף קולון. לבוב.\n\nבשער חתימת בעלים של רבי משה. מצב טוב.");
+    // the server only returns the values; the panel applies them (and keeps the old ones for "ביטול השכתוב")
+    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).catalogDescription).toBe("טיוטה ישנה — עם מקף ארוך");
+    const run = await db.inventoryAnalysis.findUniqueOrThrow({ where: { id: r.runId } });
+    expect(run).toMatchObject({ kind: "catalog_rewrite", status: "COMPLETED", requestCount: 1 });
+    expect(Number(run.costUsd)).toBeGreaterThan(0);
+    expect(await db.auditLog.count({ where: { inventoryItemId: item.id, action: "ai.rewrite" } })).toBe(1);
+    // a rewrite is not an analysis: the AI button state and the analysis history are unchanged
+    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).aiStatus).toBe("NOT_RUN");
+    expect((await getAiState(ctx.editor, item.id)).runs).toHaveLength(0);
+    // org isolation
+    await expect(rewriteCatalog(other.admin, item.id, { additions: "" })).rejects.toThrow(/לא נמצא/);
   });
 
   it("BOOK_AI_INLINE: the job is never QUEUED (no worker can claim it); the request process runs and closes it", async () => {

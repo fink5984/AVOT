@@ -131,6 +131,7 @@ export function ItemReviewPanel({
   canEdit,
   canReview,
   canRestore,
+  canRewrite = false,
 }: {
   itemId: string;
   values: ReviewValues;
@@ -139,6 +140,8 @@ export function ItemReviewPanel({
   canEdit: boolean;
   canReview: boolean;
   canRestore: boolean;
+  /** "שכתוב ב-AI" of the catalog draft (editor with AI access, provider configured) */
+  canRewrite?: boolean;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -149,6 +152,11 @@ export function ItemReviewPanel({
   const [busy, setBusy] = useState<string | null>(null);
   const [showRuns, setShowRuns] = useState(false);
   const [showAllReview, setShowAllReview] = useState(false);
+  const [additions, setAdditions] = useState("");
+  /** the values a rewrite replaced, for "ביטול השכתוב" */
+  const [beforeRewrite, setBeforeRewrite] = useState<Partial<ReviewValues> | null>(null);
+  /** a name the rewrite proposed: never applied by itself (the item's name is the person's), offered under the field */
+  const [titleProposal, setTitleProposal] = useState<{ title: string; before: string } | null>(null);
 
   const base = useRef(serverValues); // values of the version the edits are based on
   const version = useRef(serverVersion);
@@ -334,6 +342,41 @@ export function ItemReviewPanel({
     }
   }
 
+  /** "שכתוב ב-AI": saves pending edits first (the server rewrites from the saved details), then asks for a proposal */
+  async function rewrite() {
+    await flush();
+    if (Object.keys(dirty.current).length) {
+      toast.warning("יש שינויים שלא נשמרו. שמרו אותם לפני השכתוב.");
+      return;
+    }
+    setBusy("rewrite");
+    try {
+      const r = await api<{ fields: Partial<Record<ReviewField, string>> }>(`/api/inventory/${itemId}/ai/rewrite`, { method: "POST", json: { additions } });
+      // the name is only proposed, like after an analysis; everything else is applied at once
+      if (r.fields.title) setTitleProposal({ title: r.fields.title, before: values.title });
+      const changed = (Object.keys(r.fields) as Exclude<ReviewField, "itemType">[]).filter((f) => f !== "title");
+      if (!changed.length) {
+        toast.info(r.fields.title ? "השכתוב הציע שם חדש לפריט - ההצעה מופיעה מתחת לשם" : "השכתוב לא שינה אף שדה");
+        return;
+      }
+      // applied at once (autosave saves it); the previous values stay here for "ביטול השכתוב"
+      setBeforeRewrite(Object.fromEntries(changed.map((f) => [f, values[f]])) as Partial<ReviewValues>);
+      for (const f of changed) change(f, r.fields[f] as ReviewValues[typeof f]);
+      setAdditions("");
+      toast.success(`השכתוב הוחל על ${changed.length} שדות`);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function undoRewrite() {
+    if (!beforeRewrite) return;
+    for (const [f, v] of Object.entries(beforeRewrite) as [ReviewField, ReviewValues[ReviewField]][]) change(f, v);
+    setBeforeRewrite(null);
+  }
+
   async function restore(runId: string) {
     if (!window.confirm("לשחזר את הערכים שהיו לפני הניתוח הזה? הערכים הנוכחיים של השדות שהניתוח שינה יוחלפו (ונשמרים בהיסטוריה).")) return;
     setBusy(`restore-${runId}`);
@@ -386,10 +429,11 @@ export function ItemReviewPanel({
     // why a field stayed empty is in the review list once; repeating it under every empty field is noise
     const note = e?.note && (doubtful || (flagged.has(f) && e.status === "found")) ? e.note : null;
     if (note) parts.push(<span key="n" className="text-ink-2" title={note}>{note.length > 160 ? `${note.slice(0, 160)}…` : note}</span>);
-    const offered = (d?.action === "kept" || d?.action === "skipped_human_edit") && d.proposed ? d.proposed : null;
+    const fromRewrite = f === "title" && titleProposal ? titleProposal : null;
+    const offered = fromRewrite ? fromRewrite.title : (d?.action === "kept" || d?.action === "skipped_human_edit") && d.proposed ? d.proposed : null;
     const proposal = offered && !same(offered, values[f]) ? offered : null;
-    // applied by the reviewer: offer to undo, back to the value from before the analysis
-    const before = latest?.base ? ((latest.base as Record<string, string | null>)[f] ?? null) : null;
+    // applied by the reviewer: offer to undo, back to the value from before the analysis (or the rewrite)
+    const before = fromRewrite ? fromRewrite.before : latest?.base ? ((latest.base as Record<string, string | null>)[f] ?? null) : null;
     const undo = offered && !proposal && !same(before, offered) ? before : undefined;
     if (!parts.length && !proposal && undo === undefined) return null;
     return (
@@ -539,6 +583,26 @@ export function ItemReviewPanel({
         <FieldGroup title="טיוטה לקטלוג" note={applied?.lot?.skippedReason ?? undefined}>
           {text("catalogHeadline", { className: "sm:col-span-6" })}
           {text("catalogDescription", { rows: 9, className: "sm:col-span-6" })}
+          {canRewrite && canEdit && (
+            <div className="space-y-2.5 rounded-md border border-rule bg-stone-2/50 p-3 sm:col-span-6">
+              <Field label="פרטים להוספה" hint="מה שבדקתם ולא מופיע בפרטים: ייחוס חתימה, מקור העותק, רקע, ממצא מיוחד, תיקון. ה-AI יכניס כל פרט לשדה המתאים, ישכתב את כל השדות בניסוח מקצועי ויחיל מיד. אפשר לבטל.">
+                {(p) => <Textarea {...p} rows={3} maxLength={4000} value={additions} onChange={(e) => setAdditions(e.target.value)} placeholder="למשל: החתימה בשער היא של רבי משה סופר. העותק מספריית בית המדרש בפרשבורג." />}
+              </Field>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button size="sm" icon={<Sparkles />} loading={busy === "rewrite"} disabled={!!busy || ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING"} onClick={() => void rewrite()}>
+                  שכתוב כל השדות ב-AI
+                </Button>
+                {beforeRewrite && (
+                  <span className="text-[12px] text-ink-2">
+                    השכתוב הוחל ({Object.keys(beforeRewrite).map((f) => LABEL[f as ReviewField]).join(", ")})
+                    <button type="button" className="ms-2 font-medium text-info underline" onClick={undoRewrite}>
+                      ביטול השכתוב
+                    </button>
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </FieldGroup>
 
         {latest?.result && (latest.result.identification.summary || findings.length > 0 || latest.images.some((i) => i.status === "skipped")) && (

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanAiText, hasForbiddenDash, normalizeDashes, sameText } from "@/server/ai/text";
 import { estimateTokens, loadStyleLibrary } from "@/server/ai/style-examples";
 import { ANALYSIS_JSON_SCHEMA, OBSERVATION_JSON_SCHEMA, analysisResultZ, parseAnswer, InvalidAnswerError, AI_FIELD_NAMES, type AnalysisResult } from "@/server/ai/schema";
-import { AI_WRITABLE, mapResult, type AiValues } from "@/server/ai/mapper";
+import { AI_WRITABLE, ensureParagraphs, mapResult, type AiValues } from "@/server/ai/mapper";
 import { buildAnalysisText, buildInstructions, redactPersonal, type ItemContext } from "@/server/ai/prompt-builder";
 import { SYSTEM_PROMPT } from "@/server/ai/catalog-prompt";
 import { activeProvider, aiConfig } from "@/server/ai/config";
@@ -224,6 +224,14 @@ describe("mapping the result to item fields", () => {
     expect(out.review.some((x) => x.field === "subtitle")).toBe(true);
     const short = mapResult({ result: result({}, { subtitle: field("חלק שני על פרשה צו") }), current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false });
     expect(short.patch.subtitle).toBe("חלק שני על פרשה צו");
+  });
+
+  it("a description returned as one block gets paragraphs: literal \\n become breaks, the condition its own paragraph", () => {
+    expect(ensureParagraphs("פתיחה.\\n\\nתוכן.")).toBe("פתיחה.\n\nתוכן.");
+    const block = `${"ספר ספרא, עם פירוש עזרת כהנים. ".repeat(12)}מצב בינוני. כתמים.`;
+    expect(ensureParagraphs(block)).toMatch(/\.\n\nמצב בינוני\. כתמים\.$/);
+    expect(ensureParagraphs("קצר. מצב טוב.")).toBe("קצר. מצב טוב."); // short: left alone
+    expect(ensureParagraphs("א.\n\nב. מצב טוב.")).toBe("א.\n\nב. מצב טוב."); // already in paragraphs
   });
 
   it("image ids never reach the catalog text", () => {

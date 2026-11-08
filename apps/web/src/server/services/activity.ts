@@ -80,6 +80,7 @@ const ACTION_LABEL: Record<string, string> = {
   "ai.completed": "ניתוח AI הושלם",
   "ai.failed": "ניתוח AI נכשל",
   "ai.restored": "שחזר ערכים מלפני ניתוח AI",
+  "ai.rewrite": "ביקש שכתוב של התיאור הקטלוגי ב-AI",
   "item_review.started": "התחיל בדיקת פרטי הפריט",
   "item_review.approved": "אישר את פרטי הפריט",
   "item_review.invalidated": "אישור הפרטים בוטל עקב שינוי מהותי",
