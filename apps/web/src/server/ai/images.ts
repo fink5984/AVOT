@@ -15,7 +15,8 @@ import type { AiConfig } from "./config";
  *    finished, else the verified original, else the preview derivative. RAW files are never sent;
  *  - EXIF orientation, then the photo's own view rotation (the gallery shows it rotated the same way);
  *  - resized to BOOK_AI_IMAGE_MAX_EDGE, title pages to BOOK_AI_DETAIL_MAX_EDGE, plus zoomed top / bottom halves of the
- *    first title pages for small print and signatures (same shot, marked as a zoom - not a page);
+ *    first title pages for small print and signatures (same shot, marked as a zoom - not a page). An item with no
+ *    title-page photo (poster, letter, document) gets this for its first photo;
  *  - a photo that cannot be used is never dropped silently: it is listed in the report with the reason.
  */
 
@@ -121,6 +122,7 @@ export async function prepareImages(orgId: string, itemId: string, cfg: AiConfig
   const perCategory = new Map<PhotoCategory, number>();
   const totals = new Map<PhotoCategory, number>();
   for (const a of assets) totals.set(a.category, (totals.get(a.category) ?? 0) + 1);
+  const hasTitlePage = totals.has("TITLE_PAGE");
   let n = 0;
   let titleZooms = 0;
 
@@ -151,7 +153,8 @@ export async function prepareImages(orgId: string, itemId: string, cfg: AiConfig
         continue;
       }
       try {
-        const isTitle = a.category === "TITLE_PAGE";
+        // without a title-page photo (a poster, letter, document) the first photo is the main page: same detail and zoom
+        const isTitle = hasTitlePage ? a.category === "TITLE_PAGE" : n === 0;
         const zoom = isTitle && titleZooms < cfg.BOOK_AI_TITLE_ZOOM_PAGES;
         const shot = await prepareShot(buffer, { rotation: a.rotation, detail: isTitle, zoom }, cfg);
         if (zoom) titleZooms++;

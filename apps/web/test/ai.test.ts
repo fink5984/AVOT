@@ -381,7 +381,7 @@ describe("provider adapters", () => {
   });
 
   it("OpenAI: title pages and zooms go with the configured detail ('original' by default), ordinary photos with auto", async () => {
-    const two = { ...req, images: [req.images[0]!, { id: "img-02", label: "img-02 · פנים", data: Buffer.from("jpg"), mime: "image/jpeg", detail: "auto" as const }] };
+    const two = { ...req, images: [req.images[0]!, { id: "img-02", label: "img-02 · פנים", data: Buffer.from("jpg"), mime: "image/jpeg" as const, detail: "auto" as const }] };
     const sent = async (p: OpenAiProvider) => {
       const fetchMock = vi.fn(async () => reply(200, { status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "{}" }] }] }));
       vi.stubGlobal("fetch", fetchMock);

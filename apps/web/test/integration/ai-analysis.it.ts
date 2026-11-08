@@ -409,6 +409,20 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(after).toMatchObject({ itemType: "POSTER", title: "כרזה - קריאה לאסיפה", printPlace: "ירושלים", author: null });
   });
 
+  it("no title-page photo (a poster): the first photo is the main page - detail and zooms; the others stay ordinary", async () => {
+    const { item } = await createBook(ctx.editor, { title: "כרוז" });
+    await addPhoto(item.id, "COVER", 1);
+    await addPhoto(item.id, "COVER", 2);
+    await analyse(ctx.editor, item.id);
+    const req = fake.requests.at(-1)!;
+    expect(req.images.map((i) => [i.id, i.detail])).toEqual([
+      ["img-01", "high"],
+      ["img-01-top", "high"],
+      ["img-01-bottom", "high"],
+      ["img-02", "auto"],
+    ]);
+  });
+
   it("inventory table: review-status column data, filter, and the 'דורשים בדיקה אנושית' view", async () => {
     const { item } = await createBook(ctx.editor, { title: "לסינון" });
     await analyse(ctx.editor, item.id);
