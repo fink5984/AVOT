@@ -191,6 +191,22 @@ describe("mapping the result to item fields", () => {
     expect(out.review.filter((x) => x.field === "author" || x.field === "printPlace")).toHaveLength(2);
   });
 
+  it("a value identified from knowledge (not read in the photos) is flagged for review even when the model says 'high'", () => {
+    const r = result({}, { title: field("שומר אמונים", { source: "general_knowledge", confidence: "high" }), printYear: field("תקנ\"ח", { source: "image" }) });
+    const out = mapResult({ result: r, current: values({ title: null }), base: values({ title: null }), previousAi: null, imageIds: ids, catalogIsManual: false });
+    expect(out.patch.title).toBe("שומר אמונים");
+    expect(out.review.some((x) => x.field === "title" && x.reason.includes("לפי ידע כללי"))).toBe(true);
+    expect(out.review.some((x) => x.field === "printYear")).toBe(false);
+  });
+
+  it("image ids never reach the catalog text", () => {
+    const r = result({ catalog: { headline: "שפע טל (img-02)", description: "כולל תרשים (img-10).\n\nבכותרת ב-img-02-top נדפס השם, וגם img-03, img-04.", confidence: "medium" } });
+    const out = mapResult({ result: r, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false });
+    expect(out.patch.catalogHeadline).toBe("שפע טל");
+    expect(out.patch.catalogDescription).toBe("כולל תרשים.\n\nבכותרת נדפס השם, וגם.");
+    expect(out.patch.catalogDescription).not.toMatch(/img-/);
+  });
+
   it("re-analysis replaces the previous AI values, even with lower confidence", () => {
     const r = result({}, { printYear: field("תקפ\"ה", { confidence: "low" }) });
     const cur = values({ printYear: "תקפ\"ד" });

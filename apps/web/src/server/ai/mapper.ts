@@ -85,6 +85,18 @@ export interface MapInput {
 
 const isEmpty = (v: string | null | undefined) => !v || !v.trim();
 
+/** image ids belong in the review notes, never in the catalog text a buyer reads ("(img-10)", "ב-img-02-top") */
+export function stripImageIds(text: string | null): string | null {
+  if (!text) return text;
+  return text
+    .replace(/[ \t]*\((?:ב-)?img-\d+(?:-(?:top|bottom))?(?:\s*,\s*img-\d+(?:-(?:top|bottom))?)*\)/g, "")
+    .replace(/[ \t]*(?:ב-)?img-\d+(?:-(?:top|bottom))?(?:\s*,\s*img-\d+(?:-(?:top|bottom))?)*/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+const NOT_READ: Partial<Record<string, string>> = { general_knowledge: "לפי ידע כללי", inference: "בהסקה" };
+
 export function mapResult(inp: MapInput): MapOutcome {
   const { result, current, base, previousAi } = inp;
   const patch: Partial<AiValues> = {};
@@ -131,6 +143,10 @@ export function mapResult(inp: MapInput): MapOutcome {
     const value = r.status === "found" ? r.value : null;
     decideText(f, value, r.source === "image", r.confidence === "low" || r.confidence === null);
     if (r.status === "found" && r.confidence === "low" && decisions[f]?.action === "written") review.push({ field: f, reason: `${FIELD_LABEL[f]}: רמת ביטחון נמוכה${r.note ? ` - ${r.note}` : ""}` });
+    // a value the model did not read in the photos (identified from knowledge or inferred) always needs a person,
+    // whatever confidence the model claims
+    const how = r.status === "found" && r.source ? NOT_READ[r.source] : undefined;
+    if (how && decisions[f]?.action === "written") review.push({ field: f, reason: `${FIELD_LABEL[f]}: נקבע ${how} ולא נקרא בתמונות - יש לאמת` });
     for (const id of r.imageIds) if (!inp.imageIds.has(id)) warnings.push(`המודל ציין מזהה תמונה שלא נשלח (${id}) בשדה ${f}`);
   }
 
@@ -149,8 +165,8 @@ export function mapResult(inp: MapInput): MapOutcome {
 
   // catalog draft: AI may replace its own earlier draft, never a person's
   const lowCatalog = result.catalog.confidence === "low";
-  decideText("catalogHeadline", result.catalog.headline, true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
-  decideText("catalogDescription", result.catalog.description, true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
+  decideText("catalogHeadline", stripImageIds(result.catalog.headline), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
+  decideText("catalogDescription", stripImageIds(result.catalog.description), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
 
   for (const r of result.requiresReview) review.push({ field: r.field, reason: cleanAiText(r.reason, 500) ?? r.reason });
   for (const c of result.identification.conflicts) review.push({ field: "identification", reason: cleanAiText(c, 500) ?? c });
