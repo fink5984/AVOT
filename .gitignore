@@ -38,3 +38,6 @@ apps/capture-agent/third_party/EDSDK/
 backups/
 apps/web/.next-uidev/
 
+
+# straightening batch reports (scripts/deskew-batch.ts)
+deskew-reports/
