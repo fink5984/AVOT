@@ -13,9 +13,9 @@ import { writeFileSync } from "node:fs";
 import { db } from "../src/server/db";
 import { aiConfig } from "../src/server/ai/config";
 import { batchImages, prepareImages } from "../src/server/ai/images";
-import { buildAnalysisText, buildInstructions, cacheKeyFor } from "../src/server/ai/prompt-builder";
+import { buildAnalysisText, buildInstructions, cacheKeyFor, HEBREW_AGAIN } from "../src/server/ai/prompt-builder";
 import { createProvider } from "../src/server/ai/providers";
-import { analysisResultZ, ANALYSIS_JSON_SCHEMA, parseAnswer } from "../src/server/ai/schema";
+import { analysisResultZ, ANALYSIS_JSON_SCHEMA, englishExplanations, parseAnswer } from "../src/server/ai/schema";
 import { loadStyleLibrary } from "../src/server/ai/style-examples";
 import { computeCost } from "../src/server/ai/pricing";
 import { aiFilledFields, itemContext } from "../src/server/services/ai-analysis";
@@ -33,7 +33,7 @@ async function main() {
   if (batches.length > 1) console.warn(`note: ${batches.length} batches; the dry run sends only the first (the real run adds observation stages)`);
   const images = batches[0] ?? [];
   const started = Date.now();
-  const res = await provider.generate({
+  const req = {
     instructions: buildInstructions(lib),
     userText: buildAnalysisText(itemContext(item, item.categoryNotes, await aiFilledFields(item)), images, { skipped: [] }),
     images: images.map((i) => ({ id: i.id, label: i.label, data: i.data, mime: i.mime, detail: i.detail })),
@@ -42,8 +42,18 @@ async function main() {
     cacheKey: cacheKeyFor(lib),
     maxOutputTokens: cfg.BOOK_AI_MAX_OUTPUT_TOKENS,
     timeoutMs: cfg.BOOK_AI_TIMEOUT_SECONDS * 1000,
-  });
-  const result = parseAnswer(res.text, analysisResultZ);
+  };
+  let res = await provider.generate(req);
+  let result = parseAnswer(res.text, analysisResultZ);
+  // same as a real run: an answer that explains in English is asked for once more
+  const english = englishExplanations(result);
+  if (english.length) {
+    console.warn(`note: ${english.length} explanations in English, asking again in Hebrew`);
+    const first = res.usage;
+    res = await provider.generate({ ...req, userText: req.userText + HEBREW_AGAIN });
+    result = parseAnswer(res.text, analysisResultZ);
+    if (first && res.usage) res.usage = { ...res.usage, inputTokens: res.usage.inputTokens + first.inputTokens, cachedInputTokens: res.usage.cachedInputTokens + first.cachedInputTokens, outputTokens: res.usage.outputTokens + first.outputTokens };
+  }
   const cost = computeCost(res.model || provider.model, res.usage, { usageReported: !!res.usage });
   const summary = {
     item: num,

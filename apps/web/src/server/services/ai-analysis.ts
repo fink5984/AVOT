@@ -18,8 +18,8 @@ import { activeProvider, aiConfig, type AiConfig } from "../ai/config";
 import { batchImages, photosFingerprint, prepareImages, type PreparedImage } from "../ai/images";
 import { AI_MAX_LENGTH, AI_WRITABLE, mapResult, type AiValues, type AiWritable } from "../ai/mapper";
 import { PROMPT_VERSION, SYSTEM_PROMPT } from "../ai/catalog-prompt";
-import { buildAnalysisText, buildInstructions, buildObservationText, cacheKeyFor, redactPersonal, type ItemContext } from "../ai/prompt-builder";
-import { ANALYSIS_JSON_SCHEMA, analysisResultZ, InvalidAnswerError, OBSERVATION_JSON_SCHEMA, observationResultZ, parseAnswer, type AnalysisResult, type ObservationResult } from "../ai/schema";
+import { buildAnalysisText, buildInstructions, buildObservationText, cacheKeyFor, HEBREW_AGAIN, redactPersonal, type ItemContext } from "../ai/prompt-builder";
+import { ANALYSIS_JSON_SCHEMA, analysisResultZ, englishExplanations, InvalidAnswerError, OBSERVATION_JSON_SCHEMA, observationResultZ, parseAnswer, type AnalysisResult, type ObservationResult } from "../ai/schema";
 import { estimateTokens, loadStyleLibrary } from "../ai/style-examples";
 import { computeCost, type UsageTotals } from "../ai/pricing";
 import { providerForRun, type AiProvider } from "../ai/providers";
@@ -541,7 +541,13 @@ async function analyse(ctx: RunContext, startedAt: Date): Promise<AppliedReport>
   }
   const earlier = observationBatches.flat().filter((i) => !i.zoomOf);
   const finalText = observationBatches.length ? buildAnalysisText(context, finalImages!, { skipped, earlierImages: earlier, observations }) : finalText0;
-  const result = await ctx.call("final", { ...common, userText: finalText, images: toProvider(finalImages!), schemaName: "item_analysis", schema: ANALYSIS_JSON_SCHEMA as unknown as Record<string, unknown> }, analysisResultZ);
+  const finalReq = { ...common, userText: finalText, images: toProvider(finalImages!), schemaName: "item_analysis", schema: ANALYSIS_JSON_SCHEMA as unknown as Record<string, unknown> };
+  let result = await ctx.call("final", finalReq, analysisResultZ);
+  // everything a reviewer reads must be Hebrew: an answer that explains in English is asked for once more
+  if (englishExplanations(result).length) {
+    log.info("ai answer in english, asking again in hebrew", { runId: run.id, texts: englishExplanations(result).length });
+    result = await ctx.call("final-hebrew", { ...finalReq, userText: finalText + HEBREW_AGAIN }, analysisResultZ);
+  }
   mark(finalImages!, "final");
   inputRecord.images = inputRecord.images.map((i) => ({ ...i, sentIn: i.imageId ? sentIn.get(i.imageId) : undefined }));
 

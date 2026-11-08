@@ -216,3 +216,31 @@ export function parseAnswer<T>(text: string, validator: z.ZodType<T>): T {
   }
   return r.data;
 }
+
+/**
+ * An explanation written in English instead of Hebrew: after removing quoted text (a foreign name or imprint the
+ * model copies is fine), Latin letters clearly outnumber Hebrew ones.
+ */
+export function isEnglishProse(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const unquoted = text.replace(/"[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»/g, " ");
+  const latin = (unquoted.match(/[A-Za-z]/g) ?? []).length;
+  const hebrew = (unquoted.match(/[א-ת]/g) ?? []).length;
+  return latin >= 12 && latin > hebrew * 1.5;
+}
+
+/** The explanatory texts of an answer that are in English (values, transcriptions and readings are not checked). */
+export function englishExplanations(r: AnalysisResult): string[] {
+  const texts = [
+    r.itemType.note,
+    r.identification.summary,
+    ...r.identification.conflicts,
+    ...Object.values(r.fields).map((f) => f.note),
+    ...r.imagesReviewed.map((i) => i.shows),
+    ...r.requiresReview.map((x) => x.reason),
+    ...r.warnings,
+    ...r.findings.flatMap((f) => [f.attribution, f.attributionBasis, f.significance]),
+    r.catalog.description,
+  ];
+  return texts.filter((t): t is string => isEnglishProse(t));
+}
