@@ -52,6 +52,15 @@ const schema = z.object({
    * Merged over the built-in table in pricing.ts.
    */
   BOOK_AI_PRICING: z.string().optional(),
+  /**
+   * Run the analysis inside the requesting process instead of the job queue (the job is created RUNNING, so no
+   * worker ever claims it). Only for a local server that shares the database with an older production version
+   * whose worker does not know AI_ANALYZE, while that local server runs with JOB_WORKER_ENABLED=false.
+   */
+  BOOK_AI_INLINE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
 });
 
 export type AiConfig = z.infer<typeof schema>;

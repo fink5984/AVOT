@@ -43,6 +43,7 @@
 | `BOOK_AI_TITLE_ZOOM_PAGES` | 2 | כמה שערים מקבלים חצאים מוגדלים (0 = כבוי) |
 | `BOOK_AI_JPEG_QUALITY`, `BOOK_AI_MAX_OUTPUT_TOKENS`, `BOOK_AI_TIMEOUT_SECONDS`, `BOOK_AI_MAX_INPUT_TOKENS` | 82, 16000, 240, 200000 | |
 | `BOOK_AI_PRICING` | (טבלה מובנית) | JSON לעדכון מחירים בלי קוד |
+| `BOOK_AI_INLINE` | `false` | `true` רק לשרת מקומי שמחובר למסד של Production בזמן שב-Production רצה גרסה ישנה: הניתוח רץ בתוך התהליך המקומי ולא בתור, כדי שה-Worker הישן לא יתפוס את המשימה. להפעיל יחד עם `JOB_WORKER_ENABLED=false`. אחרי עדכון Production אין בו צורך |
 
 **החלפת ספק:** משנים `BOOK_AI_PROVIDER` (ומוודאים שהמפתח והמודל של אותו ספק מוגדרים) ומפעילים מחדש את השרת. אין שינוי קוד. כל ניתוח רץ אצל הספק הפעיל בלבד; אין הרצה כפולה.
 

@@ -443,4 +443,24 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(rows.length).toBeGreaterThan(5);
     expect(rows.some((x) => typeof x.costUsd === "number" && x.costUsd > 0)).toBe(true);
   });
+
+  it("BOOK_AI_INLINE: the job is never QUEUED (no worker can claim it); the request process runs and closes it", async () => {
+    const { item } = await createBook(ctx.editor, { title: "ספר בהרצה מקומית" });
+    process.env.BOOK_AI_INLINE = "true";
+    try {
+      const r = await requestAnalysis(ctx.editor, item.id, { requestKey: randomUUID() });
+      const run = await db.inventoryAnalysis.findUniqueOrThrow({ where: { id: r.runId } });
+      expect(await db.job.count({ where: { id: run.jobId!, status: "QUEUED" } })).toBe(0);
+      let job = await db.job.findUniqueOrThrow({ where: { id: run.jobId! } });
+      for (let k = 0; k < 100 && job.status === "RUNNING"; k++) {
+        await new Promise((res) => setTimeout(res, 100));
+        job = await db.job.findUniqueOrThrow({ where: { id: run.jobId! } });
+      }
+      expect(job.status).toBe("SUCCEEDED");
+      expect((await db.inventoryAnalysis.findUniqueOrThrow({ where: { id: r.runId } })).status).toBe("COMPLETED");
+      expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).reviewStatus).toBe("PENDING_REVIEW");
+    } finally {
+      delete process.env.BOOK_AI_INLINE;
+    }
+  });
 });

@@ -225,6 +225,7 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
   const provider = activeProvider(); // clear error when not configured, before anything is queued
   if (item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI כבר פעיל על הפריט");
 
+  const inline = aiConfig().BOOK_AI_INLINE;
   const isReanalysis = item.aiCompletedAt !== null;
   let approverId: string | null = null;
   if (isReanalysis) {
@@ -252,13 +253,22 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
           createdById: user.userId,
         },
       });
-      const job = await tx.job.create({ data: { organizationId: user.organizationId, type: "AI_ANALYZE", payload: { analysisId: created.id, itemId }, createdById: user.userId } });
+      const job = await tx.job.create({
+        data: {
+          organizationId: user.organizationId,
+          type: "AI_ANALYZE",
+          payload: { analysisId: created.id, itemId },
+          createdById: user.userId,
+          ...(inline ? { status: "RUNNING", lockedAt: new Date(), attempts: 1 } : {}),
+        },
+      });
       await tx.inventoryAnalysis.update({ where: { id: created.id }, data: { jobId: job.id } });
       await tx.inventoryItem.update({ where: { id: itemId }, data: { aiStatus: "QUEUED", aiRunId: created.id, aiError: null } });
       await audit(user, { action: "ai.requested", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: created.id, provider: provider.provider, model: provider.model, reanalysis: isReanalysis } }, tx);
       if (isReanalysis) await audit(user, { action: "ai.reanalysis_approved", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: created.id, approvedById: approverId } }, tx);
-      return created;
+      return { ...created, job };
     });
+    if (inline) void runInline(run.job);
     return { runId: run.id, existing: false };
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
@@ -386,6 +396,18 @@ class RunContext {
 }
 
 const IMAGE_TOKEN_ESTIMATE = 1600;
+
+/** BOOK_AI_INLINE: the job was created RUNNING; run it here and close it the way the worker would. */
+async function runInline(job: Job) {
+  let error: string | null = null;
+  try {
+    await runAiAnalysisJob(job);
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    log.error("inline ai analysis failed", { jobId: job.id, err });
+  }
+  await db.job.update({ where: { id: job.id }, data: { status: error ? "FAILED" : "SUCCEEDED", finishedAt: new Date(), error } }).catch(() => undefined);
+}
 
 /** Worker entry point for AI_ANALYZE jobs. */
 export async function runAiAnalysisJob(job: Job) {
