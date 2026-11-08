@@ -8,6 +8,7 @@ import { processAssetDerivatives, enqueueFinalStage } from "../services/derivati
 import { finalizeProcessedAsset, markFinalFailed } from "../services/book-processing";
 import { purgeExpiredTrash } from "../services/assets";
 import { resumeStalledDeletions, runDeleteCatalogsJob, runDeleteItemsJob } from "../services/deletion";
+import { recoverOrphanRuns, runAiAnalysisJob } from "../services/ai-analysis";
 
 const POLL_MS = 2000;
 const STALE_LOCK_MS = 15 * 60 * 1000;
@@ -38,6 +39,7 @@ async function runJob(job: Job) {
     else if (job.type === "PROCESS_FINAL") await finalizeProcessedAsset((job.payload as { assetId: string }).assetId);
     else if (job.type === "DELETE_ITEMS") await runDeleteItemsJob(job);
     else if (job.type === "DELETE_CATALOGS") await runDeleteCatalogsJob(job);
+    else if (job.type === "AI_ANALYZE") await runAiAnalysisJob(job);
     else if (job.type === "PURGE_TRASH") {
       const org = await db.organization.findUnique({ where: { id: job.organizationId } });
       if (org) await purgeExpiredTrash(org.id, org.trashRetentionDays);
@@ -45,7 +47,9 @@ async function runJob(job: Job) {
     await db.job.update({ where: { id: job.id }, data: { status: "SUCCEEDED", finishedAt: new Date(), error: null } });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    const retry = job.attempts < (job.type === "DELETE_ITEMS" || job.type === "DELETE_CATALOGS" ? 6 : MAX_ATTEMPTS);
+    // an AI run retries provider errors itself and marks its own failure: re-running it would only spend money again
+    const final = (err as { noRetry?: boolean } | null)?.noRetry === true;
+    const retry = !final && job.attempts < (job.type === "DELETE_ITEMS" || job.type === "DELETE_CATALOGS" ? 6 : MAX_ATTEMPTS);
     log.error("job failed", { jobId: job.id, type: job.type, attempt: job.attempts, retry, err });
     await db.job.update({
       where: { id: job.id },
@@ -116,6 +120,9 @@ async function maintenance() {
       });
       if (!active) await enqueueFinalStage(a.organizationId, a.id);
     }
+
+    // AI runs whose background job was lost never leave the item "analysing" forever
+    await recoverOrphanRuns();
 
     const expired = await db.job.findMany({
       where: { type: "EXPORT_ZIP", expiresAt: { lt: new Date() }, resultKey: { not: null } },

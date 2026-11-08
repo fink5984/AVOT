@@ -1,4 +1,4 @@
-import type { BookSize, CatalogStatus, CommercialStatus, LotStatus, PhotoCategory, PhysicalStatus, PickStatus, Role, ScanMode } from "@avot/shared";
+import type { AiAnalysisStatus, BookSize, CatalogStatus, ItemReviewStatus, ItemType, CommercialStatus, LotStatus, PhotoCategory, PhysicalStatus, PickStatus, Role, ScanMode } from "@avot/shared";
 
 /**
  * Hebrew UI dictionary. Domain enums map to display names here; persisted keys
@@ -45,6 +45,35 @@ export const he = {
     COMPLETED: "הושלם",
     NEEDS_RESHOOT: "דורש צילום חוזר",
   } satisfies Record<LotStatus, string>,
+  /** "מצב פרטי הפריט" */
+  reviewStatus: {
+    NOT_STARTED: "טרם טופל",
+    PENDING_REVIEW: "ממתין לבדיקה",
+    IN_REVIEW: "בבדיקה",
+    APPROVED: "נבדק ואושר",
+  } satisfies Record<ItemReviewStatus, string>,
+  aiStatus: {
+    NOT_RUN: "טרם נותח",
+    QUEUED: "בתור לניתוח",
+    RUNNING: "בניתוח",
+    COMPLETED: "נותח",
+    FAILED: "הניתוח נכשל",
+  } satisfies Record<AiAnalysisStatus, string>,
+  itemType: {
+    UNKNOWN: "לא ידוע",
+    BOOK: "ספר",
+    MANUSCRIPT: "כתב יד",
+    LETTER: "מכתב",
+    DOCUMENT: "מסמך",
+    POSTER: "כרזה",
+    PERIODICAL: "עיתון / כתב עת",
+    PHOTOGRAPH: "תצלום",
+    MAP: "מפה",
+    JUDAICA: "יודאיקה",
+    ARTWORK: "יצירת אמנות",
+    EPHEMERA: "אפמרה / פריט נייר",
+    OTHER: "אחר",
+  } satisfies Record<ItemType, string>,
   physicalStatus: {
     AWAITING_STORAGE: "ממתין לאחסון",
     IN_STORAGE: "במחסן",

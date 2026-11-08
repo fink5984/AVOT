@@ -104,16 +104,26 @@ export async function assignToCatalog(user: UserPrincipal, itemId: string, input
         author: item.author,
         printYear: item.printYear,
         printPlace: item.printPlace,
-        shortDescription: input.shortDescription ?? null,
-        description: input.description ?? null,
+        // the catalog draft kept on the item (AI or manual) is the starting point of a new assignment
+        shortDescription: input.shortDescription ?? item.catalogHeadline ?? null,
+        description: input.description ?? item.catalogDescription ?? null,
         status: item.photoStatus,
         photoCount: item.photoCount,
         requirements: asJson(item.requirements),
         assignedById: user.userId,
       },
     });
+    const fromDraft = !input.description && !input.shortDescription && !!(item.catalogDescription || item.catalogHeadline);
     await tx.lotDescriptionVersion.create({
-      data: { lotId: lot.id, version: 1, title: lot.title, shortDescription: lot.shortDescription, description: lot.description, createdById: user.userId },
+      data: {
+        lotId: lot.id,
+        version: 1,
+        title: lot.title,
+        shortDescription: lot.shortDescription,
+        description: lot.description,
+        source: fromDraft && item.catalogDescriptionSource ? item.catalogDescriptionSource : "MANUAL",
+        createdById: user.userId,
+      },
     });
     await syncItemCommercial(tx, user, itemId, { reason: `שויך ל${catalog.auctionHouse.name}, קטלוג ${catalog.number}`, refId: lot.id });
     await audit(

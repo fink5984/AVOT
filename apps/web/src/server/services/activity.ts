@@ -74,6 +74,15 @@ const ACTION_LABEL: Record<string, string> = {
   "consignor.archived": "העביר מפקיד לארכיון",
   "consignor.restored": "שחזר מפקיד מהארכיון",
   "consignor.deleted": "מחק מפקיד",
+  "ai.requested": "הפעיל ניתוח AI",
+  "ai.reanalysis_approved": "ניתוח AI חוזר אושר על ידי מנהל",
+  "ai.reanalysis_denied": "אימות מנהל לניתוח AI חוזר נכשל",
+  "ai.completed": "ניתוח AI הושלם",
+  "ai.failed": "ניתוח AI נכשל",
+  "ai.restored": "שחזר ערכים מלפני ניתוח AI",
+  "item_review.started": "התחיל בדיקת פרטי הפריט",
+  "item_review.approved": "אישר את פרטי הפריט",
+  "item_review.invalidated": "אישור הפרטים בוטל עקב שינוי מהותי",
 };
 
 export function actionLabel(action: string): string {
@@ -93,6 +102,10 @@ export function describeData(action: string, data: unknown): string | null {
   if (action.startsWith("consignor.") && d.name) return String(d.name);
   if (action === "inventory.created" && d.inventoryNumber) return `${d.inventoryNumber} · ${d.title ?? ""}`;
   if (action === "lot.assigned" && d.catalogNumber) return `קטלוג ${d.catalogNumber} · פריט ${d.lotNumber}`;
+  if ((action === "ai.requested" || action === "ai.completed") && typeof d.model === "string") return `${d.provider ?? ""} · ${d.model}${typeof d.costUsd === "number" ? ` · ${d.costUsd.toFixed(4)}` : ""}`;
+  if (action === "ai.failed" && typeof d.error === "string") return d.error;
+  if (action === "ai.reanalysis_denied" && typeof d.approverEmail === "string") return d.approverEmail;
+  if ((action === "ai.restored" || action === "item_review.invalidated") && Array.isArray(d.fields)) return `${d.fields.length} שדות`;
   if (action === "lot.commercial_status" && typeof d.to === "string") return he.commercialStatus[d.to as keyof typeof he.commercialStatus] ?? null;
   return null;
 }

@@ -18,6 +18,7 @@
     "seed:perf": "dotenv -e .env.local -- tsx scripts/seed-performance.ts",
     "storage:upload": "dotenv -e .env.local -- tsx scripts/storage-upload.ts",
     "migration:report": "dotenv -e .env.local -- tsx scripts/migration-report.ts",
+    "ai:dry-run": "dotenv -e .env.local -- tsx --conditions=react-server scripts/ai-dry-run.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

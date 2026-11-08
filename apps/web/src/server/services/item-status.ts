@@ -1,12 +1,12 @@
 import "server-only";
-import type { CommercialStatus, LotStatus, PhysicalStatus } from "@avot/shared";
+import type { CommercialStatus, ItemReviewStatus, LotStatus, PhysicalStatus } from "@avot/shared";
 import type { Tx } from "../db";
 import type { Principal } from "../auth/principal";
 
-type Dimension = "PHOTO" | "PHYSICAL" | "COMMERCIAL";
-type StatusOf<D extends Dimension> = D extends "PHOTO" ? LotStatus : D extends "PHYSICAL" ? PhysicalStatus : CommercialStatus;
+type Dimension = "PHOTO" | "PHYSICAL" | "COMMERCIAL" | "REVIEW";
+type StatusOf<D extends Dimension> = D extends "PHOTO" ? LotStatus : D extends "PHYSICAL" ? PhysicalStatus : D extends "REVIEW" ? ItemReviewStatus : CommercialStatus;
 
-const FIELD = { PHOTO: "photoStatus", PHYSICAL: "physicalStatus", COMMERCIAL: "commercialStatus" } as const;
+const FIELD = { PHOTO: "photoStatus", PHYSICAL: "physicalStatus", COMMERCIAL: "commercialStatus", REVIEW: "reviewStatus" } as const;
 
 export interface StatusChangeRef {
   reason?: string | null;
@@ -15,8 +15,8 @@ export interface StatusChangeRef {
 }
 
 /**
- * The one place an item's status changes. Three independent dimensions —
- * photography, physical (warehouse) and commercial — each transition is
+ * The one place an item's status changes. Independent dimensions —
+ * photography, physical (warehouse), commercial and the review of the details ("מצב פרטי הפריט") — each transition is
  * recorded in InventoryStatusEvent. Photo status is mirrored onto the item's
  * lots (Lot.status) in the same transaction so catalog lists stay correct.
  * Returns false when the item already had that status (nothing recorded).
@@ -38,6 +38,13 @@ export async function changeStatus<D extends Dimension>(
     data: {
       [field]: to,
       ...(dimension === "PHOTO" ? { photoCompletedAt: to === "COMPLETED" ? new Date() : null } : {}),
+      ...(dimension === "REVIEW"
+        ? {
+            reviewChangedAt: new Date(),
+            reviewChangedById: principal.kind === "user" ? principal.userId : null,
+            ...(to === "APPROVED" ? { approvedAt: new Date(), approvedById: principal.kind === "user" ? principal.userId : null } : { approvedAt: null, approvedById: null }),
+          }
+        : {}),
     } as never,
   });
   if (dimension === "PHOTO") {

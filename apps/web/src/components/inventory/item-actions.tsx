@@ -13,6 +13,7 @@ import { LocationDialog } from "@/components/warehouse/location-dialog";
 import { DeleteDialog } from "@/components/deletion/delete-dialog";
 import { api, errorMessage } from "@/lib/api";
 import { usePrintLabels } from "@/lib/print";
+import { AiAnalyzeButton, type AiButtonState } from "@/components/ai/ai-button";
 
 export interface ItemActionsSubject {
   id: string;
@@ -26,8 +27,12 @@ export interface ItemActionsSubject {
   hasOpenPick?: boolean;
   /** where the camera icon goes (default: the capture screen of this book) */
   captureHref?: string;
-  /** full details; only the book page passes it, and only there is "עריכה" offered */
+  /** full details for "עריכה"; the book page passes them, a table row loads them when the pencil is clicked */
   edit?: ItemFormValue;
+  /** the AI analysis state (item.aiStatus …); the AI button is shown when given and permitted */
+  ai?: AiButtonState;
+  /** prefilled approver email of the re-analysis dialog (the current user, when they are a manager) */
+  approverEmail?: string;
 }
 
 export interface ItemActionsPerms {
@@ -39,6 +44,8 @@ export interface ItemActionsPerms {
   fulfil?: boolean;
   delete?: boolean;
   pick?: boolean;
+  /** start an AI analysis */
+  ai?: boolean;
 }
 
 /** The same service as the phone scanner's "הוצאה זמנית / הוצאה סופית", also used by the bulk bar of the table. */
@@ -63,7 +70,7 @@ export function useItemCheckout() {
 }
 
 /**
- * The one set of per-book actions, in the inventory table and at the top of the book page: photograph,
+ * The one set of per-book actions, in the inventory table and at the top of the book page: photograph, AI analysis,
  * print the label (one click, the shop's printer), assign to a catalog, change location (warehouse → column →
  * shelf), edit, and the rest in a menu. Same logic and same permissions everywhere; only the density differs.
  */
@@ -74,7 +81,8 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
   const checkout = useItemCheckout();
   const [assign, setAssign] = useState(false);
   const [move, setMove] = useState(false);
-  const [edit, setEdit] = useState(false);
+  const [edit, setEdit] = useState<ItemFormValue | null>(null);
+  const [loadingEdit, setLoadingEdit] = useState(false);
   const [del, setDel] = useState(false);
   const [printing, setPrinting] = useState(false);
   const size = context === "table" ? "sm" : "md";
@@ -87,6 +95,39 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
       await print([{ type: "BOOK", id: subject.id }], { what: `תווית ${subject.inventoryNumber}` });
     } finally {
       setTimeout(() => setPrinting(false), 600);
+    }
+  }
+
+  /** the book page passes the details; a table row loads them on demand */
+  async function openEdit() {
+    if (subject.edit) return setEdit(subject.edit);
+    if (loadingEdit) return;
+    setLoadingEdit(true);
+    try {
+      const { item: i } = await api<{ item: ItemFormValue & { consignor: { id: string; name: string } | null } }>(`/api/inventory/${subject.id}`);
+      setEdit({
+        id: i.id,
+        inventoryNumber: i.inventoryNumber,
+        title: i.title,
+        subtitle: i.subtitle,
+        author: i.author,
+        printPlace: i.printPlace,
+        printYear: i.printYear,
+        publisher: i.publisher,
+        bibliographicNotes: i.bibliographicNotes,
+        internalNotes: i.internalNotes,
+        conditionNotes: i.conditionNotes,
+        heightMm: i.heightMm,
+        widthMm: i.widthMm,
+        depthMm: i.depthMm,
+        sizeCategory: i.sizeCategory,
+        consignor: i.consignor ? { id: i.consignor.id, name: i.consignor.name } : null,
+        barcode: i.barcode,
+      });
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setLoadingEdit(false);
     }
   }
 
@@ -136,8 +177,10 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
             <MapPin />
           </IconButton>
         )}
-        {context === "page" && perms.edit && subject.edit && (
-          <IconButton label="עריכת פרטי הספר" size={size} onClick={() => setEdit(true)}>
+        {/* AI, then the book details it fills (pencil) as the last button */}
+        {perms.ai && subject.ai && <AiAnalyzeButton itemId={subject.id} inventoryNumber={subject.inventoryNumber} initial={subject.ai} size={size} defaultApproverEmail={subject.approverEmail} />}
+        {perms.edit && (
+          <IconButton label={`עריכת פרטי הספר ${subject.inventoryNumber}`} size={size} disabled={loadingEdit} onClick={() => void openEdit()}>
             <Pencil />
           </IconButton>
         )}
@@ -154,7 +197,7 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
       </div>
       {assign && <AssignDialog open onClose={() => setAssign(false)} items={[{ id: subject.id, inventoryNumber: subject.inventoryNumber, title: subject.title }]} />}
       {move && <LocationDialog open onClose={() => setMove(false)} items={[{ id: subject.id, inventoryNumber: subject.inventoryNumber, title: subject.title }]} />}
-      {edit && subject.edit && <ItemFormDialog open onClose={() => setEdit(false)} initial={subject.edit} />}
+      {edit && <ItemFormDialog open onClose={() => setEdit(null)} initial={edit} />}
       {del && <DeleteDialog kind="books" open ids={[subject.id]} onClose={() => setDel(false)} onDone={() => (context === "page" ? router.push("/inventory") : router.refresh())} />}
     </>
   );
