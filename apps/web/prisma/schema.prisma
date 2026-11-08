@@ -291,6 +291,7 @@ model Organization {
   printJobs      PrintJob[]
   labelTemplates LabelTemplate[]
   consignors     Consignor[]
+  deskewBatches  DeskewBatch[]
 }
 
 model User {
@@ -1349,4 +1350,74 @@ model InventoryNumberAlias {
 
   @@unique([organizationId, alias])
   @@index([inventoryItemId])
+}
+
+/// Straightening (auto deskew) of photos that already exist: one batch = one run of scripts/deskew-batch.ts.
+/// Every changed photo keeps a snapshot of its previous processed version, so the whole batch can be rolled back.
+enum DeskewBatchStatus {
+  RUNNING
+  PAUSED
+  COMPLETED
+  ROLLED_BACK
+}
+
+enum DeskewItemStatus {
+  PENDING
+  /// claimed by a worker; after a crash such items are put back to PENDING
+  PROCESSING
+  /// a new processed version was written and the photo points at it
+  APPLIED
+  /// examined, nothing changed (reason in skipReason)
+  SKIPPED
+  FAILED
+  ROLLED_BACK
+}
+
+model DeskewBatch {
+  id             String            @id @default(uuid()) @db.Uuid
+  organizationId String            @db.Uuid
+  status         DeskewBatchStatus @default(RUNNING)
+  /// version of the deskew algorithm the batch was planned with
+  algoVersion    Int
+  /// limits, flags and who started it
+  params         Json
+  createdAt      DateTime          @default(now())
+  finishedAt     DateTime?
+  rolledBackAt   DateTime?
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  items        DeskewBatchItem[]
+
+  @@index([organizationId, createdAt])
+}
+
+model DeskewBatchItem {
+  id               String           @id @default(uuid()) @db.Uuid
+  batchId          String           @db.Uuid
+  /// no foreign key on purpose: purging a photo must never be blocked by its straightening history
+  assetId          String           @db.Uuid
+  status           DeskewItemStatus @default(PENDING)
+  attempts         Int              @default(0)
+  kind             String?
+  tilt             Float?
+  angle            Float?
+  confidence       Float?
+  skipReason       String?
+  /// true when a new processed file was written
+  changed          Boolean          @default(false)
+  ms               Int?
+  error            String?
+  /// the photo's processed version before this item changed it (keys, size, state, result) — what a rollback restores
+  previous         Json?
+  /// keys of the files this item wrote (never overwrite an existing key)
+  newKeys          Json?
+  processedAt      DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  batch DeskewBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, assetId])
+  @@index([batchId, status])
+  @@index([assetId])
 }

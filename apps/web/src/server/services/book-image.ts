@@ -12,6 +12,7 @@ import {
 import { runAsync, type Pixels } from "@/lib/imaging/raster";
 import { segmentSteps, type Bbox, type SegmentResult, type WarningCode } from "@/lib/imaging/segment";
 import { alphaBounds, composeOutputSteps, refineAlphaSteps, withMargin } from "@/lib/imaging/compose";
+import { decideDeskew, deskewInfo, skipped, DESKEW_LIMITS, type DeskewDecision, type DeskewInfo } from "@/lib/imaging/deskew";
 
 /**
  * Orientation → background removal → crop → encode, for one photograph.
@@ -24,9 +25,13 @@ import { alphaBounds, composeOutputSteps, refineAlphaSteps, withMargin } from "@
 
 export const WORKING_LONG_EDGE = 1200;
 
-/** The preview stage and the full stage of one photo segment the same working copy: keep the last few results. */
-const segCache = new Map<string, SegmentResult>();
-function cachePut(key: string, r: SegmentResult) {
+/** The preview stage and the full stage of one photo segment the same working copy (and take the same deskew decision): keep the last few results. */
+interface Analysis {
+  seg: SegmentResult;
+  deskew: DeskewDecision;
+}
+const segCache = new Map<string, Analysis>();
+function cachePut(key: string, r: Analysis) {
   segCache.delete(key);
   segCache.set(key, r);
   while (segCache.size > 4) segCache.delete(segCache.keys().next().value as string);
@@ -48,18 +53,33 @@ export interface BookResult {
   /** book bounds, normalised to the rotated image (null when nothing was found) */
   bounds: { x: number; y: number; w: number; h: number } | null;
   applied: { rotation: Rotation; backgroundRemoved: boolean; cropped: boolean };
+  /** the straightening decision: the angle that was applied, or why nothing was changed */
+  deskew: DeskewInfo;
   stage: ProcessStage;
   ms: number;
 }
 
-/** EXIF-oriented, sRGB, rotated by `residual` — both steps run natively in libvips, off the event loop. */
-async function readOriented(input: Buffer, longEdge: number | null, residual: Rotation) {
+/** Straightening: a free angle (degrees, clockwise) and the colour the exposed corners are filled with — the backdrop, so they are segmented as background. */
+export interface Tilt {
+  angle: number;
+  fill: [number, number, number];
+}
+
+/**
+ * EXIF-oriented, sRGB, rotated by `residual` (+ the optional deskew angle) — all steps run natively in libvips, off
+ * the event loop. The residual and the deskew angle are ONE rotation of the oriented pixels, so the picture is
+ * resampled once at most and never twice.
+ */
+async function readOriented(input: Buffer, longEdge: number | null, residual: Rotation, tilt?: Tilt | null) {
   let p = sharp(input, { failOn: "error" }).rotate();
   if (longEdge) p = p.resize({ width: longEdge, height: longEdge, fit: "inside", withoutEnlargement: true });
   const first = await p.toColourspace("srgb").removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  if (residual === 0) return { data: first.data as Pixels, width: first.info.width, height: first.info.height };
+  const total = residual + (tilt?.angle ?? 0);
+  if (total === 0) return { data: first.data as Pixels, width: first.info.width, height: first.info.height };
+  const [r, g, b] = tilt?.fill ?? [255, 255, 255];
   const turned = await sharp(first.data, { raw: { width: first.info.width, height: first.info.height, channels: 3 } })
-    .rotate(residual)
+    .rotate(total, { background: { r: Math.round(r), g: Math.round(g), b: Math.round(b) } })
+    .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
   return { data: turned.data as Pixels, width: turned.info.width, height: turned.info.height };
@@ -125,10 +145,16 @@ async function processBookNow(input: Buffer, processing: PhotoProcessing, stage:
   const residual = residualRotation(meta.orientation, s.rotation);
 
   const background: [number, number, number] | null = s.background === "transparent" ? null : parseHexColor(s.background);
-  const wantsSegmentation = s.removeBackground || s.autoCrop || !!edits.crop;
+  const wantsCut = s.removeBackground || s.autoCrop || !!edits.crop;
+  // manual crop / brush strokes are drawn on the unstraightened picture: never move the pixels under them
+  const manualEdits = !!edits.crop || (edits.strokes?.length ?? 0) > 0;
+  const deskewOff: DeskewDecision | null = !s.autoDeskew ? skipped("disabled") : manualEdits ? skipped("manual-edits") : null;
+  const wantsSegmentation = wantsCut || deskewOff === null;
 
-  const load = (long: number | null) => readOriented(input, long, residual);
+  let tilt: Tilt | null = null;
+  const load = (long: number | null) => readOriented(input, long, residual, tilt);
 
+  let deskew: DeskewDecision = deskewOff ?? skipped("no-object");
   const base = { stage, applied: { rotation: s.rotation, backgroundRemoved: false, cropped: false } };
   const rotatedOnly = async (img: { data: Pixels; width: number; height: number }, seg: SegmentResult | null, status: BookResult["status"]): Promise<BookResult> => {
     // rotation only — a flat RGB copy, nothing removed or cut away
@@ -143,19 +169,52 @@ async function processBookNow(input: Buffer, processing: PhotoProcessing, stage:
       warnings: seg?.warnings ?? [],
       bounds: seg?.bbox ? norm(seg.bbox, seg.width, seg.height) : null,
       ...base,
+      deskew: deskewInfo(deskew),
       ms: Date.now() - started,
     };
   };
 
-  const working = await load(WORKING_LONG_EDGE);
+  let working = await load(WORKING_LONG_EDGE);
   if (!wantsSegmentation) return rotatedOnly(stage === "full" ? await load(null) : working, null, "DONE");
 
-  const seg =
-    (cacheKey ? segCache.get(cacheKey) : undefined) ??
-    (await runAsync(
-      segmentSteps({ data: working.data, width: working.width, height: working.height, channels: 3 }, { sensitivity: s.sensitivity, bgSample: s.bgSample, strokes: edits.strokes }),
-    ));
-  if (cacheKey) cachePut(cacheKey, seg);
+  const segOpts = { sensitivity: s.sensitivity, bgSample: s.bgSample, strokes: edits.strokes };
+  const segment = (img: { data: Pixels; width: number; height: number }) => runAsync(segmentSteps({ data: img.data, width: img.width, height: img.height, channels: 3 }, segOpts));
+
+  let seg: SegmentResult;
+  const cached = cacheKey ? segCache.get(cacheKey) : undefined;
+  if (cached) {
+    seg = cached.seg;
+    deskew = cached.deskew;
+    if (deskew.apply) {
+      tilt = { angle: deskew.angle, fill: seg.model.rgb };
+      working = await load(WORKING_LONG_EDGE);
+    }
+  } else {
+    seg = await segment(working);
+    if (deskewOff === null) {
+      const found = seg.bbox !== null && seg.confidence >= s.minConfidence ? decideDeskew(seg.mask, seg.alpha, seg.width, seg.height) : skipped(seg.bbox ? "detection-untrusted" : "no-object");
+      deskew = found;
+      if (found.apply) {
+        // straighten the working copy, segment it again, and keep the rotation only if it really made the item straighter
+        const candidate: Tilt = { angle: found.angle, fill: seg.model.rgb };
+        const turned = await readOriented(input, WORKING_LONG_EDGE, residual, candidate);
+        const turnedSeg = await segment(turned);
+        const after = turnedSeg.bbox !== null && turnedSeg.confidence >= Math.min(s.minConfidence, seg.confidence) ? decideDeskew(turnedSeg.mask, turnedSeg.alpha, turnedSeg.width, turnedSeg.height) : null;
+        if (after && after.kind === "single" && Math.abs(after.tilt) <= Math.max(DESKEW_LIMITS.minAngle * 2, Math.abs(found.tilt) * 0.4)) {
+          tilt = candidate;
+          working = turned;
+          seg = turnedSeg;
+        } else {
+          deskew = { ...found, apply: false, angle: 0, skip: "not-verified" };
+        }
+      }
+    } else {
+      deskew = deskewOff;
+    }
+  }
+  if (cacheKey) cachePut(cacheKey, { seg, deskew });
+  // straightening was the only reason to look at the picture: nothing is removed or cut, an unsure detection is no reason to flag it
+  if (!wantsCut) return rotatedOnly(stage === "full" ? await load(null) : working, seg, "DONE");
   const trusted = seg.bbox !== null && (seg.confidence >= s.minConfidence || edits.confirmed === true);
   if (!trusted) return rotatedOnly(stage === "full" ? await load(null) : working, seg, "NEEDS_REVIEW");
 
@@ -171,6 +230,7 @@ async function processBookNow(input: Buffer, processing: PhotoProcessing, stage:
     bounds,
     stage,
     applied: { rotation: s.rotation, backgroundRemoved: s.removeBackground, cropped },
+    deskew: deskewInfo(deskew),
     ms: Date.now() - started,
   });
 
@@ -247,4 +307,28 @@ function cropRgb(data: Pixels, W: number, c: { x: number; y: number; w: number; 
     out.set(data.subarray(s, s + c.w * 3), y * c.w * 3);
   }
   return out;
+}
+
+export interface DeskewAnalysis {
+  decision: DeskewDecision;
+  /** detection confidence of the segmentation the decision rests on */
+  segConfidence: number;
+}
+
+/**
+ * Detection only (no output image): what the straightening would do to this original under these settings.
+ * Same working copy, segmentation and decision as {@link processBook}, so the batch tool never has an algorithm of its own.
+ */
+export async function analyzeDeskew(input: Buffer, processing: PhotoProcessing): Promise<DeskewAnalysis> {
+  return exclusive(async () => {
+    const s = processing.settings;
+    const meta = await sharp(input, { failOn: "error" }).metadata();
+    const working = await readOriented(input, WORKING_LONG_EDGE, residualRotation(meta.orientation, s.rotation));
+    const seg = await runAsync(
+      segmentSteps({ data: working.data, width: working.width, height: working.height, channels: 3 }, { sensitivity: s.sensitivity, bgSample: s.bgSample, strokes: processing.edits?.strokes }),
+    );
+    const decision =
+      seg.bbox !== null && seg.confidence >= s.minConfidence ? decideDeskew(seg.mask, seg.alpha, seg.width, seg.height) : skipped(seg.bbox ? "detection-untrusted" : "no-object");
+    return { decision, segConfidence: seg.confidence };
+  });
 }
