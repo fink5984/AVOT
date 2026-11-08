@@ -556,7 +556,8 @@ async function applyResult(
       const previousRun = await tx.inventoryAnalysis.findFirst({ where: { inventoryItemId: itemId, kind: AI_KIND, status: "COMPLETED", restoredAt: null, id: { not: run.id } }, orderBy: { finishedAt: "desc" }, select: { applied: true } });
       const previousAi = ((previousRun?.applied as AppliedReport | null)?.written ?? null) as Partial<AiValues> | null;
       const catalogIsManual = item.catalogDescriptionSource === "MANUAL" && !!(item.catalogDescription?.trim() || item.catalogHeadline?.trim());
-      const mapped = mapResult({ result, current, base: extra.base, previousAi, imageIds: extra.imageIds, catalogIsManual });
+      const hasDimensions = !!(item.heightMm || item.widthMm || item.depthMm);
+      const mapped = mapResult({ result, current, base: extra.base, previousAi, imageIds: extra.imageIds, catalogIsManual, hasDimensions });
       if (imagesChanged) mapped.review.push({ field: "images", reason: "תמונות הפריט השתנו בזמן הניתוח (נוספו, נמחקו או עובדו מחדש). כדאי לבדוק את הפרטים מול התמונות העדכניות." });
 
       const snapshot: Record<string, unknown> = { values: current, catalogDescriptionSource: item.catalogDescriptionSource, detailsVersion: item.detailsVersion };

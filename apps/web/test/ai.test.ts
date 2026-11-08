@@ -199,6 +199,17 @@ describe("mapping the result to item fields", () => {
     expect(out.review.some((x) => x.field === "printYear")).toBe(false);
   });
 
+  it("without measured dimensions, sizes the model guessed are removed; with dimensions they stay", () => {
+    const desc = "ספר ספרא. זיטאמיר, תרכ\"ו [1866].\n\n239, [1] עמ'. 21 ס\"מ בקירוב. מצב בינוני. כתמים.";
+    const r = result({ catalog: { headline: "ספרא", description: desc, confidence: "high" } }, { extent: field("239, [1] עמ'. 22 ס\"מ"), conditionNotes: field("46.5X31 ס\"מ. מצב טוב.") });
+    const none = mapResult({ result: r, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false, hasDimensions: false });
+    expect(none.patch.catalogDescription).toBe("ספר ספרא. זיטאמיר, תרכ\"ו [1866].\n\n239, [1] עמ'. מצב בינוני. כתמים.");
+    expect(none.patch.extent).toBe("239, [1] עמ'.");
+    expect(none.patch.conditionNotes).toBe("מצב טוב.");
+    const measured = mapResult({ result: r, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false, hasDimensions: true });
+    expect(measured.patch.catalogDescription).toBe(desc);
+  });
+
   it("image ids never reach the catalog text", () => {
     const r = result({ catalog: { headline: "שפע טל (img-02)", description: "כולל תרשים (img-10).\n\nבכותרת ב-img-02-top נדפס השם, וגם img-03, img-04.", confidence: "medium" } });
     const out = mapResult({ result: r, current: values({}), base: values({}), previousAi: null, imageIds: ids, catalogIsManual: false });
