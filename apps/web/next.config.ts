@@ -9,6 +9,8 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // a second local server (e.g. against the test database) needs its own build folder: NEXT_DIST_DIR=.next-uidev
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   transpilePackages: ["@avot/shared"],
   serverExternalPackages: ["sharp", "archiver"],
   poweredByHeader: false,

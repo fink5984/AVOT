@@ -86,6 +86,19 @@ const STATUS_TEXT: Record<SaveStatus, string> = {
   offline: "לא נשמר - ממתין לחיבור",
 };
 const DEBOUNCE_MS = 1500;
+/** review remarks shown before "הצג עוד" */
+const REVIEW_PREVIEW = 4;
+
+/** a titled group of fields; the groups follow the order a cataloguer checks a book */
+function FieldGroup({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
+  return (
+    <fieldset className="border-t border-rule pt-4 first-of-type:border-t-0 first-of-type:pt-0">
+      <legend className="float-start mb-3 w-full text-[12px] font-semibold text-muted">{title}</legend>
+      <div className="clear-both grid grid-cols-1 gap-x-3 gap-y-3.5 sm:grid-cols-6">{children}</div>
+      {note && <p className="mt-2 text-[12px] text-muted">{note}</p>}
+    </fieldset>
+  );
+}
 const draftKey = (id: string) => `avot.itemDetailsDraft.${id}`;
 
 interface Draft {
@@ -135,6 +148,7 @@ export function ItemReviewPanel({
   const [reviewStatus, setReviewStatus] = useState<ItemReviewStatus>(ai.reviewStatus);
   const [busy, setBusy] = useState<string | null>(null);
   const [showRuns, setShowRuns] = useState(false);
+  const [showAllReview, setShowAllReview] = useState(false);
 
   const base = useRef(serverValues); // values of the version the edits are based on
   const version = useRef(serverVersion);
@@ -349,18 +363,31 @@ export function ItemReviewPanel({
   const editable = canEdit && status !== "saving";
   const latestCompleted = ai.runs.find((r) => r.status === "COMPLETED" && !r.restoredAt);
 
+  // one line per distinct remark (runs saved before the server-side dedupe can repeat a remark per field)
+  const reviewList = [...new Map((latest?.applied?.review ?? []).map((r) => [r.reason.replace(/\s+/g, " ").trim(), r])).values()];
+  const flagged = new Set(reviewList.map((r) => r.field));
+
+  /**
+   * One quiet line under a field: filled by the AI or not, and only what should make the reviewer look twice
+   * (confidence below high, a value not read in the photos, a field the AI flagged). Image ids stay out of the UI.
+   */
   function fieldHint(f: ReviewField) {
+    if (f === "extent") return null; // counted by a person, never by the AI
     const d = decisions[f];
     const e = evidence(f);
     if (!d && !e) return null;
+    const written = d?.action === "written";
+    const doubtful = written && !!e && ((!!e.confidence && e.confidence !== "high") || (!!e.source && e.source !== "image"));
     const parts: React.ReactNode[] = [];
-    if (d?.action === "written") parts.push(<span key="w" className="inline-flex items-center gap-1 text-info"><Sparkles className="size-3" aria-hidden />מולא ב-AI</span>);
-    if (e?.confidence && d?.action === "written") parts.push(<span key="c">{CONFIDENCE[e.confidence]}</span>);
-    if (e?.source && d?.action === "written") parts.push(<span key="s">{SOURCE[e.source]}</span>);
-    if (e?.imageIds?.length) parts.push(<span key="i" className="num font-mono" dir="ltr">{e.imageIds.join(", ")}</span>);
-    if (e?.status && e.status !== "found") parts.push(<span key="st">{e.status === "unknown" ? "לא זוהה" : e.status === "not_checked" ? "לא נבדק (לא צולם)" : "לא רלוונטי"}</span>);
-    if (e?.note) parts.push(<span key="n" className="text-ink-2">{e.note}</span>);
+    if (written) parts.push(<span key="w" className="inline-flex items-center gap-1 text-info"><Sparkles className="size-3" aria-hidden />מולא ב-AI</span>);
+    if (written && e?.confidence && e.confidence !== "high") parts.push(<span key="c" className={e.confidence === "low" ? "text-danger" : "text-warn"}>{CONFIDENCE[e.confidence]}</span>);
+    if (written && e?.source && e.source !== "image") parts.push(<span key="s" className="text-warn">{SOURCE[e.source]}</span>);
+    if (!written && e?.status === "unknown" && !values[f]) parts.push(<span key="st">ה-AI לא זיהה</span>);
+    // why a field stayed empty is in the review list once; repeating it under every empty field is noise
+    const note = e?.note && (doubtful || (flagged.has(f) && e.status === "found")) ? e.note : null;
+    if (note) parts.push(<span key="n" className="text-ink-2" title={note}>{note.length > 160 ? `${note.slice(0, 160)}…` : note}</span>);
     const proposal = (d?.action === "kept" || d?.action === "skipped_human_edit") && d.proposed && !same(d.proposed, values[f]) ? d.proposed : null;
+    if (!parts.length && !proposal) return null;
     return (
       <span className="flex flex-col gap-1">
         {parts.length > 0 && <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">{parts.map((p, i) => <span key={i} className="inline-flex items-center gap-2">{i > 0 && <span aria-hidden>·</span>}{p}</span>)}</span>}
@@ -413,16 +440,37 @@ export function ItemReviewPanel({
         </>
       }
     >
-      <div className="space-y-4 px-5 py-4">
-        {ai.reviewChangedAt && (
+      <div className="space-y-5 px-5 py-4">
+        {(ai.reviewChangedAt || latestCompleted) && (
           <p className="text-[12px] text-muted">
-            {t.reviewStatus[reviewStatus]} · {fmt.dateTime(new Date(ai.reviewChangedAt))}
-            {ai.reviewChangedBy && <> · {ai.reviewChangedBy}</>}
+            {latestCompleted && <>נותח ב-AI {fmt.dateTime(new Date(latestCompleted.createdAt))}</>}
+            {latestCompleted && ai.reviewChangedAt && " · "}
+            {ai.reviewChangedAt && (
+              <>
+                {t.reviewStatus[reviewStatus]} {fmt.dateTime(new Date(ai.reviewChangedAt))}
+                {ai.reviewChangedBy && <> · {ai.reviewChangedBy}</>}
+              </>
+            )}
             {ai.approvedAt && ai.approvedBy && reviewStatus === "APPROVED" && <> · אושר על ידי {ai.approvedBy}</>}
           </p>
         )}
-        {(reviewStatus === "PENDING_REVIEW" || reviewStatus === "IN_REVIEW") && ai.hasSuccessfulAnalysis && (
-          <p className="rounded-md bg-info-soft px-3 py-2 text-[13px] text-info">הפרטים מולאו בניתוח AI וטרם אושרו. בדקו אותם מול התמונות, תקנו לפי הצורך ואשרו.</p>
+        {reviewStatus !== "APPROVED" && ai.hasSuccessfulAnalysis && (
+          <div className="rounded-md border border-warn/30 bg-warn-soft px-3.5 py-2.5 text-[13px]">
+            <div className="font-medium text-ink">{reviewList.length ? `לבדוק לפני אישור (${reviewList.length})` : "הפרטים מולאו ב-AI וטרם אושרו"}</div>
+            {reviewList.length > 0 && (
+              <ul className="mt-1.5 list-disc space-y-1 ps-5 text-ink-2">
+                {(showAllReview ? reviewList : reviewList.slice(0, REVIEW_PREVIEW)).map((r, i) => (
+                  <li key={i}>{r.reason}</li>
+                ))}
+              </ul>
+            )}
+            {reviewList.length > REVIEW_PREVIEW && (
+              <button type="button" className="mt-1.5 text-[12px] font-medium text-ink underline" onClick={() => setShowAllReview((s) => !s)}>
+                {showAllReview ? "הצג פחות" : `הצג עוד ${reviewList.length - REVIEW_PREVIEW}`}
+              </button>
+            )}
+            {!reviewList.length && <p className="mt-0.5 text-ink-2">בדקו אותם מול התמונות, תקנו לפי הצורך ואשרו.</p>}
+          </div>
         )}
         {status === "conflict" && (
           <div className="rounded-md bg-danger-soft px-3 py-2.5 text-[13px] text-danger" role="alert">
@@ -443,7 +491,7 @@ export function ItemReviewPanel({
           </p>
         )}
 
-        <div className="grid grid-cols-1 gap-x-3 gap-y-4 sm:grid-cols-6">
+        <FieldGroup title="זיהוי הפריט">
           {text("title", { className: "sm:col-span-4" })}
           <Field label={LABEL.itemType} hint={fieldHint("itemType")} className="sm:col-span-2">
             {(p) => (
@@ -458,67 +506,50 @@ export function ItemReviewPanel({
           </Field>
           {text("subtitle", { className: "sm:col-span-3" })}
           {text("author", { className: "sm:col-span-3" })}
+        </FieldGroup>
+
+        <FieldGroup title="פרטי הדפוס">
           {text("printPlace", { className: "sm:col-span-2" })}
           {text("printYear", { className: "sm:col-span-2" })}
           {text("publisher", { className: "sm:col-span-2" })}
           {text("edition", { className: "sm:col-span-3" })}
           {text("extent", { className: "sm:col-span-3" })}
+        </FieldGroup>
+
+        <FieldGroup title="תיאור העותק">
           {text("bibliographicNotes", { rows: 3, className: "sm:col-span-6" })}
           {text("conditionNotes", { rows: 2, className: "sm:col-span-6" })}
-          {text("catalogHeadline", { className: "sm:col-span-6" })}
-          {text("catalogDescription", { rows: 10, className: "sm:col-span-6" })}
-        </div>
+        </FieldGroup>
 
-        {latest?.result && (
-          <section className="space-y-2 rounded-lg border border-rule px-4 py-3 text-[13px]">
-            <h3 className="flex items-center gap-1.5 font-semibold">
-              <Sparkles className="size-4 text-info" aria-hidden />
-              ממצאי ניתוח ה-AI
-            </h3>
-            <p className="text-ink-2">{latest.result.identification.summary}</p>
-            {applied && applied.review.length > 0 && (
-              <div>
-                <div className="font-medium">דורש בדיקה</div>
-                <ul className="mt-1 list-disc space-y-0.5 ps-5 text-ink-2">
-                  {applied.review.map((r, i) => (
-                    <li key={i}>{r.reason}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
+        <FieldGroup title="טיוטה לקטלוג" note={applied?.lot?.skippedReason ?? undefined}>
+          {text("catalogHeadline", { className: "sm:col-span-6" })}
+          {text("catalogDescription", { rows: 9, className: "sm:col-span-6" })}
+        </FieldGroup>
+
+        {latest?.result && (latest.result.identification.summary || findings.length > 0 || latest.images.some((i) => i.status === "skipped")) && (
+          <section className="space-y-2.5 border-t border-rule pt-4 text-[13px]">
+            <h3 className="text-[12px] font-semibold text-muted">מה זוהה בתמונות</h3>
+            {latest.result.identification.summary && <p className="text-ink-2">{latest.result.identification.summary}</p>}
             {findings.length > 0 && (
-              <div>
-                <div className="font-medium">חתימות, חותמות ורישומים</div>
-                <ul className="mt-1 space-y-1.5">
-                  {findings.map((f, i) => (
-                    <li key={i} className="rounded bg-stone-2 px-2.5 py-1.5">
-                      <span className="font-medium">{FINDING[f.kind] ?? f.kind}</span> · {READING[f.reading]}
-                      {f.imageIds.length > 0 && (
-                        <span className="num ms-1 font-mono text-[12px] text-muted" dir="ltr">
-                          {f.imageIds.join(", ")}
-                        </span>
-                      )}
-                      {f.transcription && <div className="mt-0.5 whitespace-pre-line font-medium text-ink">&quot;{f.transcription}&quot;</div>}
-                      {f.attribution && (
-                        <div className="text-[12px] text-ink-2">
-                          ייחוס: {f.attribution}
-                          {f.attributionBasis && <> ({f.attributionBasis})</>}
-                        </div>
-                      )}
-                      {f.significance && <div className="text-[12px] text-ink-2">{f.significance}</div>}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {applied && applied.warnings.length > 0 && (
-              <div className="text-[12px] text-warn">
-                {applied.warnings.map((w, i) => (
-                  <div key={i}>{w}</div>
+              <ul className="space-y-1.5">
+                {findings.map((f, i) => (
+                  <li key={i} className="rounded-md bg-stone-2 px-3 py-2">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="font-medium text-ink">{FINDING[f.kind] ?? f.kind}</span>
+                      <span className={cn("text-[12px]", f.reading === "certain" ? "text-muted" : "text-warn")}>{READING[f.reading]}</span>
+                    </div>
+                    {f.transcription && <div className="mt-0.5 whitespace-pre-line text-ink">&quot;{f.transcription}&quot;</div>}
+                    {f.attribution && (
+                      <div className="mt-0.5 text-[12px] text-ink-2">
+                        ייחוס: {f.attribution}
+                        {f.attributionBasis && <> - {f.attributionBasis}</>}
+                      </div>
+                    )}
+                    {f.significance && <div className="text-[12px] text-ink-2">{f.significance}</div>}
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
-            {applied?.lot?.skippedReason && <p className="text-[12px] text-muted">{applied.lot.skippedReason}</p>}
             {latest.images.some((i) => i.status === "skipped") && (
               <p className="text-[12px] text-warn">
                 תמונות שלא נשלחו לניתוח: {latest.images.filter((i) => i.status === "skipped").map((i) => `${t.categoryShort[i.category as keyof typeof t.categoryShort] ?? i.category} (${i.reason})`).join(" · ")}
@@ -540,6 +571,14 @@ export function ItemReviewPanel({
           )}
         </div>
 
+        {showRuns && applied && applied.warnings.length > 0 && (
+          <div className="rounded-md bg-stone-2 px-3 py-2 text-[12px] text-ink-2">
+            <div className="font-medium">הערות טכניות מהניתוח האחרון</div>
+            {applied.warnings.map((w, i) => (
+              <div key={i}>{w}</div>
+            ))}
+          </div>
+        )}
         {showRuns && (
           <div className="overflow-x-auto">
             <table className="w-full text-[12.5px]">
