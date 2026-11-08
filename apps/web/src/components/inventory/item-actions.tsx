@@ -128,7 +128,6 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
             <Camera className="text-accent" />
           </IconButtonLink>
         )}
-        {perms.ai && subject.ai && <AiAnalyzeButton itemId={subject.id} inventoryNumber={subject.inventoryNumber} initial={subject.ai} size={size} defaultApproverEmail={subject.approverEmail} />}
         {perms.label && (
           <IconButton label={`הדפסת תווית ${subject.inventoryNumber}`} size={size} disabled={printing} onClick={() => void printLabel()}>
             <Printer />
@@ -149,6 +148,8 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
             <Pencil />
           </IconButton>
         )}
+        {/* next to the book details (pencil): the AI fills those details */}
+        {perms.ai && subject.ai && <AiAnalyzeButton itemId={subject.id} inventoryNumber={subject.inventoryNumber} initial={subject.ai} size={size} defaultApproverEmail={subject.approverEmail} />}
         {menu.length > 0 && (
           <Menu
             trigger={(p) => (
