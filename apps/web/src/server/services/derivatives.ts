@@ -40,6 +40,8 @@ export interface ProcessingResultInfo {
   warnings: string[];
   bounds: { x: number; y: number; w: number; h: number } | null;
   applied: BookResult["applied"];
+  /** straightening decision — absent on results made before auto deskew existed */
+  deskew?: BookResult["deskew"];
   width: number;
   height: number;
   ms: number;
@@ -55,6 +57,7 @@ export function resultInfo(book: BookResult, p: PhotoProcessing): ProcessingResu
     warnings: book.warnings,
     bounds: book.bounds,
     applied: book.applied,
+    deskew: book.deskew,
     width: book.width,
     height: book.height,
     ms: book.ms,

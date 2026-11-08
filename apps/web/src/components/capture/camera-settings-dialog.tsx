@@ -190,6 +190,8 @@ export function CameraSettingsDialog({
         <Section title="חיתוך והסרת רקע" hint="הסרת הרקע ממירה את הירוק לשקוף / לצבע הרקע; חיתוך מצמצם את התמונה למלבן הקטן ביותר שמכיל את הספר, בתוספת שוליים.">
           <Switch label="הסרת רקע ירוק" checked={settings.removeBackground} onChange={(e) => onPatch({ removeBackground: e.target.checked })} />
           <Switch label="חיתוך אוטומטי לפי הספר" checked={settings.autoCrop} onChange={(e) => onPatch({ autoCrop: e.target.checked })} />
+          <Switch label="יישור אוטומטי של הטיה קלה" checked={settings.autoDeskew} onChange={(e) => onPatch({ autoDeskew: e.target.checked })} />
+          <p className="-mt-1 text-[12px] text-muted">מסובב בעדינות פריט בודד שעומד עקום (עד כמה מעלות), בלי לשנות פרספקטיבה. קומפוזיציה של כמה פריטים, זווית מכוונת או זיהוי לא ודאי נשארים כפי שצולמו.</p>
           <Slider label="רגישות זיהוי הרקע" value={settings.sensitivity} min={0} max={100} step={5} onChange={(v) => onPatch({ sensitivity: v })} hint="גבוה: יותר גוונים ירקרקים נחשבים רקע. נמוך: יותר פרטים נשמרים." />
           <Seg
             label="איכות הקצה"

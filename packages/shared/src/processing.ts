@@ -41,6 +41,11 @@ export const processingSettingsSchema = z.object({
   background: z.string().regex(/^(transparent|#[0-9a-fA-F]{6})$/).default("#ffffff"),
   format: z.enum(["jpeg", "png"]).default("jpeg"),
   jpegQuality: z.number().int().min(70).max(100).default(95),
+  /**
+   * Straighten a small unintended tilt of a single item (rotation only, no perspective change).
+   * Compositions of several items, deliberate angles and uncertain detections are never touched.
+   */
+  autoDeskew: z.boolean().default(true),
   /** calibrated background colour (HSV), null = detect from the frame border */
   bgSample: bgSampleSchema.nullable().default(null),
   /** below this detection confidence nothing destructive is done; the shot is flagged for review */
