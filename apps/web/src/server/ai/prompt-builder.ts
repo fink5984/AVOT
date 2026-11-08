@@ -87,9 +87,17 @@ export function buildAnalysisText(
     parts.push("כלול גם את התמונות מהשלב הקודם ב-imagesReviewed, לפי התצפיות.");
   }
   if (extra.skipped.length) parts.push("", "# תמונות של הפריט שלא ניתן היה לצרף", extra.skipped.map((s) => `- ${s.label}: ${s.reason}`).join("\n"));
-  parts.push("", "# המשימה", "נתח את הפריט לפי ההנחיות והחזר JSON לפי הסכמה בלבד.");
+  parts.push("", "# המשימה", "נתח את הפריט לפי ההנחיות והחזר JSON לפי הסכמה בלבד.", HEBREW_ONLY);
   return parts.join("\n");
 }
+
+/** Last line of every request: models follow the end of a request best, and Gemini drifted to English notes. */
+export const HEBREW_ONLY =
+  "שפת התשובה: עברית בלבד בכל שדה שאתה כותב (note, summary, conflicts, shows, reason, warnings, attribution, attributionBasis, significance, catalog). שמות ונוסחים בשפה זרה כפי שהם מופיעים בפריט מותר להעתיק, אבל ההסבר סביבם בעברית.";
+
+/** Appended when a first answer still explained things in English: the request is repeated once with it. */
+export const HEBREW_AGAIN =
+  "\n\nהתשובה הקודמת שלך כתבה הסברים באנגלית. החזר את אותה תשובה מחדש, וכתוב את כל ההסברים, ההערות והסיכומים בעברית בלבד.";
 
 /** Text of a stage-1 observation request. */
 export function buildObservationText(ctx: ItemContext, images: ImageLine[], batch: { index: number; total: number }): string {

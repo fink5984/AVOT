@@ -458,6 +458,27 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(rows.some((x) => typeof x.costUsd === "number" && x.costUsd > 0)).toBe(true);
   });
 
+  it("an answer that explains in English is asked for once more in Hebrew; the Hebrew answer is the one applied", async () => {
+    const { item } = await createBook(ctx.editor, { title: "כרוז" });
+    fake.answer = (_req, n) =>
+      n === 1
+        ? goodResult({ identification: { summary: "A pashkevil issued by the Chief Rabbinate, calling for a work stoppage.", existingTitleCheck: "matches", conflicts: [] } }, { title: f("בטול מלאכה", { note: "The main headline of the poster." }) })
+        : goodResult({ identification: { summary: "כרוז מטעם הרבנות הראשית הקורא לביטול מלאכה.", existingTitleCheck: "matches", conflicts: [] } }, { title: f("בטול מלאכה", { note: "הכותרת הראשית של הכרוז." }) });
+    const run = await analyse(ctx.editor, item.id);
+    expect(fake.requests).toHaveLength(2);
+    expect(fake.requests[1]!.userText).toContain("כתבה הסברים באנגלית");
+    expect(run.status).toBe("COMPLETED");
+    expect((run.result as AnalysisResult).identification.summary).toBe("כרוז מטעם הרבנות הראשית הקורא לביטול מלאכה.");
+    // both calls are paid for and recorded
+    expect(run.requestCount).toBe(2);
+    // a foreign imprint copied in quotes is not "English prose": no second call
+    fake.requests = [];
+    const { item: other } = await createBook(ctx.editor, { title: "ספר" });
+    fake.answer = () => goodResult({}, { publisher: f("Nela Stamparia Bragadina", { note: "נדפס בשולי השער בלועזית: 'Nela Stamparia Bragadina'" }) });
+    await analyse(ctx.editor, other.id);
+    expect(fake.requests).toHaveLength(1);
+  });
+
   it("BOOK_AI_INLINE: the job is never QUEUED (no worker can claim it); the request process runs and closes it", async () => {
     const { item } = await createBook(ctx.editor, { title: "ספר בהרצה מקומית" });
     process.env.BOOK_AI_INLINE = "true";
