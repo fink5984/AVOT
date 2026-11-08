@@ -39,7 +39,8 @@
 | `BOOK_AI_GEMINI_THINKING` | (ריק) | `minimal`/`low`/`medium`/`high` (thinkingLevel) |
 | `BOOK_AI_MAX_IMAGES_PER_REQUEST` | 16 | מעבר לזה - ניתוח בשלבים |
 | `BOOK_AI_MAX_REQUEST_MB` | 14 | נפח תמונות בבקשה |
-| `BOOK_AI_IMAGE_MAX_EDGE` / `BOOK_AI_DETAIL_MAX_EDGE` | 1600 / 2400 | צלע ארוכה; שערים ב-DETAIL |
+| `BOOK_AI_IMAGE_MAX_EDGE` / `BOOK_AI_DETAIL_MAX_EDGE` | 1600 / 3200 | צלע ארוכה; שערים ב-DETAIL |
+| `BOOK_AI_OPENAI_DETAIL` | `original` | רמת הפירוט של שערים והגדלות ב-OpenAI. ב-`high` דגמי gpt-5.4 מקטינים כל תמונה לכ-1600 פיקסל, ובשער אמיתי (פריט 10000270) המודל פספס את המקום, המדפיס והמחבר. `original` מאפשר עד 6000 פיקסל. לדגם שלא תומך ב-`original` (gpt-5.2, gpt-4.1-mini) להגדיר `high` |
 | `BOOK_AI_TITLE_ZOOM_PAGES` | 2 | כמה שערים מקבלים חצאים מוגדלים (0 = כבוי) |
 | `BOOK_AI_JPEG_QUALITY`, `BOOK_AI_MAX_OUTPUT_TOKENS`, `BOOK_AI_TIMEOUT_SECONDS`, `BOOK_AI_MAX_INPUT_TOKENS` | 82, 16000, 240, 200000 | |
 | `BOOK_AI_PRICING` | (טבלה מובנית) | JSON לעדכון מחירים בלי קוד |
@@ -112,3 +113,15 @@
   npx vitest run -c vitest.live.config.ts                        # הספק הפעיל
   $env:BOOK_AI_PROVIDER="gemini"; npx vitest run -c vitest.live.config.ts
   ```
+* `npm run ai:dry-run -w apps/web -- <מספר מלאי> [out.json]` הוא ניתוח "יבש" של פריט אמיתי: אותן תמונות, אותו פרומפט ואותן דוגמאות, ושליחה לספק הפעיל. התוצאה מודפסת ולא נכתב דבר למסד או לאחסון. משמש להשוואת דגמים והגדרות על אותו פריט (עולה כסף). כשהתמונות ב-R2 מריצים עם `STORAGE_DRIVER=s3`.
+
+### השוואה על פריט אמיתי (10000270, ספרא תורת כהנים, זיטאמיר תרכ"ו, 2026-11-08)
+
+| הגדרה | מחבר | מקום | מדפיס | עלות | זמן |
+|---|---|---|---|---|---|
+| gpt-5.4-mini, `high`, 2400 | שגוי | לא נקרא | לא נקרא | $0.039 | 42 שנ' |
+| gpt-5.4-mini, `original`, 3200 | לא נקרא | ניחוש | לא נקרא | $0.042 | 19 שנ' |
+| gpt-5.4-mini, `original`, reasoning medium | חלקי | נכון | לא נקרא | $0.091 | 64 שנ' |
+| **gpt-5.4, `original`, 3200** | **נכון** | **נכון** | **נכון** | $0.154 | 51 שנ' |
+
+הדגם הקטן לא קורא באמינות שער עברי בדפוס ישן, גם ברזולוציה מלאה.

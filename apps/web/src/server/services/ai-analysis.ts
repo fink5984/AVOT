@@ -58,7 +58,7 @@ export function aiValuesOf(item: Pick<InventoryItem, AiWritable>): AiValues {
   return Object.fromEntries(AI_WRITABLE.map((f) => [f, item[f] ?? null])) as AiValues;
 }
 
-function itemContext(item: InventoryItem, categoryNotes: { category: string; note: string | null }[]): ItemContext {
+export function itemContext(item: InventoryItem, categoryNotes: { category: string; note: string | null }[]): ItemContext {
   return {
     itemType: item.itemType === "UNKNOWN" ? null : he.itemType[item.itemType],
     title: item.title,

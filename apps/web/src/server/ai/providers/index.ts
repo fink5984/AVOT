@@ -11,7 +11,7 @@ export function createProvider(cfg: AiConfig = aiConfig()): AiProvider {
   const p = activeProvider(cfg);
   return p.provider === "gemini"
     ? new GeminiProvider(p.model, p.apiKey, cfg.BOOK_AI_GEMINI_BASE_URL, cfg.BOOK_AI_GEMINI_THINKING || undefined)
-    : new OpenAiProvider(p.model, p.apiKey, cfg.BOOK_AI_OPENAI_BASE_URL, cfg.BOOK_AI_OPENAI_REASONING || undefined);
+    : new OpenAiProvider(p.model, p.apiKey, cfg.BOOK_AI_OPENAI_BASE_URL, cfg.BOOK_AI_OPENAI_REASONING || undefined, cfg.BOOK_AI_OPENAI_DETAIL);
 }
 
 /** Test seam: integration tests install a fake provider so no network call is ever made. */

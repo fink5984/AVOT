@@ -26,6 +26,13 @@ const schema = z.object({
    * same cost; medium cost 2.6x without better results.
    */
   BOOK_AI_OPENAI_REASONING: z.string().trim().default("low"),
+  /**
+   * OpenAI detail level for title pages and their zooms (ordinary photos go with "auto"). For the gpt-5.4 family
+   * "high" is capped at 2,500 patches of 32 px (about 1600 x 1600): on a real title-page spread the model then missed
+   * the place, the printer and the author (item 10000270, 2026-11-08). "original" allows 10,000 patches / 6000 px.
+   * Use "high" for a model that does not support "original" (gpt-5.2, gpt-4.1-mini).
+   */
+  BOOK_AI_OPENAI_DETAIL: z.enum(["original", "high", "auto", "low"]).default("original"),
   BOOK_AI_OPENAI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
   GEMINI_API_KEY: z.string().optional(),
   BOOK_AI_GEMINI_MODEL: z.string().trim().min(1).default("gemini-3-flash-preview"),
@@ -39,7 +46,7 @@ const schema = z.object({
   /** long edge of an ordinary image sent to the model */
   BOOK_AI_IMAGE_MAX_EDGE: int(1600, 512, 4096),
   /** long edge of title pages and their zoomed halves (small text, signatures) */
-  BOOK_AI_DETAIL_MAX_EDGE: int(2400, 768, 4096),
+  BOOK_AI_DETAIL_MAX_EDGE: int(3200, 768, 6000),
   /** zoomed top / bottom halves of the first title pages: 0 disables */
   BOOK_AI_TITLE_ZOOM_PAGES: int(2, 0, 6),
   BOOK_AI_JPEG_QUALITY: int(82, 50, 95),

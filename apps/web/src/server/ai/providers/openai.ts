@@ -33,13 +33,15 @@ export class OpenAiProvider implements AiProvider {
     private readonly apiKey: string,
     private readonly baseUrl: string,
     private readonly reasoningEffort?: string,
+    /** what a "high" image (title page, zoom) is sent as: see BOOK_AI_OPENAI_DETAIL */
+    private readonly highDetail: string = "high",
   ) {}
 
   async generate(req: ProviderRequest): Promise<ProviderResponse> {
     const content: Record<string, unknown>[] = [{ type: "input_text", text: req.userText }];
     for (const img of req.images) {
       content.push({ type: "input_text", text: `[${img.label}]` });
-      content.push({ type: "input_image", image_url: `data:${img.mime};base64,${img.data.toString("base64")}`, detail: img.detail });
+      content.push({ type: "input_image", image_url: `data:${img.mime};base64,${img.data.toString("base64")}`, detail: img.detail === "high" ? this.highDetail : img.detail });
     }
     const body: Record<string, unknown> = {
       model: this.model,

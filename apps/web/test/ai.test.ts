@@ -380,6 +380,19 @@ describe("provider adapters", () => {
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer sk-test");
   });
 
+  it("OpenAI: title pages and zooms go with the configured detail ('original' by default), ordinary photos with auto", async () => {
+    const two = { ...req, images: [req.images[0]!, { id: "img-02", label: "img-02 · פנים", data: Buffer.from("jpg"), mime: "image/jpeg", detail: "auto" as const }] };
+    const sent = async (p: OpenAiProvider) => {
+      const fetchMock = vi.fn(async () => reply(200, { status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "{}" }] }] }));
+      vi.stubGlobal("fetch", fetchMock);
+      await p.generate(two);
+      const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+      return body.input[0].content.filter((c: { type: string }) => c.type === "input_image").map((c: { detail: string }) => c.detail);
+    };
+    expect(await sent(createProvider(aiConfig({ OPENAI_API_KEY: "k" })) as OpenAiProvider)).toEqual(["original", "auto"]);
+    expect(await sent(createProvider(aiConfig({ OPENAI_API_KEY: "k", BOOK_AI_OPENAI_DETAIL: "high" })) as OpenAiProvider)).toEqual(["high", "auto"]);
+  });
+
   it("OpenAI: rate limit is retryable with Retry-After, quota and truncation are not", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => reply(429, { error: { message: "Rate limit reached", type: "requests" } }, { "retry-after": "7" })));
     const e1 = await new OpenAiProvider("m", "k", "https://x").generate(req).catch((e) => e);
