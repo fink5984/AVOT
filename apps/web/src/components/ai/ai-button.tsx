@@ -33,6 +33,10 @@ interface ServerState {
   aiStatus: AiAnalysisStatus;
   aiError: string | null;
   hasSuccessfulAnalysis: boolean;
+  /** the latest run was a re-analysis kept for comparison: the item's details were not touched */
+  runs?: { pendingApply: boolean }[];
+  activeModel?: { provider: string; model: string; reasoning: string | null };
+  baseline?: { source: string; partial: boolean; missing: string[] };
 }
 
 export function useAiRun(itemId: string, initial: AiButtonState, onFinished?: (s: ServerState) => void) {
@@ -96,7 +100,8 @@ export function AiAnalyzeButton({
   const [busy, setBusy] = useState(false);
   const [reanalyze, setReanalyze] = useState(false);
   const { state, active, start } = useAiRun(itemId, initial, (s) => {
-    if (s.aiStatus === "COMPLETED") toast.success(`ניתוח AI הושלם: ${inventoryNumber}`, { detail: "הפרטים עודכנו וממתינים לבדיקה אנושית" });
+    if (s.aiStatus === "COMPLETED" && s.runs?.[0]?.pendingApply) toast.success(`ניתוח AI חוזר הושלם: ${inventoryNumber}`, { detail: "התוצאה נשמרה להשוואה. פרטי הפריט לא שונו: בהיסטוריית הניתוחים אפשר להשוות ולהחיל." });
+    else if (s.aiStatus === "COMPLETED") toast.success(`ניתוח AI הושלם: ${inventoryNumber}`, { detail: "הפרטים עודכנו וממתינים לבדיקה אנושית" });
     else if (s.aiStatus === "FAILED") toast.error(`ניתוח AI נכשל: ${inventoryNumber}`, { detail: s.aiError ?? undefined });
     router.refresh();
   });
@@ -139,6 +144,7 @@ export function AiAnalyzeButton({
       </IconButton>
       {reanalyze && (
         <ReanalyzeDialog
+          itemId={itemId}
           inventoryNumber={inventoryNumber}
           defaultEmail={defaultApproverEmail}
           onClose={() => setReanalyze(false)}
@@ -154,11 +160,13 @@ export function AiAnalyzeButton({
 }
 
 function ReanalyzeDialog({
+  itemId,
   inventoryNumber,
   defaultEmail,
   onClose,
   onApprove,
 }: {
+  itemId: string;
   inventoryNumber: string;
   defaultEmail?: string;
   onClose: () => void;
@@ -166,6 +174,26 @@ function ReanalyzeDialog({
 }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [info, setInfo] = useState<ServerState | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const toast = useToast();
+  const loadInfo = useCallback(() => api<ServerState>(`/api/inventory/${itemId}/ai`).then(setInfo).catch(() => undefined), [itemId]);
+  useEffect(() => {
+    void loadInfo();
+  }, [loadInfo]);
+  /** a manager confirms the item's current data as its original data (when the original could not be rebuilt) */
+  async function confirmBaseline() {
+    setConfirming(true);
+    try {
+      await api(`/api/inventory/${itemId}/ai/baseline`, { method: "POST" });
+      toast.success("הנתונים הנוכחיים אושרו כנתוני המקור");
+      await loadInfo();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setConfirming(false);
+    }
+  }
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
@@ -181,12 +209,31 @@ function ReanalyzeDialog({
   }
   return (
     <Dialog open onClose={onClose} title="ניתוח AI חוזר" description={`הפריט ${inventoryNumber} כבר נותח.`} width="sm">
-      <div className="mb-4 flex gap-2.5 rounded-md bg-warn-soft px-3 py-2.5 text-[13px] text-warn" role="alert">
-        <ShieldAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-        <p>
-          הניתוח החדש יחליף את פרטי הניתוח הקודם. ערכים שנשמרו לפני ההחלפה (כולל עריכות ידניות) נשמרים בהיסטוריה וניתן לשחזר אותם. בסיום, מצב פרטי הפריט יחזור ל&quot;ממתין לבדיקה&quot;.
-        </p>
+      <div className="mb-3 flex gap-2.5 rounded-md bg-info-soft px-3 py-2.5 text-[13px] text-ink-2">
+        <ShieldAlert className="mt-0.5 size-4 shrink-0 text-info" aria-hidden />
+        <div className="space-y-1">
+          <p>
+            הניתוח החוזר הוא ניתוח נקי ועצמאי: הוא נבנה מנתוני המקור של הפריט ומהתמונות בלבד, בלי שום תוצר של ניתוחי AI קודמים. התוצאה נשמרת להשוואה, ופרטי הפריט <b>לא משתנים</b> עד שתחליטו בהיסטוריית הניתוחים אם להחיל אותה.
+          </p>
+          {info?.activeModel && (
+            <p>
+              המודל שיבצע את הניתוח (לפי הגדרות AI):{" "}
+              <b dir="ltr">
+                {info.activeModel.provider} · {info.activeModel.model}
+                {info.activeModel.reasoning ? ` · ${info.activeModel.reasoning}` : ""}
+              </b>
+            </p>
+          )}
+        </div>
       </div>
+      {info?.baseline?.partial && (
+        <div className="mb-3 rounded-md bg-warn-soft px-3 py-2.5 text-[13px] text-warn" role="alert">
+          <p>לא ניתן היה לשחזר באופן מוכח את כל נתוני המקור של הפריט (חסרים: {info.baseline.missing.join(", ")}). הניתוח יתבסס רק על מה שהוכח, וההשוואה לא תהיה על תמונת מצב מלאה.</p>
+          <Button size="sm" className="mt-2" loading={confirming} onClick={() => void confirmBaseline()}>
+            אישור הנתונים הנוכחיים כנתוני המקור
+          </Button>
+        </div>
+      )}
       <form id="reanalyze-form" onSubmit={submit} className="space-y-3">
         <p className="text-[13px] text-muted">נדרש אישור מנהל: אימייל וסיסמה של משתמש מנהל.</p>
         <Field label="אימייל המנהל" required>

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, ClipboardCheck, History, RotateCcw, Sparkles } from "lucide-react";
+import { CheckCircle2, ClipboardCheck, GitCompare, History, RotateCcw, Sparkles } from "lucide-react";
 import { ITEM_TYPES, type ItemReviewStatus, type ItemType } from "@avot/shared";
 import { Button } from "@/components/ui/button";
 import { ReviewStatusBadge } from "@/components/ui/badge";
@@ -13,6 +13,7 @@ import { fmt, t } from "@/i18n";
 import { ApiError, api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { AiState } from "@/server/services/ai-analysis";
+import { RunCompare } from "./run-compare";
 
 /*
  * "פרטי הפריט ובדיקה" on the book page: the AI-writable details, editable with autosave, next to the AI's evidence.
@@ -132,6 +133,7 @@ export function ItemReviewPanel({
   canReview,
   canRestore,
   canRewrite = false,
+  canApply = false,
 }: {
   itemId: string;
   values: ReviewValues;
@@ -142,6 +144,8 @@ export function ItemReviewPanel({
   canRestore: boolean;
   /** "שכתוב ב-AI" of the catalog draft (editor with AI access, provider configured) */
   canRewrite?: boolean;
+  /** apply a saved (re-analysis) result to the item, and compare runs */
+  canApply?: boolean;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -155,6 +159,10 @@ export function ItemReviewPanel({
   const [additions, setAdditions] = useState("");
   /** the values a rewrite replaced, for "ביטול השכתוב" */
   const [beforeRewrite, setBeforeRewrite] = useState<Partial<ReviewValues> | null>(null);
+  /** the operations of the last targeted rewrite that could not be applied (reported, never guessed) */
+  const [rewriteSkipped, setRewriteSkipped] = useState<{ field: string; reason: string }[]>([]);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [compare, setCompare] = useState<{ a: string; b: string } | null>(null);
   /** a name the rewrite proposed: never applied by itself (the item's name is the person's), offered under the field */
   const [titleProposal, setTitleProposal] = useState<{ title: string; before: string } | null>(null);
 
@@ -343,7 +351,12 @@ export function ItemReviewPanel({
   }
 
   /** "שכתוב ב-AI": saves pending edits first (the server rewrites from the saved details), then asks for a proposal */
-  async function rewrite() {
+  async function rewrite(mode: "patch" | "full") {
+    if (mode === "patch" && !additions.trim()) {
+      toast.warning("כתבו את המידע להוספה או את התיקון המבוקש");
+      return;
+    }
+    if (mode === "full" && !window.confirm("שכתוב מלא ינסח מחדש את כל שדות הטקסט, גם כאלה שלא נגעתם בהם. אפשר לבטל אחר כך. להמשיך?")) return;
     await flush();
     if (Object.keys(dirty.current).length) {
       toast.warning("יש שינויים שלא נשמרו. שמרו אותם לפני השכתוב.");
@@ -351,7 +364,8 @@ export function ItemReviewPanel({
     }
     setBusy("rewrite");
     try {
-      const r = await api<{ fields: Partial<Record<ReviewField, string>> }>(`/api/inventory/${itemId}/ai/rewrite`, { method: "POST", json: { additions } });
+      const r = await api<{ fields: Partial<Record<ReviewField, string>>; skipped?: { field: string; reason: string }[] }>(`/api/inventory/${itemId}/ai/rewrite`, { method: "POST", json: { additions, mode } });
+      setRewriteSkipped((r.skipped ?? []).map((x) => ({ field: LABEL[x.field as ReviewField] ?? x.field, reason: x.reason })));
       // the name is only proposed, like after an analysis; everything else is applied at once
       if (r.fields.title) setTitleProposal({ title: r.fields.title, before: values.title });
       const changed = (Object.keys(r.fields) as Exclude<ReviewField, "itemType">[]).filter((f) => f !== "title");
@@ -363,7 +377,7 @@ export function ItemReviewPanel({
       setBeforeRewrite(Object.fromEntries(changed.map((f) => [f, values[f]])) as Partial<ReviewValues>);
       for (const f of changed) change(f, r.fields[f] as ReviewValues[typeof f]);
       setAdditions("");
-      toast.success(`השכתוב הוחל על ${changed.length} שדות`);
+      toast.success(mode === "patch" ? `נוספו הפרטים ב-${changed.length} שדות` : `השכתוב הוחל על ${changed.length} שדות`);
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -404,7 +418,7 @@ export function ItemReviewPanel({
     return { confidence: x.confidence, source: x.source, imageIds: x.imageIds, note: x.note, status: x.status };
   };
   const editable = canEdit && status !== "saving";
-  const latestCompleted = ai.runs.find((r) => r.status === "COMPLETED" && !r.restoredAt);
+  const latestCompleted = ai.runs.find((r) => r.status === "COMPLETED" && !r.restoredAt && r.applied);
 
   // one line per distinct remark (runs saved before the server-side dedupe can repeat a remark per field)
   const reviewList = [...new Map((latest?.applied?.review ?? []).map((r) => [r.reason.replace(/\s+/g, " ").trim(), r])).values()];
@@ -585,12 +599,15 @@ export function ItemReviewPanel({
           {text("catalogDescription", { rows: 9, className: "sm:col-span-6" })}
           {canRewrite && canEdit && (
             <div className="space-y-2.5 rounded-md border border-rule bg-stone-2/50 p-3 sm:col-span-6">
-              <Field label="פרטים להוספה" hint="מה שבדקתם ולא מופיע בפרטים: ייחוס חתימה, מקור העותק, רקע, ממצא מיוחד, תיקון. ה-AI יכניס כל פרט לשדה המתאים, ישכתב את כל השדות בניסוח מקצועי ויחיל מיד. אפשר לבטל.">
+              <Field label="הוספת מידע או תיקון" hint="מה שבדקתם ולא מופיע בפרטים, או מה שצריך לתקן: ייחוס חתימה, מקור העותק, רקע, ממצא מיוחד, שנה או שם. ה-AI יוסיף או יתקן רק את זה, במקום המתאים, בלי לנסח מחדש שדות ופסקאות שלא ביקשתם לשנות. ההוספה חלה מיד ואפשר לבטל.">
                 {(p) => <Textarea {...p} rows={3} maxLength={4000} value={additions} onChange={(e) => setAdditions(e.target.value)} placeholder="למשל: החתימה בשער היא של רבי משה סופר. העותק מספריית בית המדרש בפרשבורג." />}
               </Field>
               <div className="flex flex-wrap items-center gap-3">
-                <Button size="sm" icon={<Sparkles />} loading={busy === "rewrite"} disabled={!!busy || ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING"} onClick={() => void rewrite()}>
-                  שכתוב כל השדות ב-AI
+                <Button size="sm" variant="primary" icon={<Sparkles />} loading={busy === "rewrite"} disabled={!!busy || ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING"} onClick={() => void rewrite("patch")}>
+                  הוספת המידע ב-AI
+                </Button>
+                <Button size="sm" variant="ghost" disabled={!!busy || ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING"} onClick={() => void rewrite("full")}>
+                  שכתוב מלא של כל השדות
                 </Button>
                 {beforeRewrite && (
                   <span className="text-[12px] text-ink-2">
@@ -601,14 +618,36 @@ export function ItemReviewPanel({
                   </span>
                 )}
               </div>
+              {rewriteSkipped.length > 0 && (
+                <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
+                  חלק מהפעולות לא בוצעו כי לא ניתן היה לאמת אותן מול הטקסט הנוכחי: {rewriteSkipped.map((x) => `${x.field} (${x.reason})`).join("; ")}
+                </div>
+              )}
             </div>
           )}
         </FieldGroup>
 
-        {latest?.result && (latest.result.identification.summary || findings.length > 0 || latest.images.some((i) => i.status === "skipped")) && (
+        {latest?.result && (latest.result.identification.summary || findings.length > 0 || latest.result.catalogHighlight?.status === "found" || latest.images.some((i) => i.status === "skipped")) && (
           <section className="space-y-2.5 border-t border-rule pt-4 text-[13px]">
             <h3 className="text-[12px] font-semibold text-muted">מה זוהה בתמונות</h3>
             {latest.result.identification.summary && <p className="text-ink-2">{latest.result.identification.summary}</p>}
+            {latest.result.catalogHighlight?.status === "found" && latest.result.catalogHighlight.mainFeature && (
+              <div className="rounded-md border border-info/30 bg-info-soft px-3 py-2">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <Sparkles className="size-3.5 self-center text-info" aria-hidden />
+                  <span className="text-[12px] text-muted">המאפיין המרכזי:</span>
+                  <span className="font-medium text-ink">{latest.result.catalogHighlight.mainFeature}</span>
+                  <span className={cn("text-[12px]", latest.result.catalogHighlight.verified ? "text-muted" : "text-warn")}>
+                    {latest.result.catalogHighlight.verified ? "מאומת" : "לא מאומת"}
+                    {latest.result.catalogHighlight.confidence ? ` · ביטחון ${CONFIDENCE[latest.result.catalogHighlight.confidence]?.replace("ביטחון ", "")}` : ""}
+                  </span>
+                </div>
+                {latest.result.catalogHighlight.reason && <div className="text-[12.5px] text-ink-2">{latest.result.catalogHighlight.reason}</div>}
+              </div>
+            )}
+            {latest.result.manuscriptAnalysis?.isManuscript && latest.result.manuscriptAnalysis.unreadable.length > 0 && (
+              <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">חלקים בכתב היד שלא נקראו היטב: {latest.result.manuscriptAnalysis.unreadable.join("; ")}</div>
+            )}
             {findings.length > 0 && (
               <ul className="space-y-1.5">
                 {findings.map((f, i) => (
@@ -658,11 +697,21 @@ export function ItemReviewPanel({
             ))}
           </div>
         )}
+        {showRuns && picked.length === 2 && canApply && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="primary" icon={<GitCompare />} onClick={() => setCompare({ a: picked[1]!, b: picked[0]! })}>
+              השוואת ניתוחים
+            </Button>
+            <span className="text-[12px] text-muted">סומנו שני ניתוחים: אפשר להשוות ביניהם.</span>
+          </div>
+        )}
+        {showRuns && compare && <RunCompare itemId={itemId} aId={compare.a} bId={compare.b} canApply={canApply} onClose={() => setCompare(null)} onApplied={() => { setCompare(null); setPicked([]); void loadNewest().then((n) => setValues({ ...n, ...dirty.current })); router.refresh(); }} />}
         {showRuns && (
           <div className="overflow-x-auto">
             <table className="w-full text-[12.5px]">
               <thead>
                 <tr className="border-b border-rule text-muted">
+                  {canApply && <th className="w-8 px-2 py-1.5" aria-label="בחירה להשוואה" />}
                   <th className="px-2 py-1.5 text-start font-medium">מועד</th>
                   <th className="px-2 py-1.5 text-start font-medium">ספק / מודל</th>
                   <th className="px-2 py-1.5 text-start font-medium">מצב</th>
@@ -677,12 +726,28 @@ export function ItemReviewPanel({
               <tbody className="divide-y divide-rule">
                 {ai.runs.map((r) => (
                   <tr key={r.id}>
+                    {canApply && (
+                      <td className="px-2 py-1.5">
+                        {r.status === "COMPLETED" && (
+                          <input
+                            type="checkbox"
+                            className="size-4 cursor-pointer accent-[var(--color-ink)]"
+                            checked={picked.includes(r.id)}
+                            disabled={!picked.includes(r.id) && picked.length >= 2}
+                            onChange={() => setPicked((p) => (p.includes(r.id) ? p.filter((x) => x !== r.id) : [...p, r.id]))}
+                            aria-label={`בחירת הניתוח מ-${fmt.dateTime(new Date(r.createdAt))} להשוואה`}
+                          />
+                        )}
+                      </td>
+                    )}
                     <td className="px-2 py-1.5">{fmt.dateTime(new Date(r.createdAt))}</td>
                     <td className="px-2 py-1.5" dir="ltr">
                       {r.provider} · {r.model}
+                      {r.settingsVersion !== null && <div className="text-[11px] text-muted">הגדרות v{r.settingsVersion}</div>}
                     </td>
                     <td className="px-2 py-1.5">
                       {t.aiStatus[r.status]}
+                      {r.pendingApply && <span className="text-info"> · שמור להשוואה, טרם הוחל</span>}
                       {r.isReanalysis && " · חוזר"}
                       {r.restoredAt && " · שוחזר"}
                       {r.error && <div className="text-danger">{r.error}</div>}
@@ -702,6 +767,11 @@ export function ItemReviewPanel({
                       {r.approvedBy && <div className="text-muted">אישר: {r.approvedBy}</div>}
                     </td>
                     <td className="px-2 py-1.5">
+                      {canApply && r.pendingApply && latest && (
+                        <Button size="sm" variant="ghost" icon={<GitCompare />} onClick={() => setCompare({ a: latest.id, b: r.id })}>
+                          השוואה
+                        </Button>
+                      )}
                       {canRestore && latestCompleted?.id === r.id && (
                         <Button size="sm" variant="ghost" icon={<RotateCcw />} loading={busy === `restore-${r.id}`} onClick={() => void restore(r.id)}>
                           שחזור
