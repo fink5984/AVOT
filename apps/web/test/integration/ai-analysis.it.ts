@@ -114,8 +114,8 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
   }
 
   /** request + run the job inline (the worker does exactly this) */
-  async function analyse(user = ctx.photographer, itemId: string, approval?: { email: string; password: string }) {
-    const r = await requestAnalysis(user, itemId, { requestKey: randomUUID(), approval });
+  async function analyse(user = ctx.photographer, itemId: string, approval?: { email: string; password: string }, compareOnly = false) {
+    const r = await requestAnalysis(user, itemId, { requestKey: randomUUID(), approval, compareOnly });
     await runAnalysis(r.runId).catch(() => undefined);
     return db.inventoryAnalysis.findUniqueOrThrow({ where: { id: r.runId } });
   }
@@ -216,7 +216,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(await db.auditLog.count({ where: { inventoryItemId: item.id, action: "ai.reanalysis_denied" } })).toBe(3);
 
     fake.answer = () => goodResult({}, { printYear: f("תקס\"א [1801]") });
-    const run = await analyse(ctx.editor, item.id, { email: ctx.admin.email, password: ADMIN_PASSWORD });
+    const run = await analyse(ctx.editor, item.id, { email: ctx.admin.email, password: ADMIN_PASSWORD }, true);
     expect(run).toMatchObject({ status: "COMPLETED", isReanalysis: true, approvedById: ctx.admin.userId, createdById: ctx.editor.userId });
     expect(run.applied).toBeNull(); // kept for comparison, not applied
     const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
@@ -604,8 +604,11 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(text).toContain("ספר לדוגמה");
     expect(text).toContain("כותרת משנה מקורית");
     expect(text).toContain("הערת מצלם מקורית");
-    // and the item still holds the first analysis (the re-analysis is only saved for comparison)
-    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).author).toBe(edited.author);
+    // the re-analysis filled everything anew: nothing of the first analysis is left on the item
+    const refilled = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(refilled.author).toBe("רבינו בחיי אבן פקודה");
+    expect(refilled.catalogDescription).not.toContain(SENTINEL);
+    expect(refilled.reviewStatus).toBe("PENDING_REVIEW");
     // the run says what the input was
     const input = second.input as { baseline: { source: string; missing: string[] }; settings: { model: string }; inputFingerprint: string };
     expect(input.baseline).toMatchObject({ source: "captured_before_first_analysis", missing: [] });
@@ -654,7 +657,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     const { item } = await createBook(ctx.editor, { title: "להשוואה" });
     await analyse(ctx.editor, item.id);
     fake.answer = () => goodResult({}, { printYear: f("תקס\"א [1801]"), publisher: f("דפוס חדש") });
-    const second = await analyse(ctx.editor, item.id, adminApproval());
+    const second = await analyse(ctx.editor, item.id, adminApproval(), true);
     const firstRun = (await getAiState(ctx.editor, item.id)).runs.at(-1)!;
 
     const cmp = await compareRuns(ctx.editor, item.id, firstRun.id, second.id);
@@ -664,7 +667,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(cmp.comparable).toBe(true); // same original data, photos, prompt, examples: only the answer differs
     // a different input is called out: a photo was added between the runs
     await addPhoto(item.id, "COVER", 1);
-    const third = await analyse(ctx.editor, item.id, adminApproval());
+    const third = await analyse(ctx.editor, item.id, adminApproval(), true);
     const cmp2 = await compareRuns(ctx.editor, item.id, second.id, third.id);
     expect(cmp2.comparable).toBe(false);
     expect(cmp2.warnings.join(" ")).toMatch(/תמונות/);

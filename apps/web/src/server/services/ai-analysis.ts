@@ -205,6 +205,8 @@ export const requestSchema = z.object({
   requestKey: z.string().uuid(),
   /** re-analysis only: the approving manager re-enters their credentials */
   approval: z.object({ email: z.string().trim().toLowerCase().max(200), password: z.string().min(1).max(200) }).optional(),
+  /** re-analysis only: save the result for comparison instead of filling the item (no screen sends this; default = fill everything anew) */
+  compareOnly: z.boolean().optional(),
 });
 
 let dummyHash: Promise<string> | undefined;
@@ -275,6 +277,7 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
           settingsVersion: settings.version,
           requestKey: input.requestKey,
           isReanalysis,
+          ...(isReanalysis && input.compareOnly ? { input: asJson({ compareOnly: true }) } : {}),
           approvedById: approverId,
           createdById: user.userId,
         },
@@ -506,6 +509,7 @@ const omitPrice = <T extends { price: unknown }>(u: T): Omit<T, "price"> => {
  */
 async function analyse(ctx: RunContext, startedAt: Date, settings: ResolvedAiSettings): Promise<AppliedReport | null> {
   const { run, cfg, provider } = ctx;
+  const compareOnly = (run.input as { compareOnly?: boolean } | null)?.compareOnly === true;
   const item = await db.inventoryItem.findFirst({ where: { id: run.inventoryItemId, organizationId: run.organizationId }, include: { categoryNotes: true } });
   if (!item) throw new AppError("NOT_FOUND", "הפריט לא נמצא (נמחק?)");
   const base = aiValuesOf(item);
@@ -605,7 +609,7 @@ async function analyse(ctx: RunContext, startedAt: Date, settings: ResolvedAiSet
   const { prepared, result, observations, inputRecord } = out;
 
   const extra = { base, inputRecord, imagesFingerprint: prepared.fingerprint, imageIds: new Set(prepared.images.map((i) => i.id)), startedAt, observations };
-  if (run.isReanalysis) {
+  if (run.isReanalysis && compareOnly) {
     await completeWithoutApplying(ctx, item.id, result, extra);
     return null;
   }
