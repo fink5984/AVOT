@@ -1,5 +1,5 @@
 import "server-only";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Prisma, type InventoryAnalysis, type InventoryItem, type Job } from "@prisma/client";
 import { db, type Tx } from "../db";
@@ -17,10 +17,13 @@ import { LOT_COPY_FIELDS } from "./inventory";
 import { reviewAfterHumanEdit } from "./item-review";
 import { activeProvider, aiConfig, type AiConfig } from "../ai/config";
 import { batchImages, photosFingerprint, prepareImages, type PreparedImage } from "../ai/images";
-import { AI_MAX_LENGTH, AI_WRITABLE, mapResult, ensureParagraphs, stripImageIds, stripMeasurements, type AiValues, type AiWritable } from "../ai/mapper";
-import { PROMPT_VERSION, REWRITE_PROMPT, REWRITE_PROMPT_VERSION, SYSTEM_PROMPT } from "../ai/catalog-prompt";
+import { AI_MAX_LENGTH, AI_WRITABLE, mapResult, ensureParagraphs, reviewForApplied, stripImageIds, stripMeasurements, type AiValues, type AiWritable } from "../ai/mapper";
+import { CODE_RULES, composeInstructions, PROMPT_VERSION, REWRITE_PROMPT_VERSION } from "../ai/catalog-prompt";
+import { applyOps, type FieldValues, type PatchOutcome } from "../ai/patch";
+import { baselineStatus, ensureBaseline, type OriginalBaseline } from "../ai/baseline";
+import { currentSettingsVersion, getAiSettings, type ResolvedAiSettings } from "../ai/settings";
 import { buildAnalysisText, buildInstructions, buildObservationText, cacheKeyFor, HEBREW_AGAIN, HEBREW_ONLY, redactPersonal, type ItemContext } from "../ai/prompt-builder";
-import { ANALYSIS_JSON_SCHEMA, analysisResultZ, englishExplanations, InvalidAnswerError, isEnglishProse, REWRITE_FIELDS, REWRITE_JSON_SCHEMA, rewriteResultZ, type RewriteField, OBSERVATION_JSON_SCHEMA, observationResultZ, parseAnswer, type AnalysisResult, type ObservationResult } from "../ai/schema";
+import { ANALYSIS_JSON_SCHEMA, analysisResultZ, englishExplanations, InvalidAnswerError, isEnglishProse, REWRITE_FIELDS, REWRITE_JSON_SCHEMA, REWRITE_PATCH_JSON_SCHEMA, rewritePatchZ, rewriteResultZ, AI_FIELD_NAMES, type RewriteField, OBSERVATION_JSON_SCHEMA, observationResultZ, parseAnswer, type AnalysisResult, type ObservationResult } from "../ai/schema";
 import { estimateTokens, loadStyleLibrary } from "../ai/style-examples";
 import { computeCost, type UsageTotals } from "../ai/pricing";
 import { providerForRun, type AiProvider } from "../ai/providers";
@@ -59,37 +62,28 @@ export function aiValuesOf(item: Pick<InventoryItem, AiWritable>): AiValues {
   return Object.fromEntries(AI_WRITABLE.map((f) => [f, item[f] ?? null])) as AiValues;
 }
 
-/** Fields whose value is still what the previous successful AI run wrote (no person changed it since). */
-export async function aiFilledFields(item: InventoryItem): Promise<string[]> {
-  const previous = await db.inventoryAnalysis.findFirst({
-    where: { inventoryItemId: item.id, kind: AI_KIND, status: "COMPLETED", restoredAt: null },
-    orderBy: { finishedAt: "desc" },
-    select: { applied: true },
-  });
-  const written = ((previous?.applied as AppliedReport | null)?.written ?? {}) as Partial<AiValues>;
-  const now = aiValuesOf(item);
-  return (Object.keys(written) as AiWritable[]).filter((f) => f !== "itemType" && written[f] !== null && written[f] !== undefined && sameText(String(written[f]), now[f] as string | null));
-}
-
-export function itemContext(item: InventoryItem, categoryNotes: { category: string; note: string | null }[], aiFilled: string[] = []): ItemContext {
+/**
+ * What the model is told about the item: the ORIGINAL data (the baseline, set before the first analysis) and the
+ * photographer's notes. Never the item's current fields: those may hold an earlier model's output, or text copied or
+ * edited from it. Only the measured dimensions (a human measurement, never written by the AI) come from the item.
+ */
+export function contextFromBaseline(baseline: OriginalBaseline, item: Pick<InventoryItem, "heightMm" | "widthMm" | "depthMm">): ItemContext {
+  const f = baseline.fields;
   return {
-    aiFilled,
-    itemType: item.itemType === "UNKNOWN" ? null : he.itemType[item.itemType],
-    title: item.title,
-    subtitle: item.subtitle,
-    author: item.author,
-    printPlace: item.printPlace,
-    printYear: item.printYear,
-    publisher: item.publisher,
-    edition: item.edition,
-    extent: item.extent,
-    bibliographicNotes: redactPersonal(item.bibliographicNotes),
-    conditionNotes: redactPersonal(item.conditionNotes),
+    itemType: f.itemType && f.itemType !== "UNKNOWN" ? (he.itemType[f.itemType as keyof typeof he.itemType] ?? null) : null,
+    title: f.title ?? "",
+    subtitle: f.subtitle,
+    author: f.author,
+    printPlace: f.printPlace,
+    printYear: f.printYear,
+    publisher: f.publisher,
+    edition: f.edition,
+    extent: f.extent,
+    bibliographicNotes: redactPersonal(f.bibliographicNotes),
+    conditionNotes: redactPersonal(f.conditionNotes),
     dimensionsMm: item.heightMm || item.widthMm || item.depthMm ? { height: item.heightMm, width: item.widthMm, depth: item.depthMm } : null,
-    photographerNotes: redactPersonal(item.photographerNotes),
-    categoryNotes: categoryNotes
-      .filter((c) => c.note?.trim())
-      .map((c) => ({ category: he.category[c.category as keyof typeof he.category] ?? c.category, note: redactPersonal(c.note)! })),
+    photographerNotes: redactPersonal(baseline.photographerNotes),
+    categoryNotes: baseline.categoryNotes.map((c) => ({ category: he.category[c.category as keyof typeof he.category] ?? c.category, note: redactPersonal(c.note)! })),
   };
 }
 
@@ -118,6 +112,11 @@ export interface AiRunSummary {
   restoredAt: string | null;
   requestedBy: string | null;
   approvedBy: string | null;
+  settingsVersion: number | null;
+  /** the run's result is on the item (a first analysis, or a result the reviewer applied) */
+  applied: boolean;
+  /** a completed re-analysis not applied (yet): kept for comparison, the item's fields are untouched */
+  pendingApply: boolean;
 }
 
 function runSummary(r: InventoryAnalysis, names: Map<string, string>): AiRunSummary {
@@ -144,27 +143,33 @@ function runSummary(r: InventoryAnalysis, names: Map<string, string>): AiRunSumm
     restoredAt: r.restoredAt?.toISOString() ?? null,
     requestedBy: r.createdById ? (names.get(r.createdById) ?? null) : null,
     approvedBy: r.approvedById ? (names.get(r.approvedById) ?? null) : null,
+    settingsVersion: r.settingsVersion,
+    applied: r.applied !== null,
+    pendingApply: r.status === "COMPLETED" && r.applied === null && r.restoredAt === null,
   };
 }
 
 /** What the AI button and the review panel need; reflects the database (survives a page refresh). */
 export async function getAiState(user: UserPrincipal, itemId: string) {
-  const item = await db.inventoryItem.findFirst({
-    where: { id: itemId, organizationId: user.organizationId },
-    select: { id: true, aiStatus: true, aiRunId: true, aiCompletedAt: true, aiError: true, reviewStatus: true, reviewChangedAt: true, reviewChangedById: true, approvedAt: true, approvedById: true, detailsVersion: true },
-  });
+  const item = await db.inventoryItem.findFirst({ where: { id: itemId, organizationId: user.organizationId }, include: { categoryNotes: { select: { category: true, note: true } } } });
   if (!item) throw notFound("הספר");
   const runs = await db.inventoryAnalysis.findMany({ where: { inventoryItemId: itemId, kind: AI_KIND }, orderBy: { createdAt: "desc" }, take: 20 });
   const userIds = [...new Set([...runs.flatMap((r) => [r.createdById, r.approvedById]), item.reviewChangedById, item.approvedById].filter((x): x is string => !!x))];
   const names = new Map((await db.user.findMany({ where: { id: { in: userIds }, organizationId: user.organizationId }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
-  const latest = runs.find((r) => r.status === "COMPLETED" && r.restoredAt === null) ?? null;
+  // the evidence panel reads the run the item's CURRENT details come from: an applied run (not a saved comparison)
+  const latest = runs.find((r) => r.status === "COMPLETED" && r.restoredAt === null && r.applied !== null) ?? null;
+  const settings = await getAiSettings(user.organizationId);
   let available = true;
   try {
-    activeProvider();
+    activeProvider(settings.cfg);
   } catch {
     available = false;
   }
   return {
+    /** the ONE model every AI action uses now (the "הגדרות AI" tab); shown, never chosen, next to the button */
+    activeModel: { provider: settings.provider, model: settings.model, reasoning: settings.reasoning, settingsVersion: settings.version },
+    /** the original data a clean re-analysis is built from (or a warning that it could not be fully reconstructed) */
+    baseline: await baselineStatus(item),
     aiStatus: item.aiStatus,
     aiError: item.aiError,
     hasSuccessfulAnalysis: item.aiCompletedAt !== null,
@@ -200,6 +205,8 @@ export const requestSchema = z.object({
   requestKey: z.string().uuid(),
   /** re-analysis only: the approving manager re-enters their credentials */
   approval: z.object({ email: z.string().trim().toLowerCase().max(200), password: z.string().min(1).max(200) }).optional(),
+  /** re-analysis only: save the result for comparison instead of filling the item (no screen sends this; default = fill everything anew) */
+  compareOnly: z.boolean().optional(),
 });
 
 let dummyHash: Promise<string> | undefined;
@@ -238,7 +245,9 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
   const item = await db.inventoryItem.findFirst({ where: { id: itemId, organizationId: user.organizationId } });
   if (!item) throw notFound("הספר");
   if (item.deletionRequestedAt) throw new AppError("CONFLICT", "הספר ממתין למחיקה");
-  const provider = activeProvider(); // clear error when not configured, before anything is queued
+  // the ONE active provider + model, from the "הגדרות AI" tab (the version is fixed on the run: a later change only affects later runs)
+  const settings = await getAiSettings(user.organizationId);
+  const provider = activeProvider(settings.cfg); // clear error when not configured, before anything is queued
   if (item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI כבר פעיל על הפריט");
 
   const inline = aiConfig().BOOK_AI_INLINE;
@@ -255,6 +264,8 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
       const now = await tx.inventoryItem.findUniqueOrThrow({ where: { id: itemId }, select: { aiStatus: true, aiCompletedAt: true } });
       if (now.aiStatus === "QUEUED" || now.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI כבר פעיל על הפריט");
       if ((now.aiCompletedAt !== null) !== isReanalysis) throw new AppError("CONFLICT", "מצב הניתוח של הפריט השתנה. רעננו ונסו שוב.");
+      // the original data is fixed BEFORE the first analysis writes anything (a clean re-analysis is built from it)
+      await ensureBaseline(itemId, tx);
       const created = await tx.inventoryAnalysis.create({
         data: {
           organizationId: user.organizationId,
@@ -263,8 +274,10 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
           status: "QUEUED",
           provider: provider.provider,
           model: provider.model,
+          settingsVersion: settings.version,
           requestKey: input.requestKey,
           isReanalysis,
+          ...(isReanalysis && input.compareOnly ? { input: asJson({ compareOnly: true }) } : {}),
           approvedById: approverId,
           createdById: user.userId,
         },
@@ -280,7 +293,7 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
       });
       await tx.inventoryAnalysis.update({ where: { id: created.id }, data: { jobId: job.id } });
       await tx.inventoryItem.update({ where: { id: itemId }, data: { aiStatus: "QUEUED", aiRunId: created.id, aiError: null } });
-      await audit(user, { action: "ai.requested", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: created.id, provider: provider.provider, model: provider.model, reanalysis: isReanalysis } }, tx);
+      await audit(user, { action: "ai.requested", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: created.id, provider: provider.provider, model: provider.model, settingsVersion: settings.version, reanalysis: isReanalysis } }, tx);
       if (isReanalysis) await audit(user, { action: "ai.reanalysis_approved", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: created.id, approvedById: approverId } }, tx);
       return { ...created, job };
     });
@@ -328,6 +341,8 @@ export interface AppliedReport {
   warnings: string[];
   lot: { lotId: string; fields: string[]; descriptionVersion: number | null; skippedReason?: string } | null;
   imagesChanged: boolean;
+  /** a result applied from a saved comparison (not at the end of its own run): who, when, which fields were asked for */
+  appliedFrom?: { byUserId: string; at: string; requested: string[] };
 }
 
 class RunContext {
@@ -445,10 +460,11 @@ export async function runAnalysis(analysisId: string, job: Job | null = null) {
   let ctx: RunContext | null = null;
   try {
     if (job && job.attempts > 3) throw new AppError("INTERNAL", "הניתוח הופסק שוב ושוב (הפעלה מחדש של השרת). נסו שוב.");
-    const cfg = aiConfig();
-    ctx = new RunContext(run, job, cfg, providerForRun(cfg));
-    const result = await analyse(ctx, startedAt);
-    log.info("ai analysis completed", { runId: run.id, itemId: run.inventoryItemId, ms: Date.now() - startedAt.getTime(), written: Object.keys(result.written).length });
+    // the model, reasoning and prompts the run STARTED with (its settings version), whatever the tab says now
+    const settings = await getAiSettings(run.organizationId, run.settingsVersion ?? null);
+    ctx = new RunContext(run, job, settings.cfg, providerForRun(settings.cfg));
+    const result = await analyse(ctx, startedAt, settings);
+    log.info("ai analysis completed", { runId: run.id, itemId: run.inventoryItemId, ms: Date.now() - startedAt.getTime(), written: Object.keys(result?.written ?? {}).length, applied: result !== null });
   } catch (err) {
     const message = err instanceof AppError || err instanceof ProviderError || err instanceof InvalidAnswerError ? err.message : "שגיאה פנימית בניתוח";
     log.warn("ai analysis failed", { runId: run.id, itemId: run.inventoryItemId, err });
@@ -486,75 +502,164 @@ const omitPrice = <T extends { price: unknown }>(u: T): Omit<T, "price"> => {
   return rest;
 };
 
-async function analyse(ctx: RunContext, startedAt: Date): Promise<AppliedReport> {
+/**
+ * One analysis. The request is built from the item's ORIGINAL data (baseline) and its photos only, plus the run's
+ * settings (prompt, examples): nothing an earlier run produced reaches the model. A re-analysis is a clean, independent
+ * run: its result is saved for comparison and does NOT touch the item's fields until a person applies it.
+ */
+async function analyse(ctx: RunContext, startedAt: Date, settings: ResolvedAiSettings): Promise<AppliedReport | null> {
   const { run, cfg, provider } = ctx;
+  const compareOnly = (run.input as { compareOnly?: boolean } | null)?.compareOnly === true;
   const item = await db.inventoryItem.findFirst({ where: { id: run.inventoryItemId, organizationId: run.organizationId }, include: { categoryNotes: true } });
   if (!item) throw new AppError("NOT_FOUND", "הפריט לא נמצא (נמחק?)");
   const base = aiValuesOf(item);
-  const context = itemContext(item, item.categoryNotes, await aiFilledFields(item));
-  const lib = loadStyleLibrary();
-  const prepared = await prepareImages(run.organizationId, item.id, cfg);
-  const instructions = buildInstructions(lib);
-  const skipped = prepared.report.filter((r) => r.status === "skipped").map((r) => ({ label: `${he.category[r.category]} (תמונה ${r.sequence})`, reason: r.reason ?? "" }));
-
-  const batches = batchImages(prepared.images, cfg.BOOK_AI_MAX_IMAGES_PER_REQUEST, cfg.BOOK_AI_MAX_REQUEST_MB * 1024 * 1024);
-  const [finalImages, ...observationBatches] = batches.length ? batches : [[] as PreparedImage[]];
-  const sentIn = new Map<string, string[]>();
-  const mark = (imgs: PreparedImage[], stage: string) => imgs.forEach((i) => sentIn.set(i.id, [...(sentIn.get(i.id) ?? []), stage]));
-
-  // budget check BEFORE sending: examples are never dropped to make a request fit
-  const finalText0 = buildAnalysisText(context, finalImages!, { skipped });
-  const estimate = estimateTokens(instructions) + estimateTokens(finalText0) + finalImages!.length * IMAGE_TOKEN_ESTIMATE + (observationBatches.length ? 4000 * observationBatches.length : 0);
-  const inputRecord = {
-    context,
-    images: prepared.report.map((r) => ({ imageId: r.imageId, assetId: r.assetId, category: r.category, status: r.status, source: r.source, reason: r.reason, zooms: r.zooms })),
-    imagesFingerprint: prepared.fingerprint,
-    stages: batches.length,
-    tokenEstimate: { instructions: estimateTokens(SYSTEM_PROMPT), examples: estimateTokens(lib.block), total: estimate },
-    examplesSkipped: lib.skipped,
-  };
-  await db.inventoryAnalysis.update({
-    where: { id: run.id },
-    data: {
-      provider: provider.name,
-      model: provider.model,
-      promptVersion: PROMPT_VERSION,
-      examplesVersion: lib.version,
-      examplesHash: lib.hash,
-      examplesCount: lib.examples.length,
-      imageCount: prepared.images.filter((i) => !i.zoomOf).length,
-      baseValues: asJson(base),
-      input: asJson(inputRecord),
-    },
-  });
-  if (estimate > cfg.BOOK_AI_MAX_INPUT_TOKENS) {
-    throw new AppError("VALIDATION", `הבקשה חורגת ממגבלת הטוקנים שהוגדרה (הערכה ${estimate} מתוך ${cfg.BOOK_AI_MAX_INPUT_TOKENS}). אין להשמיט דוגמאות כתיבה: הגדילו את BOOK_AI_MAX_INPUT_TOKENS או צמצמו את ספריית הדוגמאות.`);
-  }
+  const baseline = await ensureBaseline(item.id);
+  const context = contextFromBaseline(baseline, item);
+  const lib = settings.lib;
+  const instructions = buildInstructions(lib, settings.parts);
+  const contextHash = createHash("sha256").update(JSON.stringify(context)).digest("hex").slice(0, 16);
   const toProvider = (imgs: PreparedImage[]) => imgs.map((i) => ({ id: i.id, label: i.label, data: i.data, mime: i.mime, detail: i.detail }));
-  const common = { instructions, cacheKey: cacheKeyFor(lib), maxOutputTokens: cfg.BOOK_AI_MAX_OUTPUT_TOKENS, timeoutMs: cfg.BOOK_AI_TIMEOUT_SECONDS * 1000 };
+  const common = { instructions, cacheKey: cacheKeyFor(lib, settings.instructionHash), maxOutputTokens: cfg.BOOK_AI_MAX_OUTPUT_TOKENS, timeoutMs: cfg.BOOK_AI_TIMEOUT_SECONDS * 1000 };
 
-  // stage 1 (only with many images): observations for every batch except the first, which goes with the final request
-  const observations: ObservationResult[] = [];
-  for (let b = 0; b < observationBatches.length; b++) {
-    const imgs = observationBatches[b]!;
-    const stage = `observe-${b + 1}`;
-    const text = buildObservationText(context, imgs, { index: b + 1, total: observationBatches.length });
-    observations.push(await ctx.call(stage, { ...common, userText: text, images: toProvider(imgs), schemaName: "item_observations", schema: OBSERVATION_JSON_SCHEMA as unknown as Record<string, unknown> }, observationResultZ));
-    mark(imgs, stage);
-  }
-  const earlier = observationBatches.flat().filter((i) => !i.zoomOf);
-  const finalText = observationBatches.length ? buildAnalysisText(context, finalImages!, { skipped, earlierImages: earlier, observations }) : finalText0;
-  const finalReq = { ...common, userText: finalText, images: toProvider(finalImages!), schemaName: "item_analysis", schema: ANALYSIS_JSON_SCHEMA as unknown as Record<string, unknown> };
-  let result = await ctx.call("final", finalReq, analysisResultZ);
-  // everything a reviewer reads must be Hebrew: an answer that explains in English is asked for once more
-  if (englishExplanations(result).length) {
-    log.info("ai answer in english, asking again in hebrew", { runId: run.id, texts: englishExplanations(result).length });
-    result = await ctx.call("final-hebrew", { ...finalReq, userText: finalText + HEBREW_AGAIN }, analysisResultZ);
-  }
-  mark(finalImages!, "final");
-  inputRecord.images = inputRecord.images.map((i) => ({ ...i, sentIn: i.imageId ? sentIn.get(i.imageId) : undefined }));
+  /**
+   * One full pass: prepare the photos, check the budget, call the model (staged when the photos do not fit one request).
+   * `manuscript` = zoomed halves on the first pages (small handwriting, signatures, dates), not only on the title page.
+   */
+  const pass = async (manuscript: boolean, prefix: string) => {
+    const prepared = await prepareImages(run.organizationId, item.id, cfg, { manuscript });
+    const skipped = prepared.report.filter((r) => r.status === "skipped").map((r) => ({ label: `${he.category[r.category]} (תמונה ${r.sequence})`, reason: r.reason ?? "" }));
+    const batches = batchImages(prepared.images, cfg.BOOK_AI_MAX_IMAGES_PER_REQUEST, cfg.BOOK_AI_MAX_REQUEST_MB * 1024 * 1024);
+    const [finalImages, ...observationBatches] = batches.length ? batches : [[] as PreparedImage[]];
+    const sentIn = new Map<string, string[]>();
+    const mark = (imgs: PreparedImage[], stage: string) => imgs.forEach((i) => sentIn.set(i.id, [...(sentIn.get(i.id) ?? []), stage]));
 
-  return applyResult(ctx, item.id, result, { base, inputRecord, imagesFingerprint: prepared.fingerprint, imageIds: new Set(prepared.images.map((i) => i.id)), startedAt, observations });
+    // budget check BEFORE sending: examples are never dropped to make a request fit
+    const finalText0 = buildAnalysisText(context, finalImages!, { skipped });
+    const estimate = estimateTokens(instructions) + estimateTokens(finalText0) + finalImages!.length * IMAGE_TOKEN_ESTIMATE + (observationBatches.length ? 4000 * observationBatches.length : 0);
+    const inputRecord = {
+      context,
+      /** the original data the context was built from, and how it was obtained (a partial baseline = a warning in the comparison) */
+      baseline: { hash: baseline.hash, source: baseline.source, missing: baseline.missing, capturedAt: baseline.capturedAt },
+      settings: { version: settings.version, provider: settings.provider, model: settings.model, reasoning: settings.reasoning, instructionHash: settings.instructionHash },
+      contextHash,
+      /** one hash for "the same input": context + photos + prompt + examples. Two runs with equal hashes differ only in the model. */
+      inputFingerprint: createHash("sha256").update([contextHash, prepared.fingerprint, settings.instructionHash, lib.hash].join("|")).digest("hex").slice(0, 16),
+      images: prepared.report.map((r) => ({ imageId: r.imageId, assetId: r.assetId, category: r.category, status: r.status, source: r.source, reason: r.reason, zooms: r.zooms })) as (ImageManifestEntry & { sentIn?: string[] })[],
+      imagesFingerprint: prepared.fingerprint,
+      stages: batches.length,
+      manuscriptPass: manuscript,
+      tokenEstimate: { instructions: estimateTokens(composeInstructions(settings.parts)), examples: estimateTokens(lib.block), total: estimate },
+      examplesSkipped: lib.skipped,
+    };
+    await db.inventoryAnalysis.update({
+      where: { id: run.id },
+      data: {
+        provider: provider.name,
+        model: provider.model,
+        promptVersion: settings.defaultPrompts ? PROMPT_VERSION : `custom-${settings.instructionHash}`,
+        examplesVersion: lib.version,
+        examplesHash: lib.hash,
+        examplesCount: lib.examples.length,
+        imageCount: prepared.images.filter((i) => !i.zoomOf).length,
+        baseValues: asJson(base),
+        input: asJson(inputRecord),
+      },
+    });
+    if (estimate > cfg.BOOK_AI_MAX_INPUT_TOKENS) {
+      throw new AppError("VALIDATION", `הבקשה חורגת ממגבלת הטוקנים שהוגדרה (הערכה ${estimate} מתוך ${cfg.BOOK_AI_MAX_INPUT_TOKENS}). אין להשמיט דוגמאות כתיבה: הגדילו את BOOK_AI_MAX_INPUT_TOKENS או צמצמו את ספריית הדוגמאות.`);
+    }
+
+    // stage 1 (only with many images): observations for every batch except the first, which goes with the final request
+    const observations: ObservationResult[] = [];
+    for (let b = 0; b < observationBatches.length; b++) {
+      const imgs = observationBatches[b]!;
+      const stage = `${prefix}observe-${b + 1}`;
+      const text = buildObservationText(context, imgs, { index: b + 1, total: observationBatches.length });
+      observations.push(await ctx.call(stage, { ...common, userText: text, images: toProvider(imgs), schemaName: "item_observations", schema: OBSERVATION_JSON_SCHEMA as unknown as Record<string, unknown> }, observationResultZ));
+      mark(imgs, stage);
+    }
+    const earlier = observationBatches.flat().filter((i) => !i.zoomOf);
+    const finalText = observationBatches.length ? buildAnalysisText(context, finalImages!, { skipped, earlierImages: earlier, observations }) : finalText0;
+    const finalReq = { ...common, userText: finalText, images: toProvider(finalImages!), schemaName: "item_analysis", schema: ANALYSIS_JSON_SCHEMA as unknown as Record<string, unknown> };
+    let result = await ctx.call(`${prefix}final`, finalReq, analysisResultZ);
+    // everything a reviewer reads must be Hebrew: an answer that explains in English is asked for once more
+    if (englishExplanations(result).length) {
+      log.info("ai answer in english, asking again in hebrew", { runId: run.id, texts: englishExplanations(result).length });
+      result = await ctx.call(`${prefix}final-hebrew`, { ...finalReq, userText: finalText + HEBREW_AGAIN }, analysisResultZ);
+    }
+    mark(finalImages!, `${prefix}final`);
+    inputRecord.images = inputRecord.images.map((i) => ({ ...i, sentIn: i.imageId ? sentIn.get(i.imageId) : undefined }));
+    return { prepared, result, observations, inputRecord };
+  };
+
+  // a manuscript / handwritten letter / document gets the zoomed pages from the start; any other item that the model
+  // recognises as handwriting gets ONE more pass with them (only then, so books do not pay for it)
+  const manuscriptItem = ["MANUSCRIPT", "LETTER", "DOCUMENT"].includes(baseline.fields.itemType ?? "");
+  let out = await pass(manuscriptItem, "");
+  if (!manuscriptItem && cfg.BOOK_AI_MANUSCRIPT_ZOOM_PAGES > 0 && out.result.manuscriptAnalysis?.isManuscript) {
+    log.info("ai: manuscript recognised, second pass with zoomed pages", { runId: run.id });
+    try {
+      out = await pass(true, "ms-");
+    } catch (err) {
+      if (!(err instanceof ProviderError || err instanceof InvalidAnswerError || err instanceof AppError)) throw err;
+      log.warn("ai manuscript pass failed, keeping the first answer", { runId: run.id, err });
+      out.result.warnings.push("סבב הקריאה המוגדלת של כתב היד נכשל. התוצאה מבוססת על הסבב הראשון, וייתכן שחלקים בכתב היד לא נקראו.");
+    }
+  }
+  const { prepared, result, observations, inputRecord } = out;
+
+  const extra = { base, inputRecord, imagesFingerprint: prepared.fingerprint, imageIds: new Set(prepared.images.map((i) => i.id)), startedAt, observations };
+  if (run.isReanalysis && compareOnly) {
+    await completeWithoutApplying(ctx, item.id, result, extra);
+    return null;
+  }
+  return applyResult(ctx, item.id, result, extra);
+}
+
+/**
+ * A re-analysis result is saved on the run and the item is left exactly as it is (fields, review status, approval, lot):
+ * the reviewer compares it with the earlier result and applies it - all of it or chosen fields - explicitly.
+ */
+async function completeWithoutApplying(
+  ctx: RunContext,
+  itemId: string,
+  result: AnalysisResult,
+  extra: { inputRecord: object; startedAt: Date; observations: ObservationResult[] },
+) {
+  const { run } = ctx;
+  const usage = ctx.usageColumns();
+  await db.$transaction(async (tx) => {
+    const mine = await tx.$queryRaw<{ status: string; startedAt: Date | null }[]>`SELECT status, "startedAt" FROM "InventoryAnalysis" WHERE id = ${run.id}::uuid FOR UPDATE`;
+    if (mine[0]?.status !== "RUNNING" || mine[0].startedAt?.getTime() !== extra.startedAt.getTime()) throw new AppError("CONFLICT", "הניתוח נלקח על ידי תהליך אחר");
+    const finishedAt = new Date();
+    await tx.inventoryAnalysis.update({
+      where: { id: run.id },
+      data: {
+        status: "COMPLETED",
+        model: ctx.model ?? run.model,
+        result: asJson(result),
+        input: asJson(extra.inputRecord),
+        ...omitPrice(usage),
+        usage: asJson({ calls: ctx.calls, price: usage.price, observations: extra.observations.length ? extra.observations : undefined }),
+        finishedAt,
+        durationMs: finishedAt.getTime() - extra.startedAt.getTime(),
+        error: null,
+      },
+    });
+    // the button turns grey again (the run is the item's current one); aiCompletedAt, details, review state are untouched
+    await tx.inventoryItem.updateMany({ where: { id: itemId, aiRunId: run.id }, data: { aiStatus: "COMPLETED", aiError: null } });
+    await tx.auditLog.create({
+      data: {
+        organizationId: run.organizationId,
+        userId: run.createdById,
+        action: "ai.completed",
+        entityType: "inventory",
+        entityId: itemId,
+        inventoryItemId: itemId,
+        data: asJson({ runId: run.id, provider: ctx.provider.name, model: ctx.model ?? run.model, compareOnly: true, costUsd: usage.costUsd?.toNumber() ?? null, by: "system" }),
+      },
+    });
+  });
 }
 
 /** Writes a validated result: item fields, catalog draft (and a DRAFT catalog's lot), snapshot, run, review status - atomically. */
@@ -578,7 +683,7 @@ async function applyResult(
       const previousRun = await tx.inventoryAnalysis.findFirst({ where: { inventoryItemId: itemId, kind: AI_KIND, status: "COMPLETED", restoredAt: null, id: { not: run.id } }, orderBy: { finishedAt: "desc" }, select: { applied: true } });
       const previousAi = ((previousRun?.applied as AppliedReport | null)?.written ?? null) as Partial<AiValues> | null;
       const catalogIsManual = item.catalogDescriptionSource === "MANUAL" && !!(item.catalogDescription?.trim() || item.catalogHeadline?.trim());
-      const mapped = mapResult({ result, current, base: extra.base, previousAi, imageIds: extra.imageIds, catalogIsManual });
+      const mapped = mapResult({ result, current, base: extra.base, previousAi, imageIds: extra.imageIds, catalogIsManual, overwrite: run.isReanalysis });
       if (imagesChanged) mapped.review.push({ field: "images", reason: "תמונות הפריט השתנו בזמן הניתוח (נוספו, נמחקו או עובדו מחדש). כדאי לבדוק את הפרטים מול התמונות העדכניות." });
 
       const snapshot: Record<string, unknown> = { values: current, catalogDescriptionSource: item.catalogDescriptionSource, detailsVersion: item.detailsVersion };
@@ -771,6 +876,10 @@ export async function listRunsForReport(orgId: string, opts: { from?: Date; to?:
       costEstimated: r.costEstimated,
       durationSeconds: r.durationMs === null ? "" : Math.round(r.durationMs / 100) / 10,
       promptVersion: r.promptVersion ?? "",
+      settingsVersion: r.settingsVersion ?? "",
+      reasoning: (r.input as { settings?: { reasoning?: string | null } } | null)?.settings?.reasoning ?? "",
+      baselineHash: (r.input as { baseline?: { hash?: string } } | null)?.baseline?.hash ?? "",
+      inputFingerprint: (r.input as { inputFingerprint?: string } | null)?.inputFingerprint ?? "",
       examplesVersion: r.examplesVersion ?? "",
       examplesHash: r.examplesHash ?? "",
       fieldsWritten: applied ? Object.keys(applied.written).length : "",
@@ -785,35 +894,260 @@ export async function listRunsForReport(orgId: string, opts: { from?: Date; to?:
   });
 }
 
-/* ───────────────────────── rewrite ("שכתוב ב-AI") ───────────────────────── */
+/* ───────────────────────── apply a saved result ───────────────────────── */
+
+const APPLY_FIELDS = ["itemType", "title", "subtitle", "author", "printPlace", "printYear", "publisher", "edition", "bibliographicNotes", "conditionNotes", "catalogHeadline", "catalogDescription"] as const;
+export type ApplyField = (typeof APPLY_FIELDS)[number];
+
+export const applyRunSchema = z.object({
+  /** the fields to apply; omitted = every field the result proposes that differs from the item now */
+  fields: z.array(z.enum(APPLY_FIELDS)).min(1).max(APPLY_FIELDS.length).optional(),
+});
+
+/** What a result proposes, cleaned exactly like everything the AI writes (extent is never written). */
+export function proposedValues(result: AnalysisResult): Partial<Record<ApplyField, string>> {
+  const out: Partial<Record<ApplyField, string>> = {};
+  for (const f of AI_FIELD_NAMES) {
+    if (f === "extent") continue;
+    const r = result.fields[f];
+    if (r.status !== "found" || !r.value) continue;
+    const v = cleanAiText(f === "title" ? r.value : stripMeasurements(r.value), AI_MAX_LENGTH[f]);
+    if (v) out[f as ApplyField] = v;
+  }
+  const headline = cleanAiText(stripImageIds(result.catalog.headline), AI_MAX_LENGTH.catalogHeadline);
+  if (headline) out.catalogHeadline = headline;
+  const description = cleanAiText(ensureParagraphs(stripMeasurements(stripImageIds(result.catalog.description))), AI_MAX_LENGTH.catalogDescription);
+  if (description) out.catalogDescription = description;
+  if (result.itemType.value !== "UNKNOWN") out.itemType = result.itemType.value;
+  return out;
+}
+
+/**
+ * The reviewer applies a saved result (a re-analysis kept for comparison) - all of it or the chosen fields. This is an
+ * explicit human decision, so the chosen values are written as they are; the values replaced are kept in the run's
+ * snapshot (restorable), the change is logged, the details version moves (a stale editor gets 409), the review state
+ * goes back to "ממתין לבדיקה", and an open lot gets the text through the same lot rules as the first analysis.
+ */
+export async function applyRun(user: UserPrincipal, runId: string, input: z.infer<typeof applyRunSchema>) {
+  const run = await db.inventoryAnalysis.findFirst({ where: { id: runId, organizationId: user.organizationId, kind: AI_KIND } });
+  if (!run) throw notFound("הניתוח");
+  if (run.status !== "COMPLETED" || !run.result) throw new AppError("CONFLICT", "הניתוח לא הסתיים בהצלחה");
+  if (run.applied) throw new AppError("CONFLICT", "תוצאת הניתוח הזו כבר הוחלה על הפריט");
+  const result = run.result as unknown as AnalysisResult;
+  const proposed = proposedValues(result);
+  return db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM "InventoryItem" WHERE id = ${run.inventoryItemId}::uuid FOR UPDATE`;
+    const item = await tx.inventoryItem.findUniqueOrThrow({ where: { id: run.inventoryItemId } });
+    if (item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI פעיל על הפריט. אפשר להחיל אחרי שיסתיים.");
+    const current = aiValuesOf(item);
+    const patch: Partial<AiValues> = {};
+    for (const f of input.fields ?? APPLY_FIELDS) {
+      const v = proposed[f];
+      if (v === undefined) continue;
+      if (f === "itemType") {
+        if (v !== current.itemType) patch.itemType = v as AiValues["itemType"];
+      } else if (!sameText(v, current[f])) patch[f] = v;
+    }
+    const written = Object.keys(patch) as AiWritable[];
+    if (!written.length) throw new AppError("CONFLICT", "אין מה להחיל: הערכים בתוצאה זהים לערכים הנוכחיים של הפריט");
+
+    const snapshot: Record<string, unknown> = { values: current, catalogDescriptionSource: item.catalogDescriptionSource, detailsVersion: item.detailsVersion };
+    const catalogWritten = patch.catalogHeadline !== undefined || patch.catalogDescription !== undefined;
+    await tx.inventoryItem.update({ where: { id: item.id }, data: { ...(patch as Prisma.InventoryItemUpdateInput), ...(catalogWritten ? { catalogDescriptionSource: "AI" as const } : {}), detailsVersion: { increment: 1 } } });
+    const lot = await applyToLot(tx, item.id, current, patch, user.userId, snapshot);
+    await changeStatus(tx, user, item.id, "REVIEW", "PENDING_REVIEW", { reason: "תוצאת ניתוח AI הוחלה על ידי בודק", refType: "ai", refId: run.id });
+    const applied: AppliedReport = {
+      written: patch as Partial<Record<AiWritable, string>>,
+      decisions: {},
+      review: reviewForApplied(result, written),
+      warnings: result.warnings,
+      lot,
+      imagesChanged: false,
+      appliedFrom: { byUserId: user.userId, at: new Date().toISOString(), requested: [...(input.fields ?? [])] },
+    };
+    await tx.inventoryAnalysis.update({ where: { id: run.id }, data: { applied: asJson(applied), snapshot: asJson(snapshot) } });
+    await audit(user, { action: "ai.applied", entityType: "inventory", entityId: item.id, inventoryItemId: item.id, lotId: lot?.lotId ?? null, data: asJson({ runId: run.id, model: run.model, fields: written, replacedValues: Object.fromEntries(written.map((f) => [f, current[f]])), lotVersion: lot?.descriptionVersion ?? null }) }, tx);
+    return { fields: written, lotVersion: lot?.descriptionVersion ?? null };
+  });
+}
+
+/* ───────────────────────── compare two runs ───────────────────────── */
+
+const COMPARE_FIELDS = [
+  ["title", "שם הספר"],
+  ["subtitle", "כותרת משנה"],
+  ["author", "מחבר / יוצר"],
+  ["printPlace", "מקום דפוס"],
+  ["printYear", "שנת דפוס"],
+  ["publisher", "מדפיס"],
+  ["edition", "מהדורה"],
+  ["bibliographicNotes", "פרטים ביבליוגרפיים"],
+  ["conditionNotes", "מצב העותק"],
+  ["itemType", "סוג הפריט"],
+  ["catalogHeadline", "כותרת קטלוגית"],
+  ["catalogDescription", "תיאור קטלוגי"],
+] as const;
+
+interface RunInputMeta {
+  settings?: { version: number | null; provider: string; model: string; reasoning: string | null; instructionHash: string };
+  baseline?: { hash: string; source: string; missing: string[] };
+  contextHash?: string;
+  inputFingerprint?: string;
+  imagesFingerprint?: string;
+}
+
+/**
+ * Two runs of the same item side by side: every field, the findings, the main feature, and - what makes a comparison
+ * honest - whether the INPUT was the same (original data, photos, prompt, examples). Different input = the difference
+ * cannot be put on the model alone, and the screen says so. Nothing here ranks the runs: an empty field may be the
+ * more accurate answer, the reviewer decides.
+ */
+export async function compareRuns(user: UserPrincipal, itemId: string, aId: string, bId: string) {
+  if (aId === bId) throw new AppError("VALIDATION", "יש לבחור שני ניתוחים שונים");
+  const runs = await db.inventoryAnalysis.findMany({ where: { id: { in: [aId, bId] }, inventoryItemId: itemId, organizationId: user.organizationId, kind: AI_KIND } });
+  const a = runs.find((r) => r.id === aId);
+  const b = runs.find((r) => r.id === bId);
+  if (!a || !b) throw notFound("הניתוח");
+  for (const r of [a, b]) if (r.status !== "COMPLETED" || !r.result) throw new AppError("CONFLICT", "אפשר להשוות רק ניתוחים שהסתיימו בהצלחה");
+
+  const names = new Map((await db.user.findMany({ where: { id: { in: [a.createdById, b.createdById].filter((x): x is string => !!x) }, organizationId: user.organizationId }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
+  const view = (r: InventoryAnalysis) => {
+    const result = r.result as unknown as AnalysisResult;
+    const meta = (r.input ?? {}) as RunInputMeta;
+    const proposed = proposedValues(result);
+    const cell = (key: (typeof COMPARE_FIELDS)[number][0]) => {
+      if (key === "itemType") return { value: result.itemType.value === "UNKNOWN" ? null : (he.itemType[result.itemType.value] ?? result.itemType.value), status: "found", confidence: result.itemType.confidence as string | null };
+      if (key === "catalogHeadline" || key === "catalogDescription") return { value: proposed[key] ?? null, status: proposed[key] ? "found" : "unknown", confidence: result.catalog.confidence as string | null };
+      const f = result.fields[key];
+      return { value: proposed[key] ?? null, status: f.status as string, confidence: f.confidence as string | null };
+    };
+    return {
+      meta: {
+        id: r.id,
+        createdAt: r.createdAt.toISOString(),
+        provider: r.provider,
+        model: r.model,
+        reasoning: meta.settings?.reasoning ?? null,
+        settingsVersion: r.settingsVersion,
+        promptVersion: r.promptVersion,
+        instructionHash: meta.settings?.instructionHash ?? null,
+        examplesVersion: r.examplesVersion,
+        examplesHash: r.examplesHash,
+        baselineHash: meta.baseline?.hash ?? null,
+        baselineSource: meta.baseline?.source ?? null,
+        baselineMissing: meta.baseline?.missing ?? [],
+        contextHash: meta.contextHash ?? null,
+        imagesFingerprint: meta.imagesFingerprint ?? null,
+        inputFingerprint: meta.inputFingerprint ?? null,
+        costUsd: r.costUsd === null ? null : Number(r.costUsd),
+        durationMs: r.durationMs,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        requestedBy: r.createdById ? (names.get(r.createdById) ?? null) : null,
+        applied: r.applied !== null,
+      },
+      cells: Object.fromEntries(COMPARE_FIELDS.map(([k]) => [k, cell(k)])) as Record<string, { value: string | null; status: string; confidence: string | null }>,
+      highlight: result.catalogHighlight ?? null,
+      manuscript: result.manuscriptAnalysis ?? null,
+      findings: result.findings.map((f) => `${f.kind}${f.transcription ? `: ${f.transcription}` : ""} (${f.reading})`),
+      uncertain: result.requiresReview.map((x) => x.reason),
+    };
+  };
+  const va = view(a);
+  const vb = view(b);
+
+  const rows = COMPARE_FIELDS.map(([key, label]) => {
+    const x = va.cells[key]!;
+    const y = vb.cells[key]!;
+    const kind = !x.value && !y.value ? "bothEmpty" : x.value && !y.value ? "onlyA" : !x.value && y.value ? "onlyB" : sameText(x.value, y.value) ? "same" : "differs";
+    return { key, label, a: x, b: y, kind };
+  });
+  const FIELD_ROWS = rows.filter((r) => r.key !== "catalogHeadline" && r.key !== "catalogDescription" && r.key !== "itemType");
+  const countFound = (side: "a" | "b") => FIELD_ROWS.filter((r) => !!r[side].value).length;
+  const aSet = new Set(va.findings);
+  const bSet = new Set(vb.findings);
+
+  const m1 = va.meta;
+  const m2 = vb.meta;
+  const unknown = (x: unknown) => x === null || x === undefined;
+  const inputRows = [
+    { key: "provider", label: "ספק", a: m1.provider, b: m2.provider, affectsComparability: false },
+    { key: "model", label: "מודל", a: m1.model, b: m2.model, affectsComparability: false },
+    { key: "reasoning", label: "רמת חשיבה", a: m1.reasoning, b: m2.reasoning, affectsComparability: false },
+    { key: "promptVersion", label: "גרסת פרומפט", a: m1.promptVersion, b: m2.promptVersion, affectsComparability: true },
+    { key: "instructionHash", label: "טביעת פרומפט", a: m1.instructionHash, b: m2.instructionHash, affectsComparability: true },
+    { key: "examplesHash", label: "ספריית דוגמאות", a: m1.examplesHash ? `${m1.examplesVersion} (${m1.examplesHash})` : null, b: m2.examplesHash ? `${m2.examplesVersion} (${m2.examplesHash})` : null, affectsComparability: true },
+    { key: "baselineHash", label: "נתוני המקור", a: m1.baselineHash, b: m2.baselineHash, affectsComparability: true },
+    { key: "imagesFingerprint", label: "תמונות", a: m1.imagesFingerprint, b: m2.imagesFingerprint, affectsComparability: true },
+    { key: "settingsVersion", label: "גרסת הגדרות", a: m1.settingsVersion, b: m2.settingsVersion, affectsComparability: false },
+  ].map((r) => ({ ...r, a: r.a === null ? null : String(r.a), b: r.b === null ? null : String(r.b), same: r.a === r.b }));
+  const differing = inputRows.filter((r) => r.affectsComparability && !r.same && !(unknown(r.a) && unknown(r.b)));
+  const warnings: string[] = [];
+  if (differing.length) warnings.push(`תנאי הקלט אינם זהים (${differing.map((r) => r.label).join(", ")}): אי אפשר לייחס את ההבדל בתוצאות להחלפת המודל בלבד.`);
+  for (const [side, m] of [["הראשון", m1], ["השני", m2]] as const) {
+    if (m.baselineMissing.length) warnings.push(`הניתוח ה${side} נבנה מנתוני מקור חלקיים (חסרים: ${m.baselineMissing.join(", ")}): ההשוואה אינה מבוססת על תמונת מצב מלאה.`);
+    if (!m.baselineHash) warnings.push(`הניתוח ה${side} בוצע לפני שנשמרו נתוני המקור: לא ידוע מה נשלח למודל.`);
+  }
+  return {
+    a: va,
+    b: vb,
+    rows,
+    inputRows,
+    comparable: differing.length === 0 && !warnings.length,
+    warnings,
+    summary: {
+      foundA: countFound("a"),
+      foundB: countFound("b"),
+      onlyA: FIELD_ROWS.filter((r) => r.kind === "onlyA").map((r) => r.label),
+      onlyB: FIELD_ROWS.filter((r) => r.kind === "onlyB").map((r) => r.label),
+      differ: FIELD_ROWS.filter((r) => r.kind === "differs").map((r) => r.label),
+      findingsOnlyA: va.findings.filter((x) => !bSet.has(x)),
+      findingsOnlyB: vb.findings.filter((x) => !aSet.has(x)),
+    },
+  };
+}
+
+/* ───────────────────────── rewrite ("הוספת מידע ושכתוב") ───────────────────────── */
 
 export const REWRITE_KIND = "catalog_rewrite";
 /** a rewrite takes seconds; one still RUNNING after this was interrupted */
 const REWRITE_STALE_MS = 3 * 60 * 1000;
 
 export const rewriteSchema = z.object({
-  /** facts the reviewer adds (a signature they identified, the copy's provenance, background) */
+  /** facts the reviewer adds or a correction (a signature they identified, a changed year, a defect) */
   additions: z.string().trim().max(4000).default(""),
+  /** patch (default): a minimal change, only what was asked. full: an explicit, separate full rewrite. */
+  mode: z.enum(["patch"]).default("patch"),
 });
 
 /**
- * Rewrites every text field (details, notes, catalog headline and description) from the item's current (checked)
- * values and the reviewer's additions. Text only, synchronous (a few seconds). Nothing is written to the item: the answer is a
- * proposal the reviewer applies in the panel. Each rewrite is a run of its own (cost, model, versions) and is logged.
+ * Two modes, two different requests:
+ *  - patch (default): the model gets the saved fields and the reviewer's instruction and returns OPERATIONS (add /
+ *    replace / delete); the server applies them to the saved text. Anything not named is returned byte-identical -
+ *    in fact not returned at all. An operation that cannot be verified against the current text is skipped and listed.
+ *  - full: an explicit rewrite of every text field from the details and additions.
+ * Neither writes anything to the item: the answer is returned and the panel applies it (with undo). Each rewrite is a
+ * run of its own (cost, model, versions) and is logged. If the details change while the model works, the answer is
+ * refused (409): it was built on text that no longer exists.
  */
 export async function rewriteCatalog(user: UserPrincipal, itemId: string, input: z.infer<typeof rewriteSchema>) {
   const item = await db.inventoryItem.findFirst({ where: { id: itemId, organizationId: user.organizationId } });
   if (!item) throw notFound("הספר");
-  const provider = activeProvider();
+  if (input.mode === "patch" && !input.additions) throw new AppError("VALIDATION", "יש לכתוב את המידע להוספה או את התיקון המבוקש");
+  const settings = await getAiSettings(user.organizationId);
+  const provider = activeProvider(settings.cfg);
   if (item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI פעיל על הפריט. נסו לשכתב בסיומו.");
-  const cfg = aiConfig();
-  const lib = loadStyleLibrary();
+  const cfg = settings.cfg;
+  const lib = settings.lib;
   const startedAt = new Date();
   // a rewrite left RUNNING (server restarted mid-request) would block the item: it is abandoned after a few minutes
   await db.inventoryAnalysis.updateMany({
     where: { inventoryItemId: itemId, kind: REWRITE_KIND, status: "RUNNING", updatedAt: { lt: new Date(Date.now() - REWRITE_STALE_MS) } },
     data: { status: "FAILED", error: "השכתוב הופסק (הפעלה מחדש של השרת)", finishedAt: new Date() },
   });
+  const rewritePrompt = input.mode === "patch" ? settings.rewritePrompt : settings.fullRewritePrompt;
+  const defaultPrompt = input.mode === "patch" ? settings.stored.rewritePrompt === null : settings.stored.fullRewritePrompt === null;
+  const promptHash = createHash("sha256").update(rewritePrompt).digest("hex").slice(0, 12);
   let run: InventoryAnalysis;
   try {
     run = await db.inventoryAnalysis.create({
@@ -824,14 +1158,15 @@ export async function rewriteCatalog(user: UserPrincipal, itemId: string, input:
         status: "RUNNING",
         provider: provider.provider,
         model: provider.model,
-        promptVersion: REWRITE_PROMPT_VERSION,
+        settingsVersion: settings.version,
+        promptVersion: defaultPrompt ? `${REWRITE_PROMPT_VERSION}-${input.mode}` : `custom-${promptHash}`,
         examplesVersion: lib.version,
         examplesHash: lib.hash,
         examplesCount: lib.examples.length,
         requestKey: randomUUID(),
         createdById: user.userId,
         startedAt,
-        input: asJson({ additions: input.additions }),
+        input: asJson({ mode: input.mode, additions: input.additions, detailsVersion: item.detailsVersion }),
       },
     });
   } catch (err) {
@@ -842,48 +1177,45 @@ export async function rewriteCatalog(user: UserPrincipal, itemId: string, input:
 
   const ctx = new RunContext(run, null, cfg, providerForRun(cfg));
   const v = aiValuesOf(item);
-  const details: Record<string, string | null> = { itemType: v.itemType === "UNKNOWN" ? null : he.itemType[v.itemType] };
-  for (const f of REWRITE_FIELDS) details[f] = v[f] as string | null;
+  const current = Object.fromEntries(REWRITE_FIELDS.map((f) => [f, (v[f] as string | null) ?? null])) as FieldValues;
+  const details: Record<string, string | null> = { itemType: v.itemType === "UNKNOWN" ? null : he.itemType[v.itemType], ...current };
   const userText = [
     "# שדות הפריט כרגע (נבדקו בידי אדם; null = ריק)",
     "```json",
     JSON.stringify(details, null, 2),
     "```",
     "",
-    "# פרטים שהבודק הוסיף",
+    input.mode === "patch" ? "# ההוראה של הבודק (מידע להוספה או תיקון)" : "# פרטים שהבודק הוסיף",
     input.additions ? `"""\n${redactPersonal(input.additions)}\n"""` : "(אין - שפר את הניסוח בלבד)",
     "",
     HEBREW_ONLY,
   ].join("\n");
+  const instructions = [rewritePrompt.trim(), CODE_RULES].join("\n\n");
   const req: ProviderRequest = {
-    instructions: lib.block ? `${REWRITE_PROMPT}\n\n${lib.block}` : REWRITE_PROMPT,
-    cacheKey: `avot-${REWRITE_PROMPT_VERSION}-${lib.hash}`,
+    instructions: lib.block ? `${instructions}\n\n${lib.block}` : instructions,
+    cacheKey: `avot-${promptHash}-${lib.hash}`,
     userText,
     images: [],
-    schemaName: "catalog_rewrite",
-    schema: REWRITE_JSON_SCHEMA as unknown as Record<string, unknown>,
+    schemaName: input.mode === "patch" ? "catalog_patch" : "catalog_rewrite",
+    schema: (input.mode === "patch" ? REWRITE_PATCH_JSON_SCHEMA : REWRITE_JSON_SCHEMA) as unknown as Record<string, unknown>,
     maxOutputTokens: 8000,
     timeoutMs: cfg.BOOK_AI_TIMEOUT_SECONDS * 1000,
   };
   try {
-    let r = await ctx.call("rewrite", req, rewriteResultZ);
-    if (REWRITE_FIELDS.some((f) => isEnglishProse(r[f]))) r = await ctx.call("rewrite-hebrew", { ...req, userText: userText + HEBREW_AGAIN }, rewriteResultZ);
-    // cleaned like every AI text; only the fields that actually change are proposed (a null never empties a field)
-    const fields: Partial<Record<RewriteField, string>> = {};
-    for (const f of REWRITE_FIELDS) {
-      const raw = f === "catalogHeadline" || f === "catalogDescription" ? stripImageIds(r[f]) : r[f];
-      const cleaned = f === "title" || f === "catalogHeadline" ? raw : stripMeasurements(raw);
-      const value = cleanAiText(f === "catalogDescription" ? ensureParagraphs(cleaned) : cleaned, AI_MAX_LENGTH[f]);
-      if (value && !sameText(value, v[f] as string | null)) fields[f] = value;
-    }
+    let r = await ctx.call("patch", req, rewritePatchZ);
+    if (r.ops.some((o) => isEnglishProse(o.content))) r = await ctx.call("patch-hebrew", { ...req, userText: userText + HEBREW_AGAIN }, rewritePatchZ);
+    const outcome = applyOps(current, r.ops);
+    // the answer was built on the saved text: if a person (or another action) changed the details meanwhile, it is void
+    const now = await db.inventoryItem.findUniqueOrThrow({ where: { id: itemId }, select: { detailsVersion: true } });
+    if (now.detailsVersion !== item.detailsVersion) throw new AppError("CONFLICT", "פרטי הפריט עודכנו בזמן השכתוב, ולכן התוצאה בוטלה. נסו שוב.");
     const usage = ctx.usageColumns();
     const costUsd = usage.costUsd === null ? null : Number(usage.costUsd);
     await db.inventoryAnalysis.update({
       where: { id: run.id },
-      data: { status: "COMPLETED", result: asJson({ fields }), finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime(), ...omitPrice(usage), usage: asJson({ calls: ctx.calls, price: usage.price }) },
+      data: { status: "COMPLETED", result: asJson({ mode: input.mode, ...outcome }), finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime(), ...omitPrice(usage), usage: asJson({ calls: ctx.calls, price: usage.price }) },
     });
-    await audit(user, { action: "ai.rewrite", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: run.id, provider: provider.provider, model: provider.model, costUsd, additions: input.additions.length > 0, fields: Object.keys(fields) } });
-    return { runId: run.id, fields, costUsd };
+    await audit(user, { action: "ai.rewrite", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: run.id, mode: input.mode, provider: provider.provider, model: provider.model, costUsd, additions: input.additions.length > 0, fields: Object.keys(outcome.fields) } });
+    return { runId: run.id, mode: input.mode, fields: outcome.fields, applied: outcome.applied ?? [], skipped: outcome.skipped ?? [], detailsVersion: item.detailsVersion, costUsd };
   } catch (err) {
     const message = err instanceof AppError || err instanceof ProviderError || err instanceof InvalidAnswerError ? err.message : "שגיאה פנימית בשכתוב";
     log.warn("ai rewrite failed", { runId: run.id, itemId, err });

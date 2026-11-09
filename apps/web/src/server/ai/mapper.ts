@@ -83,6 +83,8 @@ export interface MapInput {
   imageIds: Set<string>;
   /** the catalog draft on the item was written by a person */
   catalogIsManual: boolean;
+  /** re-analysis: fill every field anew (values a person entered, and the catalog draft, are replaced; the old values are in the run's snapshot) */
+  overwrite?: boolean;
 }
 
 const isEmpty = (v: string | null | undefined) => !v || !v.trim();
@@ -170,7 +172,7 @@ export function mapResult(inp: MapInput): MapOutcome {
       decisions[f] = { action: "written", value: proposed, previous: now, replacedManual: false };
       return;
     }
-    if (!opts.neverReplaceManual && grounded && !lowConfidence) {
+    if (inp.overwrite || (!opts.neverReplaceManual && grounded && !lowConfidence)) {
       patch[f] = proposed;
       decisions[f] = { action: "written", value: proposed, previous: now, replacedManual: true };
       review.push({ field: f, reason: `${FIELD_LABEL[f]}: הערך הידני הקודם ("${now!.slice(0, 80)}") הוחלף לפי הנראה בתמונות; ניתן לשחזר` });
@@ -219,7 +221,7 @@ export function mapResult(inp: MapInput): MapOutcome {
   const t = result.itemType;
   if (editedDuringRun("itemType")) decisions.itemType = { action: "skipped_human_edit", proposed: t.value };
   else if (t.value === "UNKNOWN" || t.value === current.itemType) decisions.itemType = { action: "unchanged" };
-  else if (current.itemType === "UNKNOWN" || fromPreviousAi("itemType") || t.confidence === "high") {
+  else if (inp.overwrite || current.itemType === "UNKNOWN" || fromPreviousAi("itemType") || t.confidence === "high") {
     patch.itemType = t.value;
     decisions.itemType = { action: "written", value: t.value, previous: current.itemType, replacedManual: current.itemType !== "UNKNOWN" && !fromPreviousAi("itemType") };
     if (t.confidence === "low") review.push({ field: "itemType", reason: `סוג הפריט נקבע ברמת ביטחון נמוכה${t.note ? ` - ${t.note}` : ""}` });
@@ -234,6 +236,7 @@ export function mapResult(inp: MapInput): MapOutcome {
   decideText("catalogDescription", ensureParagraphs(stripMeasurements(stripImageIds(result.catalog.description))), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
 
   for (const r of result.requiresReview) review.push({ field: r.field, reason: cleanAiText(r.reason, 500) ?? r.reason });
+  review.push(...extraReviewNotes(result));
   for (const c of result.identification.conflicts) review.push({ field: "identification", reason: cleanAiText(c, 500) ?? c });
   for (const fd of result.findings) for (const id of fd.imageIds) if (!inp.imageIds.has(id)) warnings.push(`המודל ציין מזהה תמונה שלא נשלח (${id}) בממצא ${fd.kind}`);
 
@@ -246,4 +249,45 @@ export function mapResult(inp: MapInput): MapOutcome {
     return true;
   });
   return { patch, decisions, review: uniqueReview, warnings: [...new Set(warnings)] };
+}
+
+/** Notes for the reviewer that come from the main feature and the manuscript analysis (never from the model's own "requiresReview"). */
+export function extraReviewNotes(result: AnalysisResult): { field: string; reason: string }[] {
+  const notes: { field: string; reason: string }[] = [];
+  const h = result.catalogHighlight;
+  if (h && h.status === "found" && h.mainFeature && (!h.verified || h.confidence === "low")) {
+    notes.push({ field: "catalogHighlight", reason: `המאפיין המרכזי ("${h.mainFeature}") אינו מאומת${h.evidence ? ` - ${h.evidence}` : ""}. יש לאמת אותו מול התמונות לפני פרסום.` });
+  }
+  const m = result.manuscriptAnalysis;
+  if (m?.isManuscript) {
+    const text = `${result.catalog.headline ?? ""} ${result.catalog.description ?? ""}`;
+    if (m.attributionLevel !== "autograph_certain" && /בעצם כתב ידו|כתב ידו המקורי|אוטוגרף/.test(text)) {
+      notes.push({ field: "manuscriptAnalysis", reason: "הטקסט מציג את כתב היד כאוטוגרף, אך רמת הייחוס שנקבעה נמוכה יותר. יש לאמת את הייחוס." });
+    }
+    if (m.unreadable.length) notes.push({ field: "manuscriptAnalysis", reason: `חלקים בכתב היד שלא נקראו היטב: ${m.unreadable.join("; ")}` });
+  }
+  return notes;
+}
+
+/** Review notes for a result that is applied later (from a saved comparison), for the fields that were written. */
+export function reviewForApplied(result: AnalysisResult, written: AiWritable[]): { field: string; reason: string }[] {
+  const review: { field: string; reason: string }[] = [];
+  for (const f of AI_FIELD_NAMES) {
+    if (!written.includes(f)) continue;
+    const r = result.fields[f];
+    if (r.status !== "found") continue;
+    if (r.confidence === "low") review.push({ field: f, reason: `${FIELD_LABEL[f]}: רמת ביטחון נמוכה${r.note ? ` - ${r.note}` : ""}` });
+    const how = r.source ? NOT_READ[r.source] : undefined;
+    if (how) review.push({ field: f, reason: `${FIELD_LABEL[f]}: נקבע ${how} ולא נקרא בתמונות - יש לאמת` });
+  }
+  for (const r of result.requiresReview) review.push({ field: r.field, reason: cleanAiText(r.reason, 500) ?? r.reason });
+  for (const c of result.identification.conflicts) review.push({ field: "identification", reason: cleanAiText(c, 500) ?? c });
+  review.push(...extraReviewNotes(result));
+  const seen = new Set<string>();
+  return review.filter((r) => {
+    const k = r.reason.replace(/\s+/g, " ").trim();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }

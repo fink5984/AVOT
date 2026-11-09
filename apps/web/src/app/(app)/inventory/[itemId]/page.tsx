@@ -207,6 +207,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
           canReview={can(user.role, "item.review")}
           canRestore={can(user.role, "ai.restore")}
           canRewrite={perms.edit && can(user.role, "ai.analyze") && ai.available}
+          canApply={can(user.role, "ai.apply")}
         />
         </div>
 

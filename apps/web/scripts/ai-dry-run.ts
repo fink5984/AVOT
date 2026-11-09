@@ -11,35 +11,39 @@
  */
 import { writeFileSync } from "node:fs";
 import { db } from "../src/server/db";
-import { aiConfig } from "../src/server/ai/config";
 import { batchImages, prepareImages } from "../src/server/ai/images";
 import { buildAnalysisText, buildInstructions, cacheKeyFor, HEBREW_AGAIN } from "../src/server/ai/prompt-builder";
 import { createProvider } from "../src/server/ai/providers";
 import { analysisResultZ, ANALYSIS_JSON_SCHEMA, englishExplanations, parseAnswer } from "../src/server/ai/schema";
-import { loadStyleLibrary } from "../src/server/ai/style-examples";
 import { computeCost } from "../src/server/ai/pricing";
-import { aiFilledFields, itemContext } from "../src/server/services/ai-analysis";
+import { contextFromBaseline } from "../src/server/services/ai-analysis";
+import { computeBaseline } from "../src/server/ai/baseline";
+import { getAiSettings } from "../src/server/ai/settings";
 
 async function main() {
   const [num, out] = process.argv.slice(2);
   if (!num) throw new Error("usage: ai-dry-run <inventoryNumber> [out.json]");
   const item = await db.inventoryItem.findFirst({ where: { inventoryNumber: num }, include: { categoryNotes: true } });
   if (!item) throw new Error(`item ${num} not found`);
-  const cfg = aiConfig();
+  // same as a real run: the organization's settings (provider, model, prompts, examples), and the ORIGINAL data only
+  const settings = await getAiSettings(item.organizationId);
+  const cfg = settings.cfg;
   const provider = createProvider(cfg);
-  const lib = loadStyleLibrary();
+  const lib = settings.lib;
+  const baseline = await computeBaseline(item);
+  if (baseline.missing.length) console.warn(`note: partial baseline (missing: ${baseline.missing.join(", ")})`);
   const prepared = await prepareImages(item.organizationId, item.id, cfg);
   const batches = batchImages(prepared.images, cfg.BOOK_AI_MAX_IMAGES_PER_REQUEST, cfg.BOOK_AI_MAX_REQUEST_MB * 1024 * 1024);
   if (batches.length > 1) console.warn(`note: ${batches.length} batches; the dry run sends only the first (the real run adds observation stages)`);
   const images = batches[0] ?? [];
   const started = Date.now();
   const req = {
-    instructions: buildInstructions(lib),
-    userText: buildAnalysisText(itemContext(item, item.categoryNotes, await aiFilledFields(item)), images, { skipped: [] }),
+    instructions: buildInstructions(lib, settings.parts),
+    userText: buildAnalysisText(contextFromBaseline(baseline, item), images, { skipped: [] }),
     images: images.map((i) => ({ id: i.id, label: i.label, data: i.data, mime: i.mime, detail: i.detail })),
     schemaName: "item_analysis",
     schema: ANALYSIS_JSON_SCHEMA as unknown as Record<string, unknown>,
-    cacheKey: cacheKeyFor(lib),
+    cacheKey: cacheKeyFor(lib, settings.instructionHash),
     maxOutputTokens: cfg.BOOK_AI_MAX_OUTPUT_TOKENS,
     timeoutMs: cfg.BOOK_AI_TIMEOUT_SECONDS * 1000,
   };

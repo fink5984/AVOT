@@ -21,6 +21,8 @@ export const CONFIDENCES = ["high", "medium", "low"] as const;
 export const SOURCES = ["image", "photographer_notes", "existing_data", "inference", "general_knowledge"] as const;
 export const FINDING_KINDS = ["signature", "dedication", "stamp", "handwritten_note", "ownership_mark", "bookplate", "censor_mark", "damage", "special_feature", "other"] as const;
 export const READINGS = ["certain", "probable", "uncertain", "illegible"] as const;
+export const MANUSCRIPT_KINDS = ["autograph", "scribal_copy", "draft_with_corrections", "original_letter", "letter_copy", "torah_novellae", "kabbalistic", "notebook", "annotations_on_printed_book", "dedication_or_ownership", "other_document", "unknown"] as const;
+export const ATTRIBUTION_LEVELS = ["autograph_certain", "text_by_author_scribe_unknown", "attributed", "unknown_author"] as const;
 
 const nullable = (type: "string" | "integer" | "boolean", extra: Record<string, unknown> = {}) => ({ type: [type, "null"], ...extra });
 const strEnum = (values: readonly string[], description?: string) => ({ type: "string", enum: [...values], ...(description ? { description } : {}) });
@@ -56,10 +58,43 @@ const findingSchema = {
   },
 };
 
+const highlightSchema = {
+  type: "object",
+  description: "the single most important feature of the item, decided BEFORE the headline and description are written",
+  additionalProperties: false,
+  required: ["status", "mainFeature", "reason", "evidence", "confidence", "verified", "secondaryFeatures"],
+  properties: {
+    status: strEnum(["found", "none"], "found = an established main feature; none = nothing special that is established (never invent one)"),
+    mainFeature: nullable("string", { description: "the main feature in a short phrase; null when status is none" }),
+    reason: nullable("string", { description: "why this is what matters most about the item" }),
+    evidence: nullable("string", { description: "where the information comes from: what is seen in which image, or what was provided" }),
+    confidence: nullableEnum(CONFIDENCES),
+    verified: { type: "boolean", description: "true only when the feature may be presented as a fact" },
+    secondaryFeatures: { type: "array", items: { type: "string" } },
+  },
+};
+
+const manuscriptSchema = {
+  type: "object",
+  description: "manuscripts, handwritten letters and documents: transcription first, then interpretation",
+  additionalProperties: false,
+  required: ["isManuscript", "kind", "attributionLevel", "transcription", "unreadable", "writersCount", "confidence", "notes"],
+  properties: {
+    isManuscript: { type: "boolean" },
+    kind: nullableEnum(MANUSCRIPT_KINDS),
+    attributionLevel: nullableEnum(ATTRIBUTION_LEVELS, "autograph_certain only with sufficient evidence that the writer is the author"),
+    transcription: nullable("string", { description: "the significant text as it looks, unreadable parts marked [לא קריא], nothing completed silently" }),
+    unreadable: { type: "array", items: { type: "string" }, description: "parts that were not read well: which image and which area" },
+    writersCount: nullable("integer"),
+    confidence: nullableEnum(CONFIDENCES),
+    notes: nullable("string"),
+  },
+};
+
 export const ANALYSIS_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["itemType", "identification", "fields", "catalog", "findings", "imagesReviewed", "requiresReview", "warnings"],
+  required: ["itemType", "identification", "manuscriptAnalysis", "fields", "findings", "catalogHighlight", "catalog", "imagesReviewed", "requiresReview", "warnings"],
   properties: {
     itemType: {
       type: "object",
@@ -77,6 +112,7 @@ export const ANALYSIS_JSON_SCHEMA = {
         conflicts: { type: "array", items: { type: "string" }, description: "contradictions between the photos and the data / notes provided" },
       },
     },
+    manuscriptAnalysis: manuscriptSchema,
     fields: {
       type: "object",
       additionalProperties: false,
@@ -94,6 +130,8 @@ export const ANALYSIS_JSON_SCHEMA = {
         conditionNotes: fieldSchema("condition of the copy as visible in the photos"),
       },
     },
+    findings: { type: "array", items: findingSchema, description: "signatures, dedications, stamps, handwritten notes and other special findings" },
+    catalogHighlight: highlightSchema,
     catalog: {
       type: "object",
       additionalProperties: false,
@@ -104,7 +142,6 @@ export const ANALYSIS_JSON_SCHEMA = {
         confidence: strEnum(CONFIDENCES),
       },
     },
-    findings: { type: "array", items: findingSchema, description: "signatures, dedications, stamps, handwritten notes and other special findings" },
     imagesReviewed: {
       type: "array",
       description: "one entry per image received",
@@ -176,6 +213,29 @@ const findingZ = z.object({
 });
 export type AiFinding = z.infer<typeof findingZ>;
 
+const highlightZ = z.object({
+  status: z.enum(["found", "none"]),
+  mainFeature: z.string().nullable(),
+  reason: z.string().nullable(),
+  evidence: z.string().nullable(),
+  confidence: z.enum(CONFIDENCES).nullable(),
+  verified: z.boolean(),
+  secondaryFeatures: z.array(z.string()),
+});
+export type CatalogHighlight = z.infer<typeof highlightZ>;
+
+const manuscriptZ = z.object({
+  isManuscript: z.boolean(),
+  kind: z.enum(MANUSCRIPT_KINDS).nullable(),
+  attributionLevel: z.enum(ATTRIBUTION_LEVELS).nullable(),
+  transcription: z.string().nullable(),
+  unreadable: z.array(z.string()),
+  writersCount: z.number().int().nullable(),
+  confidence: z.enum(CONFIDENCES).nullable(),
+  notes: z.string().nullable(),
+});
+export type ManuscriptAnalysis = z.infer<typeof manuscriptZ>;
+
 export const analysisResultZ = z.object({
   itemType: z.object({ value: z.enum(ITEM_TYPES), confidence: z.enum(CONFIDENCES), note: z.string().nullable() }),
   identification: z.object({
@@ -184,6 +244,8 @@ export const analysisResultZ = z.object({
     conflicts: z.array(z.string()),
   }),
   fields: z.object(Object.fromEntries(AI_FIELD_NAMES.map((f) => [f, fieldZ])) as Record<AiFieldName, typeof fieldZ>),
+  manuscriptAnalysis: manuscriptZ.nullish(),
+  catalogHighlight: highlightZ.nullish(),
   catalog: z.object({ headline: z.string().nullable(), description: z.string().nullable(), confidence: z.enum(CONFIDENCES) }),
   findings: z.array(findingZ),
   imagesReviewed: z.array(z.object({ imageId: z.string(), shows: z.string(), usable: z.boolean() })),
@@ -257,3 +319,33 @@ export const REWRITE_JSON_SCHEMA = {
 } as const;
 export const rewriteResultZ = z.object(Object.fromEntries(REWRITE_FIELDS.map((f) => [f, z.string().nullable()])) as Record<RewriteField, z.ZodNullable<z.ZodString>>);
 export type RewriteResult = z.infer<typeof rewriteResultZ>;
+
+/** "הוספת מידע ותיקון": the model returns operations, never whole fields; the server applies them to the saved text. */
+export const REWRITE_OPS = ["add", "replace", "delete"] as const;
+export const REWRITE_PATCH_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["ops"],
+  properties: {
+    ops: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["field", "op", "target", "anchor", "content", "reason"],
+        properties: {
+          field: strEnum(REWRITE_FIELDS),
+          op: strEnum(REWRITE_OPS),
+          target: nullable("string", { description: "replace / delete: the exact current text to change (verbatim); null replaces a short field entirely" }),
+          anchor: nullable("string", { description: "add (description): an exact passage of the current text after which the addition goes; null = before the last (condition) paragraph" }),
+          content: nullable("string", { description: "the new text (add / replace); null for delete" }),
+          reason: nullable("string"),
+        },
+      },
+    },
+  },
+} as const;
+export const rewritePatchZ = z.object({
+  ops: z.array(z.object({ field: z.enum(REWRITE_FIELDS), op: z.enum(REWRITE_OPS), target: z.string().nullable(), anchor: z.string().nullable(), content: z.string().nullable(), reason: z.string().nullable() })),
+});
+export type RewritePatch = z.infer<typeof rewritePatchZ>;

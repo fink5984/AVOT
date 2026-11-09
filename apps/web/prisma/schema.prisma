@@ -401,6 +401,10 @@ model InventoryItem {
   aiRunId                  String?            @db.Uuid
   aiCompletedAt            DateTime?
   aiError                  String?
+  /// the item's data as it was BEFORE the first AI analysis (fixed once set; only an admin can confirm one): a clean
+  /// re-analysis is built from this and the photos, never from the current fields (which may hold AI output)
+  originalBaseline         Json?
+  originalBaselineAt       DateTime?
   /// who deposited the book for sale. Required for every NEW book (enforced in createItemTx); null only on books that predate consignors
   consignorId              String?            @db.Uuid
   /// the photographer's notes on this physical copy ("missing title page"); separate from internalNotes, never exported
@@ -568,6 +572,8 @@ model InventoryAnalysis {
   reviewOutcome     Json?
   restoredAt        DateTime?
   restoredById      String?          @db.Uuid
+  /// AiSettingsVersion.version the run was started with (null = the built-in defaults)
+  settingsVersion   Int?
   createdById       String?          @db.Uuid
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @default(now()) @updatedAt
@@ -1392,32 +1398,71 @@ model DeskewBatch {
 }
 
 model DeskewBatchItem {
-  id               String           @id @default(uuid()) @db.Uuid
-  batchId          String           @db.Uuid
+  id          String           @id @default(uuid()) @db.Uuid
+  batchId     String           @db.Uuid
   /// no foreign key on purpose: purging a photo must never be blocked by its straightening history
-  assetId          String           @db.Uuid
-  status           DeskewItemStatus @default(PENDING)
-  attempts         Int              @default(0)
-  kind             String?
-  tilt             Float?
-  angle            Float?
-  confidence       Float?
-  skipReason       String?
+  assetId     String           @db.Uuid
+  status      DeskewItemStatus @default(PENDING)
+  attempts    Int              @default(0)
+  kind        String?
+  tilt        Float?
+  angle       Float?
+  confidence  Float?
+  skipReason  String?
   /// true when a new processed file was written
-  changed          Boolean          @default(false)
-  ms               Int?
-  error            String?
+  changed     Boolean          @default(false)
+  ms          Int?
+  error       String?
   /// the photo's processed version before this item changed it (keys, size, state, result) — what a rollback restores
-  previous         Json?
+  previous    Json?
   /// keys of the files this item wrote (never overwrite an existing key)
-  newKeys          Json?
-  processedAt      DateTime?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  newKeys     Json?
+  processedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
 
   batch DeskewBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
 
   @@unique([batchId, assetId])
   @@index([batchId, status])
   @@index([assetId])
+}
+
+/// The organization's AI configuration (the "הגדרות AI" tab). One current row; every save also writes an immutable
+/// AiSettingsVersion, and a run keeps the version it started with. Null prompt / examples = the built-in default.
+model AiSettings {
+  organizationId    String   @id @db.Uuid
+  /// current version number (AiSettingsVersion.version)
+  version           Int      @default(0)
+  provider          String?
+  model             String?
+  /// OpenAI reasoning effort / Gemini thinking level (null = the model's default)
+  reasoning         String?
+  analysisPrompt    String?
+  manuscriptPrompt  String?
+  rewritePrompt     String?
+  fullRewritePrompt String?
+  /// style examples (same JSON as catalog-style-examples.json); null = the file in the code
+  examples          Json?
+  updatedById       String?  @db.Uuid
+  updatedAt         DateTime @default(now()) @updatedAt
+}
+
+model AiSettingsVersion {
+  id                String   @id @default(uuid()) @db.Uuid
+  organizationId    String   @db.Uuid
+  version           Int
+  provider          String?
+  model             String?
+  reasoning         String?
+  analysisPrompt    String?
+  manuscriptPrompt  String?
+  rewritePrompt     String?
+  fullRewritePrompt String?
+  examples          Json?
+  note              String?
+  createdById       String?  @db.Uuid
+  createdAt         DateTime @default(now())
+
+  @@unique([organizationId, version])
 }
