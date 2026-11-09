@@ -351,12 +351,12 @@ export function ItemReviewPanel({
   }
 
   /** "שכתוב ב-AI": saves pending edits first (the server rewrites from the saved details), then asks for a proposal */
-  async function rewrite(mode: "patch" | "full") {
+  async function rewrite() {
+    const mode = "patch" as const;
     if (mode === "patch" && !additions.trim()) {
       toast.warning("כתבו את המידע להוספה או את התיקון המבוקש");
       return;
     }
-    if (mode === "full" && !window.confirm("שכתוב מלא ינסח מחדש את כל שדות הטקסט, גם כאלה שלא נגעתם בהם. אפשר לבטל אחר כך. להמשיך?")) return;
     await flush();
     if (Object.keys(dirty.current).length) {
       toast.warning("יש שינויים שלא נשמרו. שמרו אותם לפני השכתוב.");
@@ -377,7 +377,7 @@ export function ItemReviewPanel({
       setBeforeRewrite(Object.fromEntries(changed.map((f) => [f, values[f]])) as Partial<ReviewValues>);
       for (const f of changed) change(f, r.fields[f] as ReviewValues[typeof f]);
       setAdditions("");
-      toast.success(mode === "patch" ? `נוספו הפרטים ב-${changed.length} שדות` : `השכתוב הוחל על ${changed.length} שדות`);
+      toast.success(`נוספו הפרטים ב-${changed.length} שדות`);
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -603,11 +603,8 @@ export function ItemReviewPanel({
                 {(p) => <Textarea {...p} rows={3} maxLength={4000} value={additions} onChange={(e) => setAdditions(e.target.value)} placeholder="למשל: החתימה בשער היא של רבי משה סופר. העותק מספריית בית המדרש בפרשבורג." />}
               </Field>
               <div className="flex flex-wrap items-center gap-3">
-                <Button size="sm" variant="primary" icon={<Sparkles />} loading={busy === "rewrite"} disabled={!!busy || ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING"} onClick={() => void rewrite("patch")}>
+                <Button size="sm" variant="primary" icon={<Sparkles />} loading={busy === "rewrite"} disabled={!!busy || ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING"} onClick={() => void rewrite()}>
                   הוספת המידע ב-AI
-                </Button>
-                <Button size="sm" variant="ghost" disabled={!!busy || ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING"} onClick={() => void rewrite("full")}>
-                  שכתוב מלא של כל השדות
                 </Button>
                 {beforeRewrite && (
                   <span className="text-[12px] text-ink-2">

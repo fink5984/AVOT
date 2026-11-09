@@ -36,7 +36,6 @@ export function AiSettingsClient({ initial }: { initial: Screen }) {
   const [analysisPrompt, setAnalysisPrompt] = useState(s0.analysisPrompt ?? screen.defaults.analysisPrompt);
   const [manuscriptPrompt, setManuscriptPrompt] = useState(s0.manuscriptPrompt ?? screen.defaults.manuscriptPrompt);
   const [rewritePrompt, setRewritePrompt] = useState(s0.rewritePrompt ?? screen.defaults.rewritePrompt);
-  const [fullRewritePrompt, setFullRewritePrompt] = useState(s0.fullRewritePrompt ?? screen.defaults.fullRewritePrompt);
   const [examples, setExamples] = useState(s0.examples ? JSON.stringify(s0.examples, null, 2) : "");
   const [note, setNote] = useState("");
 
@@ -54,7 +53,6 @@ export function AiSettingsClient({ initial }: { initial: Screen }) {
     analysisPrompt: orNull(analysisPrompt, screen.defaults.analysisPrompt),
     manuscriptPrompt: orNull(manuscriptPrompt, screen.defaults.manuscriptPrompt),
     rewritePrompt: orNull(rewritePrompt, screen.defaults.rewritePrompt),
-    fullRewritePrompt: orNull(fullRewritePrompt, screen.defaults.fullRewritePrompt),
     examples: examples.trim() ? JSON.parse(examples) : null,
     note: note || null,
   });
@@ -68,7 +66,6 @@ export function AiSettingsClient({ initial }: { initial: Screen }) {
     setAnalysisPrompt(s.analysisPrompt ?? sc.defaults.analysisPrompt);
     setManuscriptPrompt(s.manuscriptPrompt ?? sc.defaults.manuscriptPrompt);
     setRewritePrompt(s.rewritePrompt ?? sc.defaults.rewritePrompt);
-    setFullRewritePrompt(s.fullRewritePrompt ?? sc.defaults.fullRewritePrompt);
     setExamples(s.examples ? JSON.stringify(s.examples, null, 2) : "");
     setNote("");
   }
@@ -181,8 +178,7 @@ export function AiSettingsClient({ initial }: { initial: Screen }) {
 
       <Panel title="הוספת מידע ושכתוב">
         <div className="space-y-4 px-5 py-4">
-          <PromptField label="פרומפט הוספת מידע ותיקון ממוקד (ברירת מחדל)" value={rewritePrompt} onChange={setRewritePrompt} onReset={() => setRewritePrompt(screen.defaults.rewritePrompt)} rows={10} />
-          <PromptField label="פרומפט שכתוב מלא (פעולה נפרדת)" value={fullRewritePrompt} onChange={setFullRewritePrompt} onReset={() => setFullRewritePrompt(screen.defaults.fullRewritePrompt)} rows={8} />
+          <PromptField label="פרומפט הוספת מידע ותיקון ממוקד" value={rewritePrompt} onChange={setRewritePrompt} onReset={() => setRewritePrompt(screen.defaults.rewritePrompt)} rows={10} />
         </div>
       </Panel>
 

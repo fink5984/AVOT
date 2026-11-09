@@ -83,6 +83,8 @@ export interface MapInput {
   imageIds: Set<string>;
   /** the catalog draft on the item was written by a person */
   catalogIsManual: boolean;
+  /** re-analysis: fill every field anew (values a person entered, and the catalog draft, are replaced; the old values are in the run's snapshot) */
+  overwrite?: boolean;
 }
 
 const isEmpty = (v: string | null | undefined) => !v || !v.trim();
@@ -170,7 +172,7 @@ export function mapResult(inp: MapInput): MapOutcome {
       decisions[f] = { action: "written", value: proposed, previous: now, replacedManual: false };
       return;
     }
-    if (!opts.neverReplaceManual && grounded && !lowConfidence) {
+    if (inp.overwrite || (!opts.neverReplaceManual && grounded && !lowConfidence)) {
       patch[f] = proposed;
       decisions[f] = { action: "written", value: proposed, previous: now, replacedManual: true };
       review.push({ field: f, reason: `${FIELD_LABEL[f]}: הערך הידני הקודם ("${now!.slice(0, 80)}") הוחלף לפי הנראה בתמונות; ניתן לשחזר` });
@@ -219,7 +221,7 @@ export function mapResult(inp: MapInput): MapOutcome {
   const t = result.itemType;
   if (editedDuringRun("itemType")) decisions.itemType = { action: "skipped_human_edit", proposed: t.value };
   else if (t.value === "UNKNOWN" || t.value === current.itemType) decisions.itemType = { action: "unchanged" };
-  else if (current.itemType === "UNKNOWN" || fromPreviousAi("itemType") || t.confidence === "high") {
+  else if (inp.overwrite || current.itemType === "UNKNOWN" || fromPreviousAi("itemType") || t.confidence === "high") {
     patch.itemType = t.value;
     decisions.itemType = { action: "written", value: t.value, previous: current.itemType, replacedManual: current.itemType !== "UNKNOWN" && !fromPreviousAi("itemType") };
     if (t.confidence === "low") review.push({ field: "itemType", reason: `סוג הפריט נקבע ברמת ביטחון נמוכה${t.note ? ` - ${t.note}` : ""}` });

@@ -683,7 +683,7 @@ async function applyResult(
       const previousRun = await tx.inventoryAnalysis.findFirst({ where: { inventoryItemId: itemId, kind: AI_KIND, status: "COMPLETED", restoredAt: null, id: { not: run.id } }, orderBy: { finishedAt: "desc" }, select: { applied: true } });
       const previousAi = ((previousRun?.applied as AppliedReport | null)?.written ?? null) as Partial<AiValues> | null;
       const catalogIsManual = item.catalogDescriptionSource === "MANUAL" && !!(item.catalogDescription?.trim() || item.catalogHeadline?.trim());
-      const mapped = mapResult({ result, current, base: extra.base, previousAi, imageIds: extra.imageIds, catalogIsManual });
+      const mapped = mapResult({ result, current, base: extra.base, previousAi, imageIds: extra.imageIds, catalogIsManual, overwrite: run.isReanalysis });
       if (imagesChanged) mapped.review.push({ field: "images", reason: "תמונות הפריט השתנו בזמן הניתוח (נוספו, נמחקו או עובדו מחדש). כדאי לבדוק את הפרטים מול התמונות העדכניות." });
 
       const snapshot: Record<string, unknown> = { values: current, catalogDescriptionSource: item.catalogDescriptionSource, detailsVersion: item.detailsVersion };
@@ -1117,7 +1117,7 @@ export const rewriteSchema = z.object({
   /** facts the reviewer adds or a correction (a signature they identified, a changed year, a defect) */
   additions: z.string().trim().max(4000).default(""),
   /** patch (default): a minimal change, only what was asked. full: an explicit, separate full rewrite. */
-  mode: z.enum(["patch", "full"]).default("patch"),
+  mode: z.enum(["patch"]).default("patch"),
 });
 
 /**
@@ -1202,24 +1202,9 @@ export async function rewriteCatalog(user: UserPrincipal, itemId: string, input:
     timeoutMs: cfg.BOOK_AI_TIMEOUT_SECONDS * 1000,
   };
   try {
-    let outcome: { fields: Partial<Record<RewriteField, string>>; applied?: PatchOutcome["applied"]; skipped?: PatchOutcome["skipped"] };
-    if (input.mode === "patch") {
-      let r = await ctx.call("patch", req, rewritePatchZ);
-      if (r.ops.some((o) => isEnglishProse(o.content))) r = await ctx.call("patch-hebrew", { ...req, userText: userText + HEBREW_AGAIN }, rewritePatchZ);
-      outcome = applyOps(current, r.ops);
-    } else {
-      let r = await ctx.call("rewrite", req, rewriteResultZ);
-      if (REWRITE_FIELDS.some((f) => isEnglishProse(r[f]))) r = await ctx.call("rewrite-hebrew", { ...req, userText: userText + HEBREW_AGAIN }, rewriteResultZ);
-      // cleaned like every AI text; only the fields that actually change are returned (a null never empties a field)
-      const fields: Partial<Record<RewriteField, string>> = {};
-      for (const f of REWRITE_FIELDS) {
-        const raw = f === "catalogHeadline" || f === "catalogDescription" ? stripImageIds(r[f]) : r[f];
-        const cleaned = f === "title" || f === "catalogHeadline" ? raw : stripMeasurements(raw);
-        const value = cleanAiText(f === "catalogDescription" ? ensureParagraphs(cleaned) : cleaned, AI_MAX_LENGTH[f]);
-        if (value && !sameText(value, current[f])) fields[f] = value;
-      }
-      outcome = { fields };
-    }
+    let r = await ctx.call("patch", req, rewritePatchZ);
+    if (r.ops.some((o) => isEnglishProse(o.content))) r = await ctx.call("patch-hebrew", { ...req, userText: userText + HEBREW_AGAIN }, rewritePatchZ);
+    const outcome = applyOps(current, r.ops);
     // the answer was built on the saved text: if a person (or another action) changed the details meanwhile, it is void
     const now = await db.inventoryItem.findUniqueOrThrow({ where: { id: itemId }, select: { detailsVersion: true } });
     if (now.detailsVersion !== item.detailsVersion) throw new AppError("CONFLICT", "פרטי הפריט עודכנו בזמן השכתוב, ולכן התוצאה בוטלה. נסו שוב.");
