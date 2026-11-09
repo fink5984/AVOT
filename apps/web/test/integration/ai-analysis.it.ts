@@ -9,7 +9,10 @@ import { createCatalog } from "@/server/services/catalogs";
 import { assignToCatalog } from "@/server/services/assignments";
 import { listInventory, updateItem } from "@/server/services/inventory";
 import { approveReview, startReview } from "@/server/services/item-review";
-import { getAiState, recoverOrphanRuns, requestAnalysis, restoreRun, rewriteCatalog, runAnalysis, listRunsForReport } from "@/server/services/ai-analysis";
+import { applyRun, compareRuns, getAiState, recoverOrphanRuns, requestAnalysis, restoreRun, rewriteCatalog, runAnalysis, listRunsForReport } from "@/server/services/ai-analysis";
+import { Prisma } from "@prisma/client";
+import { computeBaseline, confirmBaselineFromCurrent } from "@/server/ai/baseline";
+import { restoreAiSettingsVersion, saveAiSettings } from "@/server/ai/settings";
 import { setProviderOverride } from "@/server/ai/providers";
 import { ProviderError, type AiProvider, type ProviderRequest, type ProviderResponse } from "@/server/ai/providers/types";
 import { AI_FIELD_NAMES, type AnalysisResult } from "@/server/ai/schema";
@@ -196,7 +199,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(fake.requests).toHaveLength(1);
   });
 
-  it("re-analysis needs a manager's password (server side), is rate limited, and returns the item to PENDING_REVIEW", async () => {
+  it("re-analysis needs a manager's password (server side) and is rate limited; its result is saved for comparison and the item is not touched", async () => {
     const { item } = await createBook(ctx.editor, { title: "לניתוח חוזר" });
     await analyse(ctx.editor, item.id);
     await startReview(ctx.editor, item.id);
@@ -215,10 +218,13 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     fake.answer = () => goodResult({}, { printYear: f("תקס\"א [1801]") });
     const run = await analyse(ctx.editor, item.id, { email: ctx.admin.email, password: ADMIN_PASSWORD });
     expect(run).toMatchObject({ status: "COMPLETED", isReanalysis: true, approvedById: ctx.admin.userId, createdById: ctx.editor.userId });
+    expect(run.applied).toBeNull(); // kept for comparison, not applied
     const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
-    expect(after.printYear).toBe("תקס\"א [1801]"); // replaced the previous AI value
-    expect(after.reviewStatus).toBe("PENDING_REVIEW");
-    expect(after.approvedAt).toBeNull();
+    expect(after.printYear).toBe("תקנ\"ט [1799]"); // untouched: the first analysis' value is still there
+    expect(after.reviewStatus).toBe("APPROVED");
+    expect(after.approvedAt).not.toBeNull();
+    expect(after.aiStatus).toBe("COMPLETED");
+    expect((await getAiState(ctx.editor, item.id)).runs[0]).toMatchObject({ pendingApply: true, applied: false });
     expect(await db.auditLog.count({ where: { inventoryItemId: item.id, action: "ai.reanalysis_approved", userId: ctx.editor.userId } })).toBe(1);
 
     // brute force: after 5 failures the requesting user is locked out for the window, even with the right password
@@ -499,7 +505,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
       // "\n" written as two characters instead of a line break: becomes real paragraphs
       catalogDescription: "ספר לשכתוב, מאת רבי יוסף קולון. לבוב.\\n\\nבשער חתימת בעלים של רבי משה. מצב טוב.",
     });
-    const r = await rewriteCatalog(ctx.editor, item.id, { additions: "בשער חתימת בעלים של רבי משה. טל' 050-1234567" });
+    const r = await rewriteCatalog(ctx.editor, item.id, { mode: "full", additions: "בשער חתימת בעלים של רבי משה. טל' 050-1234567" });
     const req = fake.requests[0]!;
     expect(req.images).toHaveLength(0);
     expect(req.schemaName).toBe("catalog_rewrite");
@@ -524,7 +530,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).aiStatus).toBe("NOT_RUN");
     expect((await getAiState(ctx.editor, item.id)).runs).toHaveLength(0);
     // org isolation
-    await expect(rewriteCatalog(other.admin, item.id, { additions: "" })).rejects.toThrow(/לא נמצא/);
+    await expect(rewriteCatalog(other.admin, item.id, { mode: "full", additions: "" })).rejects.toThrow(/לא נמצא/);
   });
 
   it("BOOK_AI_INLINE: the job is never QUEUED (no worker can claim it); the request process runs and closes it", async () => {
@@ -545,5 +551,226 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     } finally {
       delete process.env.BOOK_AI_INLINE;
     }
+  });
+
+  /* ───────── clean re-analysis, baseline, compare, apply, settings, patch ───────── */
+
+  const SENTINEL = "OLD_AI_SENTINEL_92471";
+  const adminApproval = () => ({ email: ctx.admin.email, password: ADMIN_PASSWORD });
+  const everything = (req: ProviderRequest) => [req.instructions, req.userText, req.schemaName, JSON.stringify(req.schema), ...req.images.map((i) => i.label)].join("\n");
+  const poisoned = () =>
+    goodResult(
+      {
+        identification: { summary: `${SENTINEL} סיכום`, existingTitleCheck: "more_precise_available", conflicts: [`${SENTINEL} סתירה`] },
+        catalog: { headline: `${SENTINEL} כותרת`, description: `${SENTINEL} תיאור\n\nמצב טוב.`, confidence: "high" },
+        findings: [{ kind: "signature", imageIds: ["img-01"], transcription: SENTINEL, reading: "probable", attribution: SENTINEL, attributionBasis: SENTINEL, significance: SENTINEL }],
+        requiresReview: [{ field: "author", reason: SENTINEL }],
+        warnings: [SENTINEL],
+      },
+      { author: f(`${SENTINEL} מחבר`), printYear: f(`${SENTINEL} שנה`), subtitle: f(`${SENTINEL} משנה`), bibliographicNotes: f(`${SENTINEL} ביבליוגרפיה`), conditionNotes: f(`${SENTINEL} מצב`) },
+    );
+
+  it("SENTINEL: a clean re-analysis never sends the first analysis' output (not in the prompt, not in any stage), but still sends the original data", async () => {
+    process.env.BOOK_AI_MAX_IMAGES_PER_REQUEST = "2"; // forces the staged flow: the observation stage is checked too
+    const { item } = await createBook(ctx.editor, { title: "ספר לדוגמה", subtitle: "כותרת משנה מקורית" });
+    await db.inventoryItem.update({ where: { id: item.id }, data: { photographerNotes: "הערת מצלם מקורית: השער חסר" } });
+    for (let s = 1; s <= 4; s++) await addPhoto(item.id, s === 1 ? "COVER" : "INTERIOR", s);
+    const stage = (req: ProviderRequest) => (req.schemaName === "item_observations" ? { images: req.images.map((i) => ({ imageId: i.id, shows: "דף", transcriptions: [], findings: [], condition: null })), summary: "דפים" } : null);
+
+    fake.answer = (req) => stage(req) ?? poisoned();
+    await analyse(ctx.editor, item.id);
+    const first = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    // the first analysis' output is now everywhere on the item
+    expect(first.author).toContain(SENTINEL);
+    expect(first.catalogDescription).toContain(SENTINEL);
+    expect(first.bibliographicNotes).toContain(SENTINEL);
+    // ...and a person edited fields after it, keeping the AI text inside them
+    await updateItem(ctx.editor, item.id, { bibliographicNotes: `ערוך ידנית. ${first.bibliographicNotes}`, author: `${first.author} (תוקן)` });
+    const edited = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(edited.author).toContain(SENTINEL);
+
+    fake.requests = [];
+    fake.answer = (req) => stage(req) ?? goodResult();
+    const second = await analyse(ctx.editor, item.id, adminApproval());
+    expect(second.status).toBe("COMPLETED");
+    expect(fake.requests.length).toBeGreaterThan(1); // observation stage(s) + final
+    expect(fake.requests.some((r) => r.schemaName === "item_observations")).toBe(true);
+    for (const req of fake.requests) {
+      expect(everything(req)).not.toContain("OLD_AI_SENTINEL");
+      expect(everything(req)).not.toContain(first.catalogDescription!.slice(0, 30));
+    }
+    // the original data is what the model got
+    const text = fake.requests.at(-1)!.userText;
+    expect(text).toContain("ספר לדוגמה");
+    expect(text).toContain("כותרת משנה מקורית");
+    expect(text).toContain("הערת מצלם מקורית");
+    // and the item still holds the first analysis (the re-analysis is only saved for comparison)
+    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).author).toBe(edited.author);
+    // the run says what the input was
+    const input = second.input as { baseline: { source: string; missing: string[] }; settings: { model: string }; inputFingerprint: string };
+    expect(input.baseline).toMatchObject({ source: "captured_before_first_analysis", missing: [] });
+    expect(input.inputFingerprint).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("baseline: fixed before the first analysis; an item analysed before it existed is reconstructed from the first run's start values, never from today's fields", async () => {
+    const { item } = await createBook(ctx.editor, { title: "ספר ישן", author: "מחבר מקורי" });
+    await analyse(ctx.editor, item.id);
+    const fixed = (await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).originalBaseline as { fields: { title: string; author: string; printPlace: string | null } };
+    expect(fixed.fields).toMatchObject({ title: "ספר ישן", author: "מחבר מקורי", printPlace: null });
+    // it never moves, whatever happens to the item afterwards
+    await updateItem(ctx.editor, item.id, { author: "שונה אחר כך" });
+    await analyse(ctx.editor, item.id, adminApproval());
+    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).originalBaseline).toEqual(fixed);
+
+    // legacy item: no stored baseline, only the first run's recorded start values
+    await db.inventoryItem.update({ where: { id: item.id }, data: { originalBaseline: Prisma.DbNull, originalBaselineAt: null } });
+    const legacy = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id }, include: { categoryNotes: true } });
+    const rebuilt = await computeBaseline(legacy);
+    expect(rebuilt).toMatchObject({ source: "reconstructed_from_first_run", missing: [] });
+    expect(rebuilt.fields).toMatchObject({ title: "ספר ישן", author: "מחבר מקורי", printPlace: null });
+    expect(rebuilt.fields.printPlace).not.toBe("זולקווא"); // today's (AI) value is not used
+    expect((await getAiState(ctx.editor, item.id)).baseline).toMatchObject({ saved: false, partial: false });
+
+    // nothing provable (the first run recorded no start values): partial baseline, warned, and today's fields are NOT sent
+    await db.inventoryAnalysis.updateMany({ where: { inventoryItemId: item.id }, data: { baseValues: Prisma.DbNull } });
+    const partial = await computeBaseline(legacy);
+    expect(partial.missing).toEqual(expect.arrayContaining(["title", "author", "printPlace"]));
+    expect(partial.fields.author).toBeNull();
+    fake.requests = [];
+    const run = await analyse(ctx.editor, item.id, adminApproval());
+    expect(run.status).toBe("COMPLETED");
+    expect(fake.requests[0]!.userText).not.toContain("זולקווא");
+    expect((run.input as { baseline: { missing: string[] } }).baseline.missing.length).toBeGreaterThan(0);
+
+    // an admin may confirm the current data as the original: explicit, logged, admin only
+    await db.inventoryItem.update({ where: { id: item.id }, data: { originalBaseline: Prisma.DbNull } });
+    const confirmed = await confirmBaselineFromCurrent(ctx.admin, item.id);
+    expect(confirmed).toMatchObject({ source: "admin_confirmed", missing: [] });
+    expect(await db.auditLog.count({ where: { inventoryItemId: item.id, action: "ai.baseline_confirmed" } })).toBe(1);
+    expect(can("EDITOR", "ai.reanalyze.approve")).toBe(false);
+  });
+
+  it("compare + apply: two runs side by side with the input differences; apply chosen fields only; restore; no double apply", async () => {
+    const { item } = await createBook(ctx.editor, { title: "להשוואה" });
+    await analyse(ctx.editor, item.id);
+    fake.answer = () => goodResult({}, { printYear: f("תקס\"א [1801]"), publisher: f("דפוס חדש") });
+    const second = await analyse(ctx.editor, item.id, adminApproval());
+    const firstRun = (await getAiState(ctx.editor, item.id)).runs.at(-1)!;
+
+    const cmp = await compareRuns(ctx.editor, item.id, firstRun.id, second.id);
+    expect(cmp.summary.onlyB).toContain("מדפיס");
+    expect(cmp.summary.differ).toContain("שנת דפוס");
+    expect(cmp.rows.find((r) => r.key === "printYear")).toMatchObject({ kind: "differs" });
+    expect(cmp.comparable).toBe(true); // same original data, photos, prompt, examples: only the answer differs
+    // a different input is called out: a photo was added between the runs
+    await addPhoto(item.id, "COVER", 1);
+    const third = await analyse(ctx.editor, item.id, adminApproval());
+    const cmp2 = await compareRuns(ctx.editor, item.id, second.id, third.id);
+    expect(cmp2.comparable).toBe(false);
+    expect(cmp2.warnings.join(" ")).toMatch(/תמונות/);
+    await expect(compareRuns(other.admin, item.id, second.id, third.id)).rejects.toThrow(/לא נמצא/);
+    await expect(compareRuns(ctx.editor, item.id, second.id, second.id)).rejects.toThrow(/שני ניתוחים/);
+
+    // apply ONLY the chosen field; the rest of the item stays
+    const before = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    await startReview(ctx.editor, item.id);
+    await approveReview(ctx.editor, item.id, { detailsVersion: (await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).detailsVersion });
+    const applied = await applyRun(ctx.editor, second.id, { fields: ["printYear"] });
+    expect(applied.fields).toEqual(["printYear"]);
+    const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(after).toMatchObject({ printYear: "תקס\"א [1801]", publisher: before.publisher, author: before.author, catalogDescription: before.catalogDescription, reviewStatus: "PENDING_REVIEW" });
+    expect(after.detailsVersion).toBe(before.detailsVersion + 1);
+    expect(await db.auditLog.count({ where: { inventoryItemId: item.id, action: "ai.applied" } })).toBe(1);
+    await expect(applyRun(ctx.editor, second.id, {})).rejects.toThrow(/כבר הוחלה/);
+    await expect(applyRun(other.admin, third.id, {})).rejects.toThrow(/לא נמצא/);
+    expect((await getAiState(ctx.editor, item.id)).runs.find((r) => r.id === second.id)).toMatchObject({ applied: true, pendingApply: false });
+
+    // restorable
+    await restoreRun(ctx.editor, second.id);
+    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).printYear).toBe(before.printYear);
+    // the whole result of another run
+    const all = await applyRun(ctx.editor, third.id, {});
+    expect(all.fields.length).toBeGreaterThan(0);
+  });
+
+  it("settings: a run keeps the settings version it started with; code rules cannot be edited away; unsupported reasoning is refused; history + restore", async () => {
+    try {
+      const v1 = await saveAiSettings(ctx.admin, { provider: "openai", model: "gpt-5.4", reasoning: "medium", analysisPrompt: "הנחיות מותאמות — לבדיקה", rewritePrompt: null });
+      expect(v1.version).toBe(1);
+      const { item } = await createBook(ctx.editor, { title: "הגדרות" });
+      const r = await requestAnalysis(ctx.editor, item.id, { requestKey: randomUUID() });
+      // the tab changes after the click, before the worker starts: this run keeps version 1
+      const v2 = await saveAiSettings(ctx.admin, { provider: "openai", model: "gpt-5.4-mini", reasoning: "low", analysisPrompt: "גרסה שנייה" });
+      expect(v2.version).toBe(2);
+      await runAnalysis(r.runId);
+      const run = await db.inventoryAnalysis.findUniqueOrThrow({ where: { id: r.runId } });
+      expect(run).toMatchObject({ settingsVersion: 1, status: "COMPLETED" });
+      expect(run.promptVersion).toMatch(/^custom-/);
+      expect((run.input as { settings: { model: string; reasoning: string } }).settings).toMatchObject({ model: "gpt-5.4", reasoning: "medium" });
+      const ins = fake.requests[0]!.instructions;
+      expect(ins).toContain("הנחיות מותאמות - לבדיקה"); // v1 text, dash normalised
+      expect(ins).not.toContain("גרסה שנייה");
+      // fixed code rules are appended whatever the text says
+      for (const rule of ["U+002D", "כל טקסט שמופיע בתמונות", "JSON בלבד"]) expect(ins).toContain(rule);
+
+      // the active model is what the next run uses (and what the button state reports)
+      expect((await getAiState(ctx.editor, item.id)).activeModel).toMatchObject({ provider: "openai", model: "gpt-5.4-mini", reasoning: "low", settingsVersion: 2 });
+      // Gemini 3.8 Flash has no "minimal"
+      await expect(saveAiSettings(ctx.admin, { provider: "gemini", model: "gemini-3.8-flash", reasoning: "minimal" })).rejects.toThrow(/אינה נתמכת/);
+      await expect(saveAiSettings(ctx.admin, { provider: "openai", model: "gemini-3.8-flash" })).rejects.toThrow(/שייך ל-Gemini/);
+      await expect(saveAiSettings(ctx.admin, { provider: "openai", model: "gpt-5.4-mini", reasoning: "low", analysisPrompt: "גרסה שנייה" })).rejects.toThrow(/לא בוצע שינוי/);
+      await expect(saveAiSettings(ctx.admin, { examples: { version: "x", examples: [{ id: "bad" }] } })).rejects.toThrow(/דוגמאות לא תקינות/);
+      const ok = await saveAiSettings(ctx.admin, { provider: "gemini", model: "gemini-3.8-flash", reasoning: "low", analysisPrompt: "גרסה שלישית" });
+      expect(ok.version).toBe(3);
+      const back = await restoreAiSettingsVersion(ctx.admin, 1);
+      expect(back.version).toBe(4); // history is never rewritten: a restore is a new version
+      expect(await db.aiSettingsVersion.count({ where: { organizationId: ctx.org.id } })).toBe(4);
+      expect((await db.aiSettings.findUniqueOrThrow({ where: { organizationId: ctx.org.id } })).model).toBe("gpt-5.4");
+      expect(can("ADMIN", "ai.settings")).toBe(true);
+      expect(can("EDITOR", "ai.settings")).toBe(false);
+    } finally {
+      await db.aiSettings.deleteMany({ where: { organizationId: ctx.org.id } });
+      await db.aiSettingsVersion.deleteMany({ where: { organizationId: ctx.org.id } });
+    }
+  });
+
+  it("targeted rewrite (patch): only what was asked changes, unverifiable operations are skipped, a change made meanwhile voids the answer", async () => {
+    const { item } = await createBook(ctx.editor, { title: "ספר לתיקון", author: "רבי יוסף", printPlace: "לבוב", printYear: "תקנ\"ט [1799]" });
+    const description = "ספר לתיקון, מאת רבי יוסף. לבוב, תקנ\"ט [1799].\n\nתוכן החיבור.\n\nמצב: כתמים.";
+    await db.inventoryItem.update({ where: { id: item.id }, data: { catalogDescription: description, catalogHeadline: "ספר לתיקון - לבוב", conditionNotes: "כתמים.", bibliographicNotes: "פרט ביבליוגרפי." } });
+    const saved = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+
+    fake.answer = () => ({
+      ops: [
+        { field: "catalogDescription", op: "add", target: null, anchor: "תוכן החיבור.", content: "בשער חתימת בעלים של רבי משה (img-02).", reason: "הוספת חתימה" },
+        { field: "printYear", op: "replace", target: null, anchor: null, content: "תקס\"א [1801]", reason: "תיקון שנה" },
+        { field: "catalogDescription", op: "replace", target: "תקנ\"ט [1799]", anchor: null, content: "תקס\"א [1801]", reason: "אזכור השנה בתיאור" },
+        { field: "conditionNotes", op: "replace", target: "טקסט שלא קיים", anchor: null, content: "משהו", reason: null },
+        { field: "author", op: "delete", target: "שם אחר", anchor: null, content: null, reason: null },
+      ],
+    });
+    const r = await rewriteCatalog(ctx.editor, item.id, { mode: "patch", additions: "בשער חתימת בעלים של רבי משה. השנה היא תקס\"א. טל' 050-1234567" });
+    expect(fake.requests[0]!.schemaName).toBe("catalog_patch");
+    expect(fake.requests[0]!.userText).not.toContain("050-1234567");
+    // only the changed fields come back; untouched ones are not returned at all
+    expect(Object.keys(r.fields).sort()).toEqual(["catalogDescription", "printYear"]);
+    expect(r.fields.printYear).toBe("תקס\"א [1801]");
+    expect(r.fields.catalogDescription).toBe("ספר לתיקון, מאת רבי יוסף. לבוב, תקס\"א [1801].\n\nתוכן החיבור.\n\nבשער חתימת בעלים של רבי משה.\n\nמצב: כתמים.");
+    expect(r.skipped.map((x) => x.field).sort()).toEqual(["author", "conditionNotes"]);
+    // nothing was written
+    const still = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(still).toMatchObject({ catalogDescription: description, printYear: saved.printYear, author: saved.author, conditionNotes: saved.conditionNotes, detailsVersion: saved.detailsVersion });
+    expect(await db.inventoryAnalysis.count({ where: { id: r.runId, kind: "catalog_rewrite", status: "COMPLETED" } })).toBe(1);
+
+    // empty instruction in patch mode: refused before anything is sent
+    fake.requests = [];
+    await expect(rewriteCatalog(ctx.editor, item.id, { mode: "patch", additions: "" })).rejects.toThrow(/המידע להוספה/);
+    expect(fake.requests).toHaveLength(0);
+    // a person saves the details while the model works: the answer was built on text that no longer exists
+    fake.answer = async () => {
+      await updateItem(ctx.editor, item.id, { author: "נערך בינתיים" });
+      return { ops: [{ field: "author", op: "replace", target: null, anchor: null, content: "אחר", reason: null }] };
+    };
+    await expect(rewriteCatalog(ctx.editor, item.id, { mode: "patch", additions: "תקן מחבר" })).rejects.toThrow(/עודכנו בזמן השכתוב/);
   });
 });

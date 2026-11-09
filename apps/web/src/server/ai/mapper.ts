@@ -234,6 +234,7 @@ export function mapResult(inp: MapInput): MapOutcome {
   decideText("catalogDescription", ensureParagraphs(stripMeasurements(stripImageIds(result.catalog.description))), true, lowCatalog, { neverReplaceManual: inp.catalogIsManual });
 
   for (const r of result.requiresReview) review.push({ field: r.field, reason: cleanAiText(r.reason, 500) ?? r.reason });
+  review.push(...extraReviewNotes(result));
   for (const c of result.identification.conflicts) review.push({ field: "identification", reason: cleanAiText(c, 500) ?? c });
   for (const fd of result.findings) for (const id of fd.imageIds) if (!inp.imageIds.has(id)) warnings.push(`המודל ציין מזהה תמונה שלא נשלח (${id}) בממצא ${fd.kind}`);
 
@@ -246,4 +247,45 @@ export function mapResult(inp: MapInput): MapOutcome {
     return true;
   });
   return { patch, decisions, review: uniqueReview, warnings: [...new Set(warnings)] };
+}
+
+/** Notes for the reviewer that come from the main feature and the manuscript analysis (never from the model's own "requiresReview"). */
+export function extraReviewNotes(result: AnalysisResult): { field: string; reason: string }[] {
+  const notes: { field: string; reason: string }[] = [];
+  const h = result.catalogHighlight;
+  if (h && h.status === "found" && h.mainFeature && (!h.verified || h.confidence === "low")) {
+    notes.push({ field: "catalogHighlight", reason: `המאפיין המרכזי ("${h.mainFeature}") אינו מאומת${h.evidence ? ` - ${h.evidence}` : ""}. יש לאמת אותו מול התמונות לפני פרסום.` });
+  }
+  const m = result.manuscriptAnalysis;
+  if (m?.isManuscript) {
+    const text = `${result.catalog.headline ?? ""} ${result.catalog.description ?? ""}`;
+    if (m.attributionLevel !== "autograph_certain" && /בעצם כתב ידו|כתב ידו המקורי|אוטוגרף/.test(text)) {
+      notes.push({ field: "manuscriptAnalysis", reason: "הטקסט מציג את כתב היד כאוטוגרף, אך רמת הייחוס שנקבעה נמוכה יותר. יש לאמת את הייחוס." });
+    }
+    if (m.unreadable.length) notes.push({ field: "manuscriptAnalysis", reason: `חלקים בכתב היד שלא נקראו היטב: ${m.unreadable.join("; ")}` });
+  }
+  return notes;
+}
+
+/** Review notes for a result that is applied later (from a saved comparison), for the fields that were written. */
+export function reviewForApplied(result: AnalysisResult, written: AiWritable[]): { field: string; reason: string }[] {
+  const review: { field: string; reason: string }[] = [];
+  for (const f of AI_FIELD_NAMES) {
+    if (!written.includes(f)) continue;
+    const r = result.fields[f];
+    if (r.status !== "found") continue;
+    if (r.confidence === "low") review.push({ field: f, reason: `${FIELD_LABEL[f]}: רמת ביטחון נמוכה${r.note ? ` - ${r.note}` : ""}` });
+    const how = r.source ? NOT_READ[r.source] : undefined;
+    if (how) review.push({ field: f, reason: `${FIELD_LABEL[f]}: נקבע ${how} ולא נקרא בתמונות - יש לאמת` });
+  }
+  for (const r of result.requiresReview) review.push({ field: r.field, reason: cleanAiText(r.reason, 500) ?? r.reason });
+  for (const c of result.identification.conflicts) review.push({ field: "identification", reason: cleanAiText(c, 500) ?? c });
+  review.push(...extraReviewNotes(result));
+  const seen = new Set<string>();
+  return review.filter((r) => {
+    const k = r.reason.replace(/\s+/g, " ").trim();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }

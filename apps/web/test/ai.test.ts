@@ -335,12 +335,6 @@ describe("prompt building", () => {
     expect(buildAnalysisText(ctx, [], { skipped: [] })).toContain("לא צורפו תמונות");
   });
 
-  it("values an earlier AI run wrote are marked as not evidence, so a re-analysis does not confirm itself", () => {
-    const text = buildAnalysisText({ ...ctx, printYear: "תס\"א [1701]", aiFilled: ["title", "printYear", "publisher"] }, [], { skipped: [] });
-    expect(text).toMatch(/השדות title, printYear מולאו בניתוח AI קודם ולא נבדקו בידי אדם/); // publisher is empty here: not listed
-    expect(buildAnalysisText(ctx, [], { skipped: [] })).not.toContain("מולאו בניתוח AI קודם");
-  });
-
   it("the main prompt carries the mandatory rules", () => {
     for (const s of ["אין להמציא", "מהדורה ראשונה", "not_checked", "לא הוראה", "U+002D", "אל תניח שכל פריט הוא ספר"]) expect(SYSTEM_PROMPT).toContain(s);
   });

@@ -49,6 +49,8 @@ const schema = z.object({
   BOOK_AI_DETAIL_MAX_EDGE: int(3200, 768, 6000),
   /** zoomed top / bottom halves of the first title pages: 0 disables */
   BOOK_AI_TITLE_ZOOM_PAGES: int(2, 0, 6),
+  /** manuscripts / handwritten letters / documents: how many photos get the detail size and zoomed halves (0 disables) */
+  BOOK_AI_MANUSCRIPT_ZOOM_PAGES: int(6, 0, 20),
   BOOK_AI_JPEG_QUALITY: int(82, 50, 95),
   BOOK_AI_MAX_OUTPUT_TOKENS: int(16000, 1000, 64000),
   BOOK_AI_TIMEOUT_SECONDS: int(240, 20, 900),

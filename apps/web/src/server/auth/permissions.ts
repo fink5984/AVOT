@@ -57,6 +57,10 @@ export const PERMISSIONS = {
   "ai.reanalyze.approve": ["ADMIN"],
   /** restore the details an AI run replaced */
   "ai.restore": ["ADMIN", "EDITOR"],
+  /** apply (all or chosen fields of) a saved AI run to the item, and compare two runs */
+  "ai.apply": ["ADMIN", "EDITOR"],
+  /** the "הגדרות AI" tab: provider, model, prompts, style examples */
+  "ai.settings": ["ADMIN"],
   /** "מצב פרטי הפריט": start the human review, approve the details */
   "item.review": ["ADMIN", "EDITOR"],
   "house.manage": ["ADMIN"],

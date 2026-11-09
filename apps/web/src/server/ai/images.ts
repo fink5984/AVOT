@@ -110,7 +110,12 @@ export async function prepareShot(buffer: Buffer, o: { rotation: number; detail:
   return { full, zooms };
 }
 
-export async function prepareImages(orgId: string, itemId: string, cfg: AiConfig): Promise<PreparedImages> {
+/**
+ * `manuscript`: the item is (or turned out to be) a manuscript, a handwritten letter or a document. Then every one of the
+ * first BOOK_AI_MANUSCRIPT_ZOOM_PAGES photos gets the detail size and zoomed top / bottom halves (small handwriting,
+ * signatures, dates), not only the title page. Same photos, same ids, same order: only more resolution on the text.
+ */
+export async function prepareImages(orgId: string, itemId: string, cfg: AiConfig, opts: { manuscript?: boolean } = {}): Promise<PreparedImages> {
   const assets = await db.photoAsset.findMany({
     where: { organizationId: orgId, inventoryItemId: itemId, deletedAt: null },
     orderBy: [{ category: "asc" }, { sortOrder: "asc" }],
@@ -125,6 +130,7 @@ export async function prepareImages(orgId: string, itemId: string, cfg: AiConfig
   const hasTitlePage = totals.has("TITLE_PAGE");
   let n = 0;
   let titleZooms = 0;
+  let manuscriptZooms = 0;
 
   for (const a of assets) {
     const index = (perCategory.get(a.category) ?? 0) + 1;
@@ -155,13 +161,16 @@ export async function prepareImages(orgId: string, itemId: string, cfg: AiConfig
       try {
         // without a title-page photo (a poster, letter, document) the first photo is the main page: same detail and zoom
         const isTitle = hasTitlePage ? a.category === "TITLE_PAGE" : n === 0;
-        const zoom = isTitle && titleZooms < cfg.BOOK_AI_TITLE_ZOOM_PAGES;
-        const shot = await prepareShot(buffer, { rotation: a.rotation, detail: isTitle, zoom }, cfg);
-        if (zoom) titleZooms++;
+        const msPage = !!opts.manuscript && manuscriptZooms < cfg.BOOK_AI_MANUSCRIPT_ZOOM_PAGES;
+        const detail = isTitle || msPage;
+        const zoom = (isTitle && titleZooms < cfg.BOOK_AI_TITLE_ZOOM_PAGES) || msPage;
+        const shot = await prepareShot(buffer, { rotation: a.rotation, detail, zoom }, cfg);
+        if (isTitle && zoom) titleZooms++;
+        if (msPage) manuscriptZooms++;
         const id = `img-${String(++n).padStart(2, "0")}`;
         const label = `${id} · ${he.category[a.category]} · ${index}/${totals.get(a.category)}`;
         const { full } = shot;
-        images.push({ id, assetId: a.id, category: a.category, label, zoomOf: null, source: c.source, data: full.data, mime: "image/jpeg", width: full.width, height: full.height, detail: isTitle ? "high" : "auto" });
+        images.push({ id, assetId: a.id, category: a.category, label, zoomOf: null, source: c.source, data: full.data, mime: "image/jpeg", width: full.width, height: full.height, detail: detail ? "high" : "auto" });
         const zooms: string[] = [];
         for (const z of shot.zooms) {
           const zid = `${id}-${z.suffix}`;
