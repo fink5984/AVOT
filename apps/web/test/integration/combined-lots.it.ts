@@ -10,7 +10,7 @@ import { assignToCatalog, setLotCommercialStatus } from "@/server/services/assig
 import { createLot, deleteLot, listLots, moveLotToCatalog, updateLot } from "@/server/services/lots";
 import { createConsignor } from "@/server/services/consignors";
 import { createItem, updateItem } from "@/server/services/inventory";
-import { DIFFERENT_CONSIGNORS_MESSAGE, addBooksToLot, dissolveLot, lotCandidates, mergeLots, removeBookFromLot, reorderLotMembers } from "@/server/services/lot-members";
+import { healLotNumbers, DIFFERENT_CONSIGNORS_MESSAGE, addBooksToLot, dissolveLot, lotCandidates, mergeLots, removeBookFromLot, reorderLotMembers } from "@/server/services/lot-members";
 import { listCombinedLotAssets, reorderLotGallery, setLotAssetHidden, setPrimary } from "@/server/services/assets";
 import { lotFulfilment, markPacked, markShipped, pickItemTx } from "@/server/services/picking";
 import { applyLotAiRun, discardLotAiRun, generateLotDescription, getLotAiState } from "@/server/services/lot-ai";
@@ -801,6 +801,22 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
   /* ─────────────────────────── compatibility & migration ─────────────────────────── */
 
   describe("compatibility with ordinary lots and the migration", () => {
+    it("lot numbers always run 1..N: an old gap (merge done before) is healed on view, and deleting a lot closes the gap", async () => {
+      const { catalog, lots } = await setup(5);
+      await merge(catalog.id, [lots[1]!, lots[2]!]);
+      // simulate the state an older version left behind: gap + merged lot still on a positive number
+      await db.lot.updateMany({ where: { catalogId: catalog.id, mergedIntoLotId: { not: null } }, data: { lotNumber: 2 + 1000 } });
+      await db.lot.update({ where: { id: lots[4]!.lot.id }, data: { lotNumber: 6 } });
+      await db.lot.update({ where: { id: lots[3]!.lot.id }, data: { lotNumber: 4 } });
+      await healLotNumbers(catalog.id);
+      const nums = async () => (await listLots(ctx.editor, catalog.id)).map((x) => x.lotNumber);
+      expect(await nums()).toEqual([1, 2, 3, 4]);
+      await healLotNumbers(catalog.id); // idempotent
+      expect(await nums()).toEqual([1, 2, 3, 4]);
+      await deleteLot(ctx.editor, lots[3]!.lot.id);
+      expect(await nums()).toEqual([1, 2, 3]);
+    });
+
     it("an ordinary lot behaves as before: one founding member, status sync, list row, sale, quick add and CSV row", async () => {
       const catalog = await createCatalog(ctx.editor, { auctionHouseId: ctx.house.id, number: `Q${++seq}-${Date.now() % 100000}`, name: "רגיל" });
       const lot = await createLot(ctx.editor, catalog.id, { title: "ספר מהיר", consignorId: anna.id });

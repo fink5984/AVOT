@@ -222,6 +222,28 @@ export async function compactLotNumbers(tx: Tx, catalogId: string) {
 }
 
 /**
+ * Self-healing: a catalog whose visible lot numbers are not exactly 1..N (an old merge, a deleted lot) or that still
+ * has merged-away lots on positive numbers is closed up. Cheap check first, then the same compaction under the
+ * catalog lock. Archived catalogs are left alone (their numbers are history).
+ */
+export async function healLotNumbers(catalogId: string) {
+  const rows = await db.$queryRaw<{ visible: bigint; maxn: number | null; minn: number | null; merged_positive: bigint }[]>`
+    SELECT count(*) FILTER (WHERE "mergedIntoLotId" IS NULL) AS visible,
+           max("lotNumber") FILTER (WHERE "mergedIntoLotId" IS NULL) AS maxn,
+           min("lotNumber") FILTER (WHERE "mergedIntoLotId" IS NULL) AS minn,
+           count(*) FILTER (WHERE "mergedIntoLotId" IS NOT NULL AND "lotNumber" > 0) AS merged_positive
+    FROM "Lot" WHERE "catalogId" = ${catalogId}::uuid`;
+  const r = rows[0];
+  if (!r || (Number(r.visible) === 0 && Number(r.merged_positive) === 0)) return;
+  if (Number(r.visible) === Number(r.maxn ?? 0) && r.minn === 1 && Number(r.merged_positive) === 0) return;
+  await db.$transaction(async (tx) => {
+    const c = await tx.$queryRaw<{ status: string }[]>`SELECT status::text FROM "Catalog" WHERE id = ${catalogId}::uuid FOR UPDATE`;
+    if (!c[0] || c[0].status === "ARCHIVED") return;
+    await compactLotNumbers(tx, catalogId);
+  });
+}
+
+/**
  * Absorbs the single-book `others` lots and the unassigned `newItemIds` books into `keeper` (a lot that exists in the
  * catalog, ordinary or already combined). Caller has locked rows and checked the keeper. Returns the final member ids.
  */

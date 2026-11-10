@@ -9,6 +9,7 @@ import { storage } from "../storage";
 import type { UserPrincipal } from "../auth/principal";
 import { assertHouse } from "../auth/houses";
 import { syncItemCommercial } from "./assignments";
+import { compactLotNumbers } from "./lot-members";
 
 /*
  * Permanent deletion — books (with every stored file) and catalogs (books stay).
@@ -317,6 +318,7 @@ export async function removeLotsFromCatalog(user: UserPrincipal, catalogId: stri
     await db.$transaction(async (tx) => {
       await tx.lot.delete({ where: { id: lot.id } });
       for (const itemId of bookIds.length ? bookIds : [lot.inventoryItemId]) await syncItemCommercial(tx, user, itemId, { reason: `השיוך לקטלוג ${catalog.number} הוסר` });
+      await compactLotNumbers(tx, catalogId);
     });
     done.push(lot.id);
   }

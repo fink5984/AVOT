@@ -3,6 +3,7 @@ import { requirePageUser } from "@/server/auth/principal";
 import { can } from "@/server/auth/permissions";
 import { db } from "@/server/db";
 import { listLots } from "@/server/services/lots";
+import { healLotNumbers } from "@/server/services/lot-members";
 import { canSeeHouse, catalogScope } from "@/server/auth/houses";
 import { HouseMark } from "@/components/house-mark";
 import { CatalogStatusBadge } from "@/components/ui/badge";
@@ -25,6 +26,8 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
   const catalog = await db.catalog.findFirst({ where: { id: catalogId, organizationId: user.organizationId }, include: { auctionHouse: true } });
   if (!catalog || !canSeeHouse(user, catalog.auctionHouseId)) notFound();
 
+  // lot numbers always run 1..N: closes gaps left by earlier merges or deletions
+  await healLotNumbers(catalogId).catch(() => undefined);
   const [lots, otherCatalogs] = await Promise.all([
     listLots(user, catalogId),
     db.catalog.findMany({
