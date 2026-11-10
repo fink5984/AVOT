@@ -43,7 +43,7 @@ export async function changeStatus<D extends Dimension>(
         ? {
             reviewChangedAt: new Date(),
             reviewChangedById: principal.kind === "user" ? principal.userId : null,
-            ...(to === "APPROVED" ? { approvedAt: new Date(), approvedById: principal.kind === "user" ? principal.userId : null } : { approvedAt: null, approvedById: null }),
+            ...(to === "APPROVED" ? { approvedAt: new Date(), approvedById: principal.kind === "user" ? principal.userId : null } : { approvedAt: null, approvedById: null, approvedVersion: null }),
           }
         : {}),
     } as never,

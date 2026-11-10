@@ -17,6 +17,8 @@ export interface SessionUser {
   role: "ADMIN" | "EDITOR" | "PHOTOGRAPHER" | "WAREHOUSE" | "VIEWER";
   /** auction houses whose commercial data the user may see; null = all */
   houseIds: string[] | null;
+  /** permissions granted to this user on top of the role's (see canUser) */
+  extraPermissions: string[];
 }
 
 function cookieOptions(expires: Date) {
@@ -68,6 +70,7 @@ export async function resolveSessionToken(token: string | undefined): Promise<Se
     name: session.user.name,
     email: session.user.email,
     role: session.user.role,
+    extraPermissions: session.user.extraPermissions,
     // admins always see every house; an empty access list means "all houses"
     houseIds: session.user.role === "ADMIN" || session.user.houseAccess.length === 0 ? null : session.user.houseAccess.map((h) => h.auctionHouseId),
   };

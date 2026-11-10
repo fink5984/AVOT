@@ -302,6 +302,8 @@ model User {
   passwordHash   String?
   role           Role       @default(VIEWER)
   status         UserStatus @default(ACTIVE)
+  /// permissions granted to this person on top of the role's (only those listed in GRANTABLE_PERMISSIONS, e.g. item.review.approve)
+  extraPermissions String[] @default([])
   lastActiveAt   DateTime?
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
@@ -399,6 +401,8 @@ model InventoryItem {
   reviewChangedById        String?            @db.Uuid
   approvedAt               DateTime?
   approvedById             String?            @db.Uuid
+  /// the detailsVersion the approver saw and approved (null while not approved)
+  approvedVersion          Int?
   /// state of the latest AI analysis run (InventoryAnalysis id in aiRunId); aiCompletedAt = the last successful one
   aiStatus                 AiAnalysisStatus   @default(NOT_RUN)
   aiRunId                  String?            @db.Uuid

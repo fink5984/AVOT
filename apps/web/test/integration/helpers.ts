@@ -12,7 +12,7 @@ export async function makeOrg(tag: string) {
   const org = await db.organization.create({ data: { name: `IT ${tag}`, slug: `it-${tag}-${Date.now()}-${Math.floor(Math.random() * 1e6)}` } });
   const mk = async (role: "ADMIN" | "EDITOR" | "PHOTOGRAPHER" | "WAREHOUSE" | "VIEWER") => {
     const u = await db.user.create({ data: { organizationId: org.id, email: `${role.toLowerCase()}-${org.slug}@example.test`, name: role, role } });
-    return { kind: "user", userId: u.id, organizationId: org.id, role, name: role, email: u.email, houseIds: null } as unknown as UserPrincipal;
+    return { kind: "user", userId: u.id, organizationId: org.id, role, name: role, email: u.email, houseIds: null, extraPermissions: [] } as unknown as UserPrincipal;
   };
   const house = await db.auctionHouse.create({ data: { organizationId: org.id, slug: "avot", name: "אבות" } });
   const house2 = await db.auctionHouse.create({ data: { organizationId: org.id, slug: "tavin", name: "טבין", sortOrder: 1 } });

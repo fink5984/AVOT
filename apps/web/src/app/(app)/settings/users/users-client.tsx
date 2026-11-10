@@ -30,6 +30,8 @@ interface UserRow {
   lastActiveAt: string | null;
   /** [] = all auction houses */
   houseIds: string[];
+  /** granted the final approval of book details on top of the role (admins have it by role) */
+  canApprove: boolean;
 }
 
 export function UsersAdmin({
@@ -67,7 +69,7 @@ export function UsersAdmin({
     }
   }
 
-  async function update(id: string, body: Partial<Pick<UserRow, "role" | "status" | "houseIds">>) {
+  async function update(id: string, body: Partial<Pick<UserRow, "role" | "status" | "houseIds">> & { extraPermissions?: string[] }) {
     try {
       await api(`/api/users/${id}`, { method: "PATCH", json: body });
       toast.success("המשתמש עודכן");
@@ -98,13 +100,14 @@ export function UsersAdmin({
       </div>
       <Panel>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[760px] text-[13.5px]">
+          <table className="w-full min-w-[860px] text-[13.5px]">
             <thead>
               <tr className="border-b border-rule text-[12.5px] text-muted">
                 <th className="px-5 py-3 text-start font-medium">שם</th>
                 <th className="px-3 py-3 text-start font-medium">אימייל</th>
                 <th className="w-44 px-3 py-3 text-start font-medium">תפקיד</th>
                 <th className="w-40 px-3 py-3 text-start font-medium">בתי מכירות</th>
+                <th className="w-28 px-3 py-3 text-start font-medium" title="הרשאה לסיים בדיקה ולאשר סופית את פרטי הספרים">אישור סופי</th>
                 <th className="w-24 px-3 py-3 text-start font-medium">מצב</th>
                 <th className="w-32 px-3 py-3 text-start font-medium">פעילות אחרונה</th>
                 <th className="w-48 px-3 py-3" />
@@ -147,6 +150,22 @@ export function UsersAdmin({
                           </option>
                         ))}
                       </Select>
+                    )}
+                  </td>
+                  <td className="px-3 py-2">
+                    {u.role === "ADMIN" ? (
+                      <span className="text-[12.5px] text-muted">לפי התפקיד</span>
+                    ) : (
+                      <label className="inline-flex min-h-8 cursor-pointer items-center gap-2 text-[12.5px]">
+                        <input
+                          type="checkbox"
+                          className="size-4 cursor-pointer accent-[var(--color-ink)]"
+                          checked={u.canApprove}
+                          onChange={(e) => update(u.id, { extraPermissions: e.target.checked ? ["item.review.approve"] : [] })}
+                          aria-label={`אישור סופי של פרטי ספרים: ${u.name}`}
+                        />
+                        {u.canApprove ? "מורשה" : "ללא"}
+                      </label>
                     )}
                   </td>
                   <td className="px-3 py-2">{u.status === "ACTIVE" ? <Badge tone="green">פעיל</Badge> : <Badge tone="neutral">מושבת</Badge>}</td>

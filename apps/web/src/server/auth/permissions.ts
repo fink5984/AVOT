@@ -63,6 +63,8 @@ export const PERMISSIONS = {
   "ai.settings": ["ADMIN"],
   /** "מצב פרטי הפריט": start the human review, approve the details */
   "item.review": ["ADMIN", "EDITOR"],
+  /** "סיום בדיקה ואישור": the final approval of a book's details. Admins by role; anyone else only when granted (User.extraPermissions) */
+  "item.review.approve": ["ADMIN"],
   "house.manage": ["ADMIN"],
   /** printers, print queue administration, test prints, re-print of any job */
   "print.manage": ["ADMIN"],
@@ -83,4 +85,15 @@ export type Permission = keyof typeof PERMISSIONS;
 
 export function can(role: Role, permission: Permission): boolean {
   return (PERMISSIONS[permission] as readonly Role[]).includes(role);
+}
+
+/** Permissions an admin may grant to an individual user on top of their role (user management screen). */
+export const GRANTABLE_PERMISSIONS = ["item.review.approve"] as const satisfies readonly Permission[];
+export const GRANTABLE_LABEL: Record<(typeof GRANTABLE_PERMISSIONS)[number], string> = {
+  "item.review.approve": "אישור סופי של פרטי ספרים",
+};
+
+/** The role's permissions plus the ones granted to this person. Use it for every check that can be granted individually. */
+export function canUser(user: { role: Role; extraPermissions?: readonly string[] }, permission: Permission): boolean {
+  return can(user.role, permission) || (user.extraPermissions ?? []).includes(permission);
 }

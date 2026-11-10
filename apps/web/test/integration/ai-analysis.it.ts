@@ -204,7 +204,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     await analyse(ctx.editor, item.id);
     await startReview(ctx.editor, item.id);
     const v = (await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).detailsVersion;
-    await approveReview(ctx.editor, item.id, { detailsVersion: v });
+    await approveReview(ctx.admin, item.id, { detailsVersion: v });
 
     await expect(requestAnalysis(ctx.editor, item.id, { requestKey: randomUUID() })).rejects.toThrow(/אישור מנהל/);
     await expect(requestAnalysis(ctx.editor, item.id, { requestKey: randomUUID(), approval: { email: ctx.admin.email, password: "wrong-password" } })).rejects.toThrow(/אימות המנהל נכשל/);
@@ -300,6 +300,26 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     expect(u.reviewStatus).toBe("IN_REVIEW"); // the first edit of a pending item starts the review
   });
 
+  it("final approval is its own permission: an editor cannot approve, a user granted it can, and the approval records who, when and which version", async () => {
+    const { item } = await createBook(ctx.editor, { title: "הרשאת אישור" });
+    await analyse(ctx.editor, item.id);
+    await startReview(ctx.editor, item.id);
+    const v = (await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).detailsVersion;
+    await expect(approveReview(ctx.editor, item.id, { detailsVersion: v })).rejects.toThrow(/אין לך הרשאה/);
+    expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).reviewStatus).toBe("IN_REVIEW");
+    const granted = { ...ctx.editor, extraPermissions: ["item.review.approve"] };
+    await approveReview(granted, item.id, { detailsVersion: v });
+    const it = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(it).toMatchObject({ reviewStatus: "APPROVED", approvedById: ctx.editor.userId, approvedVersion: v });
+    expect(it.approvedAt).not.toBeNull();
+    // a material change withdraws the approval; the audit keeps who approved before and when
+    await updateItem(ctx.editor, item.id, { printPlace: "ונציה" });
+    const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(after).toMatchObject({ reviewStatus: "IN_REVIEW", approvedById: null, approvedVersion: null });
+    const log = await db.auditLog.findFirst({ where: { inventoryItemId: item.id, action: "item_review.invalidated" } });
+    expect(log?.data).toMatchObject({ previousApprovedById: ctx.editor.userId, previousApprovedVersion: v });
+  });
+
   it("review: start, approve only with the version seen, a material change withdraws the approval; reviewer changes recorded", async () => {
     const { item } = await createBook(ctx.editor, { title: "בדיקה" });
     const run = await analyse(ctx.editor, item.id);
@@ -307,7 +327,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     let it = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
     expect(it).toMatchObject({ reviewStatus: "IN_REVIEW", reviewChangedById: ctx.editor.userId });
     await updateItem(ctx.editor, item.id, { printPlace: "לבוב" }, { expectedVersion: it.detailsVersion });
-    await expect(approveReview(ctx.editor, item.id, { detailsVersion: it.detailsVersion })).rejects.toThrow(/השתנו מאז/);
+    await expect(approveReview(ctx.admin, item.id, { detailsVersion: it.detailsVersion })).rejects.toThrow(/השתנו מאז/);
     it = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
     await approveReview(ctx.admin, item.id, { detailsVersion: it.detailsVersion });
     it = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
@@ -636,7 +656,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     // apply ONLY the chosen field; the rest of the item stays
     const before = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
     await startReview(ctx.editor, item.id);
-    await approveReview(ctx.editor, item.id, { detailsVersion: (await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).detailsVersion });
+    await approveReview(ctx.admin, item.id, { detailsVersion: (await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).detailsVersion });
     const applied = await applyRun(ctx.editor, second.id, { fields: ["printYear"] });
     expect(applied.fields).toEqual(["printYear"]);
     const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });

@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { db } from "../db";
 import { sha256Hex } from "../crypto";
 import { AppError, forbidden } from "../errors";
-import { can, type Permission } from "./permissions";
+import { canUser, type Permission } from "./permissions";
 import { resolveSessionToken, SESSION_COOKIE, type SessionUser } from "./session";
 
 export type UserPrincipal = SessionUser & { kind: "user" };
@@ -28,7 +28,7 @@ export const getCurrentUser = cache(async (): Promise<UserPrincipal | null> => {
 export async function requirePageUser(permission?: Permission): Promise<UserPrincipal> {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
-  if (permission && !can(user.role, permission)) redirect("/?denied=1");
+  if (permission && !canUser(user, permission)) redirect("/?denied=1");
   return user;
 }
 
@@ -49,12 +49,12 @@ export async function authenticate(req: Request, opts: { allowDevice?: boolean }
 export async function authenticateUser(req: Request, permission?: Permission): Promise<UserPrincipal> {
   const p = await authenticate(req);
   if (p.kind !== "user") throw forbidden();
-  if (permission && !can(p.role, permission)) throw forbidden();
+  if (permission && !canUser(p, permission)) throw forbidden();
   return p;
 }
 
 export function assertCan(p: Principal, permission: Permission) {
   // devices are only ever allowed to upload captures/heartbeats; specific routes check that explicitly
   if (p.kind === "device") throw forbidden();
-  if (!can(p.role, permission)) throw forbidden();
+  if (!canUser(p, permission)) throw forbidden();
 }

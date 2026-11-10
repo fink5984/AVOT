@@ -25,6 +25,7 @@ export default async function UsersPage() {
           status: u.status,
           lastActiveAt: u.lastActiveAt?.toISOString() ?? null,
           houseIds: u.houseAccess.map((h) => h.auctionHouseId),
+          canApprove: u.extraPermissions.includes("item.review.approve"),
         }))}
         invites={invites.map((i) => ({ id: i.id, name: i.name, email: i.email, role: i.role, expiresAt: i.expiresAt.toISOString() }))}
       />

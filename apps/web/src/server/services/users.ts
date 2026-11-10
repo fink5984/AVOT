@@ -9,6 +9,7 @@ import { env } from "../env";
 import type { UserPrincipal } from "../auth/principal";
 import { hashPassword, passwordProblem } from "../auth/password";
 import { destroyAllSessionsForUser } from "../auth/session";
+import { GRANTABLE_PERMISSIONS } from "../auth/permissions";
 
 const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
 const RESET_TTL_MS = 2 * 3600 * 1000;
@@ -72,6 +73,8 @@ export const userUpdateSchema = z.object({
   status: z.enum(["ACTIVE", "DISABLED"]).optional(),
   /** auction houses whose commercial data the user may access; [] = all houses */
   houseIds: z.array(z.string().uuid()).max(20).optional(),
+  /** permissions granted on top of the role (e.g. the final approval of book details) */
+  extraPermissions: z.array(z.enum(GRANTABLE_PERMISSIONS)).max(10).optional(),
 });
 
 export async function updateUser(admin: UserPrincipal, id: string, input: z.infer<typeof userUpdateSchema>) {
