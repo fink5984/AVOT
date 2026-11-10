@@ -55,7 +55,7 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
     commercialStatus: l.commercialStatus,
     locationLabel: l.locationLabel,
     bookCount: l.bookCount,
-    books: l.books.map((b) => ({ itemId: b.itemId, inventoryNumber: b.inventoryNumber, title: b.title, locationLabel: b.locationLabel, consignorId: b.consignorId })),
+    books: l.books.map((b) => ({ itemId: b.itemId, inventoryNumber: b.inventoryNumber, title: b.title, locationLabel: b.locationLabel, consignorId: b.consignorId, ai: b.ai })),
     consignorId: l.consignorId,
     consignorName: l.consignorName,
   }));
@@ -115,6 +115,7 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
           capture: can(user.role, "photo.capture"),
           commercial: can(user.role, "commercial.edit"),
           assign: can(user.role, "catalog.assign"),
+          ai: can(user.role, "ai.analyze"),
         }}
       />
     </>

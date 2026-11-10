@@ -60,6 +60,7 @@ export async function CombinedLotView({ lot, user }: { lot: Lot; user: Awaited<R
       physicalStatus: i.physicalStatus,
       locationLabel: i.currentLocation ? locationLabel(i.currentLocation) : null,
       photoCount: i.photoCount,
+      ai: { aiStatus: i.aiStatus, hasAiResult: i.aiCompletedAt !== null, aiError: i.aiError },
     };
   });
   const mainAssetId = lot.primaryAssetId ?? gallery.find((a) => a.isPrimary)?.id ?? gallery.find((a) => !a.hidden && a.thumbKey)?.id ?? null;
@@ -150,7 +151,7 @@ export async function CombinedLotView({ lot, user }: { lot: Lot; user: Awaited<R
 
       <div className="grid items-start gap-6 px-4 pb-10 lg:px-8 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="min-w-0 space-y-6">
-          <BooksPanel lotId={lot.id} lotNumber={lot.lotNumber} books={books} canChange={open && canAssign} blockedReason={blockedReason} canCapture={canCapture} />
+          <BooksPanel lotId={lot.id} lotNumber={lot.lotNumber} books={books} canChange={open && canAssign} blockedReason={blockedReason} canCapture={canCapture} canAi={can(user.role, "ai.analyze")} />
           <CombinedGallery
             key={`gallery-${lot.compositionVersion}-${gallery.length}`}
             lotId={lot.id}

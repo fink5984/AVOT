@@ -7,6 +7,7 @@ import { ArrowDown, ArrowUp, Camera, Layers, MapPin, Plus, Search, Trash2, Unlin
 import type { ItemReviewStatus, PhysicalStatus } from "@avot/shared";
 import { Button, IconButton } from "@/components/ui/button";
 import { PhysicalStatusBadge, ReviewStatusBadge } from "@/components/ui/badge";
+import { AiAnalyzeButton, type AiButtonState } from "@/components/ai/ai-button";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/field";
 import { Panel } from "@/components/ui/misc";
@@ -24,6 +25,7 @@ export interface LotBook {
   physicalStatus: PhysicalStatus;
   locationLabel: string | null;
   photoCount: number;
+  ai: AiButtonState;
 }
 
 interface Candidates {
@@ -44,6 +46,7 @@ export function BooksPanel({
   canChange,
   blockedReason,
   canCapture,
+  canAi,
 }: {
   lotId: string;
   lotNumber: number;
@@ -53,6 +56,8 @@ export function BooksPanel({
   /** why it may not (shown instead of the buttons) */
   blockedReason: string | null;
   canCapture: boolean;
+  /** may start an AI analysis of one book (the book's own analysis, separate from the lot description) */
+  canAi: boolean;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -132,6 +137,7 @@ export function BooksPanel({
               </div>
             </div>
             <div className="flex items-center gap-1">
+              {canAi && <AiAnalyzeButton itemId={b.itemId} inventoryNumber={b.inventoryNumber} initial={b.ai} />}
               {canCapture && (
                 <Link href={`/capture/${b.itemId}`} className="inline-flex h-7.5 items-center gap-1.5 rounded-md border border-rule-strong bg-paper px-2.5 text-[13px] shadow-card hover:bg-stone-2" title="צילום הספר">
                   <Camera className="size-3.5 text-accent" aria-hidden />

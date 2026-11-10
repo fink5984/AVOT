@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRightLeft, Ban, BookPlus, Camera, CircleCheck, CircleDashed, Copy, CornerDownLeft, Gavel, Layers, Library, MoreHorizontal, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { ArrowRightLeft, Ban, BookPlus, Camera, CircleCheck, CircleDashed, Copy, CornerDownLeft, Gavel, Layers, Library, MoreHorizontal, Pencil, Plus, Search, Sparkles, Trash2, X } from "lucide-react";
 import { LOT_STATUSES, PHOTO_CATEGORIES, type CommercialStatus, type LotStatus, type PhotoCategory } from "@avot/shared";
 import { Button, ButtonLink, IconButton } from "@/components/ui/button";
 import { CommercialStatusBadge, LOT_TONE, LotStatusBadge, toneDot } from "@/components/ui/badge";
@@ -20,6 +20,7 @@ import { AddFromInventoryDialog } from "@/components/inventory/add-from-inventor
 import { QuickBookDialog } from "@/components/consignors/quick-book-dialog";
 import { ConsignorPickDialog } from "@/components/consignors/consignor-pick-dialog";
 import { MergeLotsDialog } from "./merge-lots-dialog";
+import { AiAnalyzeButton, type AiButtonState } from "@/components/ai/ai-button";
 import { fmt, t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -43,7 +44,7 @@ export interface LotRow {
   locationLabel: string | null;
   /** 1 for an ordinary lot, 2+ for a combined lot */
   bookCount: number;
-  books: { itemId: string; inventoryNumber: string; title: string; locationLabel: string | null; consignorId: string | null }[];
+  books: { itemId: string; inventoryNumber: string; title: string; locationLabel: string | null; consignorId: string | null; ai: AiButtonState }[];
   consignorId: string | null;
   consignorName: string | null;
 }
@@ -63,7 +64,7 @@ export function LotsTable({
   lots: LotRow[];
   initialStatus: string;
   otherCatalogs: { id: string; number: string; name: string; house?: string }[];
-  perms: { create: boolean; edit: boolean; status: boolean; capture: boolean; commercial?: boolean; assign?: boolean };
+  perms: { create: boolean; edit: boolean; status: boolean; capture: boolean; commercial?: boolean; assign?: boolean; ai?: boolean };
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -80,6 +81,7 @@ export function LotsTable({
   const [removeIds, setRemoveIds] = useState<string[] | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
+  const [aiLot, setAiLot] = useState<LotRow | null>(null);
   const quickRef = useRef<HTMLInputElement>(null);
 
   const visible = useMemo(() => {
@@ -385,6 +387,14 @@ export function LotsTable({
                           צילום
                         </ButtonLink>
                       )}
+                      {perms.ai && l.bookCount < 2 && l.books[0] && (
+                        <AiAnalyzeButton itemId={l.books[0].itemId} inventoryNumber={l.books[0].inventoryNumber} initial={l.books[0].ai} size="sm" />
+                      )}
+                      {perms.ai && l.bookCount > 1 && (
+                        <IconButton label={`ניתוח AI לפי ספר בלוט ${l.lotNumber}`} size="sm" onClick={() => setAiLot(l)}>
+                          <Sparkles className="text-info" />
+                        </IconButton>
+                      )}
                       {(perms.edit || perms.commercial) && (
                         <Menu
                           trigger={(p) => (
@@ -445,6 +455,23 @@ export function LotsTable({
         </div>
       )}
 
+      <Dialog open={!!aiLot} onClose={() => setAiLot(null)} title={aiLot ? `ניתוח AI - לוט ${aiLot.lotNumber}` : ""} description="בחרו את הספר לניתוח. הניתוח הוא של הספר עצמו ונשמר אצלו; הוא לא משנה את התיאור המשותף של הלוט." width="md">
+        <ul className="divide-y divide-rule rounded-lg border border-rule">
+          {aiLot?.books.map((b, i) => (
+            <li key={b.itemId} className="flex items-center gap-3 px-3.5 py-2.5 text-[13.5px]">
+              <span className="num w-5 text-center font-semibold text-muted">{i + 1}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{b.title}</span>
+                <span className="num font-mono text-[11.5px] text-muted">{b.inventoryNumber}</span>
+              </span>
+              <AiAnalyzeButton itemId={b.itemId} inventoryNumber={b.inventoryNumber} initial={b.ai} />
+            </li>
+          ))}
+        </ul>
+        <div className="mt-5">
+          <Button onClick={() => setAiLot(null)}>סגירה</Button>
+        </div>
+      </Dialog>
       <MergeLotsDialog
         open={mergeOpen}
         onClose={() => setMergeOpen(false)}
