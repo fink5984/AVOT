@@ -21,7 +21,7 @@ test("AI analysis from the book page, review with autosave, approval, filter and
 
   await page.goto(`/inventory/${id}`);
   const panel = page.locator("section", { has: page.getByRole("heading", { name: /תוכן לפרסום בקטלוג/ }) });
-  await expect(panel.getByText("טרם טופל", { exact: true })).toBeVisible();
+  await expect(panel.getByText("טרם נותח", { exact: true })).toBeVisible();
 
   // not analysed yet: blue button, one click starts it, the spinner shows while it runs
   const ai = page.locator("[data-ai-status]");
@@ -58,7 +58,7 @@ test("AI analysis from the book page, review with autosave, approval, filter and
 
   await page.getByRole("button", { name: "סיום בדיקה ואישור" }).click();
   await expect(page.getByText("פרטי הפריט אושרו")).toBeVisible();
-  await expect(page.locator("section", { has: page.getByRole("heading", { name: /תוכן לפרסום בקטלוג/ }) }).getByText("נבדק ואושר", { exact: true })).toBeVisible();
+  await expect(page.locator("section", { has: page.getByRole("heading", { name: /תוכן לפרסום בקטלוג/ }) }).getByText("מאושר", { exact: true })).toBeVisible();
   await page.goto(`/inventory?view=needs_review&q=${encodeURIComponent(title)}`);
   await expect(page.getByText("אין ספרים בתצוגה זו")).toBeVisible();
   await page.goto(`/inventory?review=APPROVED&q=${encodeURIComponent(title)}`);

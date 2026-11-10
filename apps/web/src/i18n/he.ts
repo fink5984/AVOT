@@ -47,10 +47,10 @@ export const he = {
   } satisfies Record<LotStatus, string>,
   /** "מצב פרטי הפריט" */
   reviewStatus: {
-    NOT_STARTED: "טרם טופל",
+    NOT_STARTED: "טרם נותח",
     PENDING_REVIEW: "ממתין לבדיקה",
     IN_REVIEW: "בבדיקה",
-    APPROVED: "נבדק ואושר",
+    APPROVED: "מאושר",
   } satisfies Record<ItemReviewStatus, string>,
   aiStatus: {
     NOT_RUN: "טרם נותח",

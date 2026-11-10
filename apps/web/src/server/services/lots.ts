@@ -2,7 +2,7 @@ import "server-only";
 import { asJson } from "../json";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
-import { DEFAULT_REQUIREMENTS, PHOTO_CATEGORIES, type CategoryRequirements, type PhotoCategory } from "@avot/shared";
+import { DEFAULT_REQUIREMENTS, PHOTO_CATEGORIES, type CategoryRequirements, type ItemReviewStatus, type PhotoCategory } from "@avot/shared";
 import { db, type Tx } from "../db";
 import { AppError, notFound } from "../errors";
 import { audit } from "../audit";
@@ -321,6 +321,51 @@ export async function lotProgress(lotId: string): Promise<CategoryProgress[]> {
   return lot ? itemProgress(lot.inventoryItemId) : [];
 }
 
+export interface LotReview {
+  /** one value for the lot: APPROVED only when every book is; otherwise the book that needs a person first */
+  status: ItemReviewStatus;
+  total: number;
+  approved: number;
+  inReview: number;
+  pending: number;
+  notStarted: number;
+  /** last person who edited the details of any book of the lot, and when */
+  lastEditBy: string | null;
+  lastEditAt: string | null;
+  /** the approver (single book: its approver; combined lot: the latest approval among its approved books) */
+  approvedBy: string | null;
+  approvedAt: string | null;
+}
+
+/** Aggregates the review state of a lot's books from rows already loaded (no query per lot). */
+export function summariseReview(
+  books: { reviewStatus: ItemReviewStatus; approvedAt: Date | null; approvedById: string | null; reviewChangedAt: Date | null; reviewChangedById: string | null; lastEdit: { createdAt: Date; userId: string | null } | null }[],
+  names: Map<string, string>,
+): LotReview {
+  const count = (s: ItemReviewStatus) => books.filter((b) => b.reviewStatus === s).length;
+  const approved = count("APPROVED");
+  const pending = count("PENDING_REVIEW");
+  const inReview = count("IN_REVIEW");
+  const notStarted = count("NOT_STARTED");
+  const status: ItemReviewStatus = approved === books.length ? "APPROVED" : pending ? "PENDING_REVIEW" : inReview ? "IN_REVIEW" : "NOT_STARTED";
+  // the latest touch: an edit of the details, or a status change
+  const touches = books.flatMap((b) => [b.lastEdit ? { at: b.lastEdit.createdAt, by: b.lastEdit.userId } : null, b.reviewChangedAt ? { at: b.reviewChangedAt, by: b.reviewChangedById } : null]).filter((x): x is { at: Date; by: string | null } => !!x);
+  const last = touches.sort((a, b) => b.at.getTime() - a.at.getTime())[0];
+  const approvals = books.filter((b) => b.reviewStatus === "APPROVED" && b.approvedAt).sort((a, b) => b.approvedAt!.getTime() - a.approvedAt!.getTime());
+  return {
+    status,
+    total: books.length,
+    approved,
+    inReview,
+    pending,
+    notStarted,
+    lastEditBy: last?.by ? (names.get(last.by) ?? null) : null,
+    lastEditAt: last?.at.toISOString() ?? null,
+    approvedBy: approvals[0]?.approvedById ? (names.get(approvals[0].approvedById) ?? null) : null,
+    approvedAt: approvals[0]?.approvedAt?.toISOString() ?? null,
+  };
+}
+
 export async function listLots(
   user: UserPrincipal,
   catalogId: string,
@@ -357,11 +402,11 @@ export async function listLots(
         : {}),
     },
     include: {
-      item: { select: { inventoryNumber: true, primaryAssetId: true, physicalStatus: true, currentLocation: { include: locationInclude } } },
+      item: { select: { inventoryNumber: true, primaryAssetId: true, physicalStatus: true, reviewStatus: true, reviewChangedAt: true, reviewChangedById: true, approvedAt: true, approvedById: true, author: true, printPlace: true, printYear: true, photoCount: true, currentLocation: { include: locationInclude } } },
       members: {
         where: { removedAt: null },
         orderBy: { sortOrder: "asc" },
-        select: { inventoryItemId: true, item: { select: { inventoryNumber: true, title: true, primaryAssetId: true, physicalStatus: true, aiStatus: true, aiCompletedAt: true, aiError: true, consignor: { select: { id: true, name: true } }, currentLocation: { include: locationInclude } } } },
+        select: { inventoryItemId: true, item: { select: { inventoryNumber: true, title: true, reviewStatus: true, reviewChangedAt: true, reviewChangedById: true, approvedAt: true, approvedById: true, author: true, printPlace: true, printYear: true, photoCount: true, primaryAssetId: true, physicalStatus: true, aiStatus: true, aiCompletedAt: true, aiError: true, consignor: { select: { id: true, name: true } }, currentLocation: { include: locationInclude } } } },
       },
     },
     orderBy:
@@ -386,11 +431,25 @@ export async function listLots(
     distinct: ["inventoryItemId"],
     select: { id: true, inventoryItemId: true },
   });
+  // who last edited a book's details: ONE query for every book of the catalog (newest "inventory.updated" per book), then ONE for names
+  const lastEdits = await db.auditLog.findMany({
+    where: { inventoryItemId: { in: itemIds }, action: "inventory.updated" },
+    orderBy: { createdAt: "desc" },
+    distinct: ["inventoryItemId"],
+    select: { inventoryItemId: true, createdAt: true, userId: true },
+  });
+  const nameIds = new Set<string>();
+  for (const e of lastEdits) if (e.userId) nameIds.add(e.userId);
+  for (const l of lots) for (const it of [l.item, ...l.members.map((m) => m.item)]) for (const id of [it.reviewChangedById, it.approvedById]) if (id) nameIds.add(id);
+  const names = new Map((await db.user.findMany({ where: { id: { in: [...nameIds] } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
+  const editOf = new Map(lastEdits.map((e) => [e.inventoryItemId, e]));
   return lots.map(({ item, members, ...l }) => {
     const ids = members.length ? members.map((m) => m.inventoryItemId) : [l.inventoryItemId];
     const byCat = Object.fromEntries(
       PHOTO_CATEGORIES.map((c) => [c, counts.filter((x) => ids.includes(x.inventoryItemId) && x.category === c).reduce((n, x) => n + x._count._all, 0)]),
     ) as Record<PhotoCategory, number>;
+    const bookItems = members.length ? members.map((m) => ({ id: m.inventoryItemId, it: m.item })) : [{ id: l.inventoryItemId, it: item }];
+    const review = summariseReview(bookItems.map(({ id, it }) => ({ ...it, lastEdit: editOf.get(id) ?? null })), names);
     const books = members.map((m) => ({
       itemId: m.inventoryItemId,
       inventoryNumber: m.item.inventoryNumber,
@@ -407,6 +466,9 @@ export async function listLots(
       ...l,
       bookCount: Math.max(1, members.length),
       books,
+      review,
+      /** identification of the book (or of the first book of a combined lot), straight from the inventory */
+      bibliography: { author: bookItems[0]!.it.author, printPlace: bookItems[0]!.it.printPlace, printYear: bookItems[0]!.it.printYear },
       consignorName: books[0]?.consignorName ?? null,
       consignorId: books[0]?.consignorId ?? null,
       inventoryNumber: item.inventoryNumber,

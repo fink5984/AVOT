@@ -3,10 +3,11 @@
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRightLeft, Ban, BookPlus, Camera, CircleCheck, CircleDashed, Copy, CornerDownLeft, Gavel, Layers, Library, MoreHorizontal, Pencil, Plus, Search, Sparkles, Trash2, X } from "lucide-react";
-import { LOT_STATUSES, PHOTO_CATEGORIES, type CommercialStatus, type LotStatus, type PhotoCategory } from "@avot/shared";
+import { ArrowRightLeft, Ban, SlidersHorizontal, BookPlus, Camera, CircleCheck, CircleDashed, Copy, CornerDownLeft, Gavel, Layers, Library, MoreHorizontal, Pencil, Plus, Search, Sparkles, Trash2, X } from "lucide-react";
+import { LOT_STATUSES, PHOTO_CATEGORIES, type CommercialStatus, type ItemReviewStatus, type LotStatus, type PhotoCategory } from "@avot/shared";
+import type { LotReview } from "@/server/services/lots";
 import { Button, ButtonLink, IconButton } from "@/components/ui/button";
-import { CommercialStatusBadge, LOT_TONE, LotStatusBadge, toneDot } from "@/components/ui/badge";
+import { CommercialStatusBadge, LOT_TONE, LotStatusBadge, ReviewStatusBadge, toneDot } from "@/components/ui/badge";
 import { Dialog } from "@/components/ui/dialog";
 import { Field, Input, Select } from "@/components/ui/field";
 import { Menu } from "@/components/ui/menu";
@@ -47,9 +48,40 @@ export interface LotRow {
   books: { itemId: string; inventoryNumber: string; title: string; locationLabel: string | null; consignorId: string | null; ai: AiButtonState }[];
   consignorId: string | null;
   consignorName: string | null;
+  /** the book's review state, from the inventory (never stored on the lot); aggregated for a combined lot */
+  review: LotReview;
+  bibliography: { author: string | null; printPlace: string | null; printYear: string | null };
 }
 
-type Sort = "number" | "title" | "updated" | "status";
+type Sort = "number" | "title" | "updated" | "status" | "review";
+type ReviewFilter = "ALL" | ItemReviewStatus;
+/** the books that need a person first */
+const REVIEW_ORDER: ItemReviewStatus[] = ["PENDING_REVIEW", "IN_REVIEW", "NOT_STARTED", "APPROVED"];
+const REVIEW_FILTER_LABEL: Record<ReviewFilter, string> = { ALL: "הכול", PENDING_REVIEW: "ממתין לבדיקה", IN_REVIEW: "בבדיקה", APPROVED: "מאושר", NOT_STARTED: "טרם נותח" };
+
+/** "מחבר · מקום · שנה" */
+const identLine = (l: LotRow) => [l.bibliography.author ?? l.author, l.bibliography.printPlace, l.bibliography.printYear].filter(Boolean).join(" · ");
+
+/** the quiet line under the review badge: who edited / approved, or the per-book tally of a combined lot */
+function reviewNote(r: LotReview): string | null {
+  if (r.total > 1) {
+    return [`${r.total} ספרים`, `${r.approved} מאושרים`, r.inReview ? `${r.inReview} בבדיקה` : null, r.pending ? `${r.pending} ממתינים` : null, r.notStarted ? `${r.notStarted} טרם נותחו` : null].filter(Boolean).join(" · ");
+  }
+  if (r.status === "APPROVED" && r.approvedBy) return `מאושר - ${r.approvedBy}${r.approvedAt ? `, ${fmt.date(r.approvedAt)}` : ""}`;
+  if (r.lastEditBy) return `נערך לאחרונה על ידי ${r.lastEditBy}`;
+  return null;
+}
+
+function ReviewCell({ review }: { review: LotReview }) {
+  const note = reviewNote(review);
+  return (
+    <div className="min-w-0">
+      <ReviewStatusBadge status={review.status} />
+      {note && <div className="mt-0.5 text-[11.5px] leading-snug text-muted">{note}</div>}
+      {review.lastEditAt && review.total === 1 && review.status !== "APPROVED" && <div className="text-[11px] text-faint">{fmt.relative(review.lastEditAt)}</div>}
+    </div>
+  );
+}
 
 export function LotsTable({
   catalogId,
@@ -71,6 +103,9 @@ export function LotsTable({
   const [q, setQ] = useState("");
   const [status, setStatus] = useState(initialStatus);
   const [sort, setSort] = useState<Sort>("number");
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("ALL");
+  /** phones: the status / review / sort controls live behind one button */
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [quickTitle, setQuickTitle] = useState("");
   const [asking, setAsking] = useState<string | null>(null);
@@ -86,7 +121,7 @@ export function LotsTable({
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    let rows = lots.filter((l) => status === "ALL" || l.status === status);
+    let rows = lots.filter((l) => (status === "ALL" || l.status === status) && (reviewFilter === "ALL" || l.review.status === reviewFilter));
     if (needle) {
       rows = rows.filter(
         (l) =>
@@ -102,13 +137,20 @@ export function LotsTable({
     if (sort === "number") sorted.sort((a, b) => a.lotNumber - b.lotNumber);
     if (sort === "title") sorted.sort((a, b) => a.title.localeCompare(b.title, "he"));
     if (sort === "updated") sorted.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    if (sort === "review") sorted.sort((a, b) => REVIEW_ORDER.indexOf(a.review.status) - REVIEW_ORDER.indexOf(b.review.status) || a.lotNumber - b.lotNumber);
     if (sort === "status") sorted.sort((a, b) => LOT_STATUSES.indexOf(a.status) - LOT_STATUSES.indexOf(b.status) || a.lotNumber - b.lotNumber);
     return sorted;
-  }, [lots, q, status, sort]);
+  }, [lots, q, status, sort, reviewFilter]);
 
   const statusCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of lots) m.set(l.status, (m.get(l.status) ?? 0) + 1);
+    return m;
+  }, [lots]);
+
+  const reviewCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of lots) m.set(l.review.status, (m.get(l.review.status) ?? 0) + 1);
     return m;
   }, [lots]);
 
@@ -209,6 +251,30 @@ export function LotsTable({
     return items;
   }
 
+  /** the lot's buttons: AI analysis and the "more" menu (same in the table and on a phone card) */
+  function lotActions(l: LotRow) {
+    return (
+      <>
+        {perms.ai && l.bookCount < 2 && l.books[0] && <AiAnalyzeButton itemId={l.books[0].itemId} inventoryNumber={l.books[0].inventoryNumber} initial={l.books[0].ai} size="sm" />}
+        {perms.ai && l.bookCount > 1 && (
+          <IconButton label={`ניתוח AI לפי ספר בלוט ${l.lotNumber}`} size="sm" onClick={() => setAiLot(l)}>
+            <Sparkles className="text-info" />
+          </IconButton>
+        )}
+        {(perms.edit || perms.commercial) && (
+          <Menu
+            trigger={(p) => (
+              <IconButton label={`פעולות לפריט ${l.lotNumber}`} size="sm" {...p}>
+                <MoreHorizontal />
+              </IconButton>
+            )}
+            items={lotMenu(l)}
+          />
+        )}
+      </>
+    );
+  }
+
   return (
     <PageBody>
       {perms.create && (
@@ -238,36 +304,52 @@ export function LotsTable({
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Tabs
-          variant="pill"
-          label="סינון לפי מצב"
-          value={status}
-          onChange={setStatus}
-          items={[
-            { value: "ALL", label: "הכול", count: lots.length },
-            ...LOT_STATUSES.filter((s) => statusCounts.get(s) || s === status).map((s) => ({
-              value: s,
-              label: (
-                <span className="flex items-center gap-1.5">
-                  <span className={cn("size-1.5 rounded-full", toneDot(LOT_TONE[s]))} aria-hidden />
-                  {t.lotStatus[s]}
-                </span>
-              ),
-              count: statusCounts.get(s) ?? 0,
-            })),
-          ]}
-        />
-        <div className="relative w-full sm:ms-auto sm:w-60">
+        <div className="relative min-w-0 flex-1 sm:order-3 sm:ms-auto sm:flex-none sm:w-60">
           <Search className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-faint" />
           <Input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="סינון: מספר, שם או מחבר" className="ps-9" aria-label="סינון פריטים" />
         </div>
-        <Select value={sort} onChange={(e) => setSort(e.target.value as Sort)} className="w-full sm:w-44" aria-label="מיון">
-          <option value="number">לפי מספר פריט</option>
-          <option value="title">לפי שם</option>
-          <option value="status">לפי מצב</option>
-          <option value="updated">עודכנו לאחרונה</option>
-        </Select>
+        <Button className="sm:hidden" icon={<SlidersHorizontal />} onClick={() => setFiltersOpen((o) => !o)} aria-expanded={filtersOpen}>
+          סינון ומיון
+        </Button>
+        <div className={cn("w-full flex-wrap items-center gap-2 sm:order-1 sm:flex sm:w-auto", filtersOpen ? "flex" : "hidden")}>
+          <Tabs
+            variant="pill"
+            label="סינון לפי מצב צילום"
+            value={status}
+            onChange={setStatus}
+            items={[
+              { value: "ALL", label: "הכול", count: lots.length },
+              ...LOT_STATUSES.filter((s) => statusCounts.get(s) || s === status).map((s) => ({
+                value: s,
+                label: (
+                  <span className="flex items-center gap-1.5">
+                    <span className={cn("size-1.5 rounded-full", toneDot(LOT_TONE[s]))} aria-hidden />
+                    {t.lotStatus[s]}
+                  </span>
+                ),
+                count: statusCounts.get(s) ?? 0,
+              })),
+            ]}
+          />
+          <Select value={reviewFilter} onChange={(e) => setReviewFilter(e.target.value as ReviewFilter)} className="w-full sm:w-44" aria-label="סינון לפי מצב בדיקת פרטים">
+            {(Object.keys(REVIEW_FILTER_LABEL) as ReviewFilter[]).map((k) => (
+              <option key={k} value={k}>
+                {k === "ALL" ? "בדיקת פרטים: הכול" : `${REVIEW_FILTER_LABEL[k]} (${reviewCounts.get(k) ?? 0})`}
+              </option>
+            ))}
+          </Select>
+          <Select value={sort} onChange={(e) => setSort(e.target.value as Sort)} className="w-full sm:w-44" aria-label="מיון">
+            <option value="number">לפי מספר פריט</option>
+            <option value="review">לפי מצב בדיקת פרטים (דורשים טיפול קודם)</option>
+            <option value="title">לפי שם</option>
+            <option value="status">לפי מצב צילום</option>
+            <option value="updated">עודכנו לאחרונה</option>
+          </Select>
+        </div>
       </div>
+      <p className="mt-2 text-[12.5px] text-muted" aria-live="polite">
+        <span className="num">{visible.length}</span> מתוך <span className="num">{lots.length}</span> פריטים
+      </p>
 
       <div className="card mt-4">
         {lots.length === 0 ? (
@@ -292,113 +374,126 @@ export function LotsTable({
         ) : visible.length === 0 ? (
           <EmptyState title="אין פריטים התואמים לסינון" />
         ) : (
-          <table className="w-full text-[13.5px]">
-            <thead>
-              <tr className="border-b border-rule text-[12.5px] text-muted">
-                <th className="w-11 ps-5 pe-1 py-3">
-                  <input
-                    type="checkbox"
-                    aria-label="בחירת הכול"
-                    checked={allChecked}
-                    onChange={() => setSelected(allChecked ? new Set() : new Set(visible.map((l) => l.id)))}
-                    className="size-4 accent-[var(--color-ink)]"
-                  />
-                </th>
-                <th className="w-16 px-2 py-3" aria-label="תמונה" />
-                <th className="w-16 px-2 py-3 text-start font-medium">פריט</th>
-                <th className="px-3 py-3 text-start font-medium">שם הספר</th>
-                <th className="hidden w-36 px-3 py-3 text-start font-medium md:table-cell">צילום</th>
-                <th className="w-32 px-3 py-3 text-start font-medium">מסחרי</th>
-                {PHOTO_CATEGORIES.map((c) => (
-                  <th key={c} className="hidden w-14 px-1 py-3 text-center font-medium 2xl:table-cell" title={t.category[c]}>
-                    {t.categoryShort[c]}
-                  </th>
-                ))}
-                <th className="w-14 px-2 py-3 text-center font-medium">סה״כ</th>
-                <th className="hidden w-24 px-3 py-3 text-start font-medium xl:table-cell">עודכן</th>
-                <th className="w-32 pe-4 ps-2 py-3" aria-label="פעולות" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-rule">
+          <>
+            {/* phones: one card per lot */}
+            <ul className="divide-y divide-rule md:hidden">
               {visible.map((l) => (
-                <tr
-                  key={l.id}
-                  className={cn(
-                    "group relative transition-colors hover:bg-stone-2 [content-visibility:auto] [contain-intrinsic-size:auto_60px]",
-                    selected.has(l.id) && "bg-accent-soft/50 hover:bg-accent-soft/70",
-                  )}
-                >
-                  <td className="relative z-10 ps-5 pe-1 py-2">
-                    <input type="checkbox" checked={selected.has(l.id)} onChange={() => toggle(l.id)} aria-label={`בחירת פריט ${l.lotNumber}`} className="size-4 accent-[var(--color-ink)]" />
-                  </td>
-                  <td className="px-2 py-2">
-                    <span className="block size-11 overflow-hidden rounded-md bg-stone ring-1 ring-rule">
-                      {l.thumbAssetId && <img src={`/api/assets/${l.thumbAssetId}/thumb`} alt="" loading="lazy" decoding="async" className="size-full object-cover" />}
-                    </span>
-                  </td>
-                  <td className="px-2 py-2">
-                    <span className="num text-[15px] font-semibold">{l.lotNumber}</span>
-                  </td>
-                  <td className="max-w-0 px-3 py-2">
-                    {/* stretched link: clicking anywhere on the row opens the book */}
-                    <Link href={`/lots/${l.id}`} className="block truncate font-medium text-ink after:absolute after:inset-0">
-                      {l.title}
-                    </Link>
-                    <div className="truncate text-[12.5px] text-muted">
-                      {l.bookCount > 1 && (
-                        <span className="me-2 inline-flex items-center gap-1 rounded-md bg-accent-soft px-1.5 py-0.5 text-[11.5px] font-semibold text-accent" title="לוט משולב: כמה ספרים נמכרים יחד">
-                          <Layers className="size-3" aria-hidden />
-                          <span className="num">{l.bookCount}</span> ספרים
+                <li key={l.id} className={cn("relative flex gap-3 px-3 py-3", selected.has(l.id) && "bg-accent-soft/50")}>
+                  <input type="checkbox" checked={selected.has(l.id)} onChange={() => toggle(l.id)} aria-label={`בחירת פריט ${l.lotNumber}`} className="relative z-10 mt-1 size-5 shrink-0 accent-[var(--color-ink)]" />
+                  <span className="block size-16 shrink-0 overflow-hidden rounded-md bg-stone ring-1 ring-rule">
+                    {l.thumbAssetId && <img src={`/api/assets/${l.thumbAssetId}/thumb`} alt="" loading="lazy" decoding="async" className="size-full object-cover" />}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start gap-2">
+                      <span className="num rounded bg-stone px-1.5 text-[13px] font-semibold">{l.lotNumber}</span>
+                      <Link href={`/lots/${l.id}`} className="min-w-0 flex-1 text-[14.5px] font-medium leading-snug text-ink after:absolute after:inset-0">
+                        {l.title}
+                      </Link>
+                    </div>
+                    {identLine(l) && <div className="mt-0.5 text-[12.5px] text-muted">{identLine(l)}</div>}
+                    <div className="num mt-0.5 font-mono text-[11.5px] text-ink-2">
+                      {l.bookCount > 1 ? `${l.bookCount} ספרים · ` : ""}
+                      {l.bookCount > 1 ? l.books.map((b) => b.inventoryNumber).join(" · ") : l.inventoryNumber}
+                    </div>
+                    <div className="mt-2 grid grid-cols-1 gap-1.5">
+                      <ReviewCell review={l.review} />
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <LotStatusBadge status={l.status} />
+                        <CommercialStatusBadge status={l.commercialStatus} className={cn(l.assignmentStatus === "ENDED" && "opacity-70")} />
+                        <span className="text-[11.5px] text-muted">
+                          <span className="num">{l.photoCount}</span> תמונות
                         </span>
-                      )}
-                      <span className="num font-mono text-[11.5px] text-ink-2">
-                        {l.bookCount > 1 ? l.books.map((b) => b.inventoryNumber).join(" · ") : l.inventoryNumber}
-                      </span>
-                      {l.locationLabel && <span className="ms-2 text-[11.5px]">{l.locationLabel}</span>}
-                      {(l.subtitle || l.author) && <span> · {[l.author, l.subtitle].filter(Boolean).join(" · ")}</span>}
+                      </div>
                     </div>
-                  </td>
-                  <td className="hidden px-3 py-2 md:table-cell">
-                    <LotStatusBadge status={l.status} />
-                  </td>
-                  <td className="px-3 py-2">
-                    <CommercialStatusBadge status={l.commercialStatus} className={cn(l.assignmentStatus === "ENDED" && "opacity-70")} />
-                  </td>
-                  {PHOTO_CATEGORIES.map((c) => (
-                    <td key={c} className={cn("num hidden px-1 py-2 text-center 2xl:table-cell", l.counts[c] ? "font-medium text-ink" : "text-faint")}>
-                      {l.counts[c] || "·"}
-                    </td>
-                  ))}
-                  <td className="num px-2 py-2 text-center font-semibold">{l.photoCount}</td>
-                  <td className="hidden px-3 py-2 text-[12.5px] text-muted xl:table-cell" title={fmt.dateTime(l.updatedAt)}>
-                    {fmt.relative(l.updatedAt)}
-                  </td>
-                  <td className="relative z-10 pe-4 ps-2 py-2">
-                    <div className="flex items-center justify-end gap-1">
-                      {perms.ai && l.bookCount < 2 && l.books[0] && (
-                        <AiAnalyzeButton itemId={l.books[0].itemId} inventoryNumber={l.books[0].inventoryNumber} initial={l.books[0].ai} size="sm" />
-                      )}
-                      {perms.ai && l.bookCount > 1 && (
-                        <IconButton label={`ניתוח AI לפי ספר בלוט ${l.lotNumber}`} size="sm" onClick={() => setAiLot(l)}>
-                          <Sparkles className="text-info" />
-                        </IconButton>
-                      )}
-                      {(perms.edit || perms.commercial) && (
-                        <Menu
-                          trigger={(p) => (
-                            <IconButton label={`פעולות לפריט ${l.lotNumber}`} size="sm" {...p}>
-                              <MoreHorizontal />
-                            </IconButton>
-                          )}
-                          items={lotMenu(l)}
-                        />
-                      )}
-                    </div>
-                  </td>
-                </tr>
+                  </div>
+                  <div className="relative z-10 flex shrink-0 flex-col items-center gap-1">{lotActions(l)}</div>
+                </li>
               ))}
-            </tbody>
-          </table>
+            </ul>
+
+            <table className="hidden w-full text-[13.5px] md:table">
+              <thead>
+                <tr className="border-b border-rule text-[12.5px] text-muted">
+                  <th className="w-11 ps-5 pe-1 py-3">
+                    <input
+                      type="checkbox"
+                      aria-label="בחירת הכול"
+                      checked={allChecked}
+                      onChange={() => setSelected(allChecked ? new Set() : new Set(visible.map((l) => l.id)))}
+                      className="size-4 accent-[var(--color-ink)]"
+                    />
+                  </th>
+                  <th className="w-16 px-2 py-3 text-start font-medium">פריט</th>
+                  <th className="px-3 py-3 text-start font-medium">ספר</th>
+                  <th className="w-52 px-3 py-3 text-start font-medium">בדיקת פרטים</th>
+                  <th className="w-32 px-3 py-3 text-start font-medium">צילום</th>
+                  <th className="w-32 px-3 py-3 text-start font-medium">מסחרי</th>
+                  <th className="w-28 pe-4 ps-2 py-3" aria-label="פעולות" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-rule">
+                {visible.map((l) => (
+                  <tr
+                    key={l.id}
+                    className={cn(
+                      "group relative align-top transition-colors hover:bg-stone-2 [content-visibility:auto] [contain-intrinsic-size:auto_72px]",
+                      selected.has(l.id) && "bg-accent-soft/50 hover:bg-accent-soft/70",
+                    )}
+                  >
+                    <td className="relative z-10 ps-5 pe-1 py-3">
+                      <input type="checkbox" checked={selected.has(l.id)} onChange={() => toggle(l.id)} aria-label={`בחירת פריט ${l.lotNumber}`} className="size-4 accent-[var(--color-ink)]" />
+                    </td>
+                    <td className="px-2 py-3">
+                      <span className="num text-[15px] font-semibold">{l.lotNumber}</span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex min-w-0 gap-3">
+                        <span className="block size-12 shrink-0 overflow-hidden rounded-md bg-stone ring-1 ring-rule">
+                          {l.thumbAssetId && <img src={`/api/assets/${l.thumbAssetId}/thumb`} alt="" loading="lazy" decoding="async" className="size-full object-cover" />}
+                        </span>
+                        <div className="min-w-0">
+                          {/* stretched link: clicking anywhere on the row opens the book */}
+                          <Link href={`/lots/${l.id}`} className="line-clamp-2 font-medium leading-snug text-ink after:absolute after:inset-0">
+                            {l.title}
+                          </Link>
+                          {identLine(l) && <div className="truncate text-[12.5px] text-muted">{identLine(l)}</div>}
+                          <div className="truncate text-[12px] text-muted">
+                            {l.bookCount > 1 && (
+                              <span className="me-2 inline-flex items-center gap-1 rounded-md bg-accent-soft px-1.5 py-0.5 text-[11.5px] font-semibold text-accent" title="לוט משולב: כמה ספרים נמכרים יחד">
+                                <Layers className="size-3" aria-hidden />
+                                <span className="num">{l.bookCount}</span> ספרים
+                              </span>
+                            )}
+                            <span className="num font-mono text-[11.5px] text-ink-2">{l.bookCount > 1 ? l.books.map((b) => b.inventoryNumber).join(" · ") : l.inventoryNumber}</span>
+                            {l.consignorName && <span> · {l.consignorName}</span>}
+                            {l.locationLabel && <span> · {l.locationLabel}</span>}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <ReviewCell review={l.review} />
+                    </td>
+                    <td className="px-3 py-3">
+                      <LotStatusBadge status={l.status} />
+                      <div
+                        className="mt-0.5 text-[11.5px] text-muted"
+                        title={PHOTO_CATEGORIES.filter((c) => l.counts[c]).map((c) => `${t.category[c]}: ${l.counts[c]}`).join(" · ") || "אין תמונות"}
+                      >
+                        <span className="num">{l.photoCount}</span> תמונות
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <CommercialStatusBadge status={l.commercialStatus} className={cn(l.assignmentStatus === "ENDED" && "opacity-70")} />
+                    </td>
+                    <td className="relative z-10 pe-4 ps-2 py-2.5">
+                      <div className="flex items-center justify-end gap-1">{lotActions(l)}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         )}
       </div>
 

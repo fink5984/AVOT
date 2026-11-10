@@ -58,6 +58,8 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
     books: l.books.map((b) => ({ itemId: b.itemId, inventoryNumber: b.inventoryNumber, title: b.title, locationLabel: b.locationLabel, consignorId: b.consignorId, ai: b.ai })),
     consignorId: l.consignorId,
     consignorName: l.consignorName,
+    review: l.review,
+    bibliography: l.bibliography,
   }));
   const activeLots = lots.filter((l) => l.assignmentStatus === "ACTIVE").length;
   const sold = lots.filter((l) => l.commercialStatus === "SOLD").length;
