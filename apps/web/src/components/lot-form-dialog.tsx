@@ -6,11 +6,13 @@ import { PHOTO_CATEGORIES, type CategoryRequirements } from "@avot/shared";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Field, Input, Textarea } from "@/components/ui/field";
+import { RichTextEditor } from "@/components/ui/rich-text";
 import { useToast } from "@/components/ui/toast";
 import { t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { ConsignorSelect } from "@/components/consignors/consignor-select";
 import type { ConsignorLite } from "@/components/consignors/consignor-dialog";
+import { hasFormatting, plainText, readTextFormat, segmentsFor, trimSegments, type Segment, type TextFormat } from "@/lib/rich-text";
 
 export interface LotFormValue {
   id?: string;
@@ -24,6 +26,8 @@ export interface LotFormValue {
   /** long catalog description; every change is kept as a version */
   description?: string | null;
   internalNotes: string | null;
+  /** bold / underline / color of the two descriptions */
+  textFormat?: TextFormat;
   requirements?: CategoryRequirements;
 }
 
@@ -48,11 +52,15 @@ export function LotFormDialog({
   const [consignor, setConsignor] = useState<ConsignorLite | null>(null);
   const [missing, setMissing] = useState(false);
   const opId = useRef(crypto.randomUUID());
+  const initialDescription = () => segmentsFor(initial?.description, readTextFormat(initial?.textFormat).description);
+  const [description, setDescription] = useState<Segment[]>(initialDescription);
   useEffect(() => {
     if (!open) return;
     setConsignor(null);
     setMissing(false);
+    setDescription(initialDescription());
     opId.current = crypto.randomUUID();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   async function submit(e: React.FormEvent<HTMLFormElement>) {
@@ -68,6 +76,10 @@ export function LotFormDialog({
     const requirements = Object.fromEntries(
       PHOTO_CATEGORIES.map((c) => [c, { required: f.get(`req-${c}`) === "on", min: Math.max(0, Number(f.get(`min-${c}`) ?? 0) || 0) }]),
     );
+    // the plain text is what search, exports and AI read; the formatting travels beside it
+    const desc = trimSegments(description);
+    // a caller that did not load the lot's formatting never clears it by accident
+    const knowsFormat = !editing || (!!initial && "textFormat" in initial) || hasFormatting(desc);
     const body = {
       ...(num ? { lotNumber: Number(num) } : {}),
       title: str("title") ?? "",
@@ -76,7 +88,8 @@ export function LotFormDialog({
       printYear: str("printYear"),
       printPlace: str("printPlace"),
       shortDescription: str("shortDescription"),
-      description: str("description"),
+      description: plainText(desc) || null,
+      ...(knowsFormat ? { textFormat: { description: hasFormatting(desc) ? desc : null } } : {}),
       internalNotes: str("internalNotes"),
       requirements,
     };
@@ -149,8 +162,8 @@ export function LotFormDialog({
         <Field label="תיאור קצר" className="col-span-6">
           {(p) => <Textarea {...p} name="shortDescription" rows={2} maxLength={2000} defaultValue={initial?.shortDescription ?? ""} />}
         </Field>
-        <Field label="תיאור מלא לקטלוג" hint="ייחודי לקטלוג זה; כל שינוי נשמר כגרסה" className="col-span-6">
-          {(p) => <Textarea {...p} name="description" rows={4} maxLength={20000} defaultValue={initial?.description ?? ""} />}
+        <Field label="תיאור מלא לקטלוג" hint="ייחודי לקטלוג זה; כל שינוי בטקסט נשמר כגרסה" className="col-span-6">
+          {(p) => <RichTextEditor {...p} aria-label="תיאור מלא לקטלוג" rows={5} maxLength={20000} value={description} onChange={setDescription} />}
         </Field>
         <Field label="הערות פנימיות" className="col-span-6">
           {(p) => <Textarea {...p} name="internalNotes" rows={2} maxLength={5000} defaultValue={initial?.internalNotes ?? ""} />}

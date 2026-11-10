@@ -1,6 +1,7 @@
 import "server-only";
 import { asJson } from "../json";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { DEFAULT_REQUIREMENTS, PHOTO_CATEGORIES, type CategoryRequirements, type PhotoCategory } from "@avot/shared";
 import { db, type Tx } from "../db";
 import { AppError, notFound } from "../errors";
@@ -12,7 +13,8 @@ import { changeStatus } from "./item-status";
 import { assignToCatalog, syncItemCommercial } from "./assignments";
 import { createItemTx, findItemByOpId, itemProgress, setItemCategoryNote, type CategoryProgress } from "./inventory";
 import { locationInclude, locationLabel } from "./location-label";
-import { addFounderMember, memberItemIds, moveCombinedLot } from "./lot-members";
+import { addFounderMember, compactLotNumbers, memberItemIds, moveCombinedLot } from "./lot-members";
+import { LOT_FORMAT_FIELDS, formatToStore, readTextFormat, textFormatSchema, type TextFormat } from "@/lib/rich-text";
 
 /*
  * A Lot is a catalog lot: one inventory book's participation in a catalog.
@@ -35,6 +37,8 @@ export const lotInputSchema = z.object({
   printYear: optionalText(50),
   printPlace: optionalText(200),
   requirements: requirementsSchema.optional(),
+  /** bold / underline / color of the descriptions (segments of the same text); null removes a field's formatting */
+  textFormat: textFormatSchema.optional(),
   /** the depositor of the new physical book (mandatory; checked by createItemTx) */
   consignorId: z.string().uuid("מזהה מפקיד לא תקין").optional(),
   /** request key (see createItem): a retried quick-add returns the lot it already created */
@@ -46,6 +50,34 @@ export type LotInput = z.input<typeof lotInputSchema>;
 export const lotPatchSchema = lotInputSchema.omit({ consignorId: true }).partial().extend({
   status: z.enum(["NOT_STARTED", "IN_PROGRESS", "PENDING_REVIEW", "COMPLETED", "NEEDS_RESHOOT"]).optional(),
 });
+
+/**
+ * The textFormat column after a save: each field given keeps its formatting only when it spells exactly the stored
+ * text; a field whose text changed without new formatting loses its old one. Untouched fields keep theirs.
+ */
+function nextTextFormat(
+  current: unknown,
+  given: z.infer<typeof textFormatSchema> | undefined,
+  texts: { description: string | null },
+  changed: { description: boolean },
+): Prisma.InputJsonValue | typeof Prisma.DbNull | undefined {
+  const now = readTextFormat(current);
+  const out: TextFormat = { ...now };
+  let touched = false;
+  for (const k of LOT_FORMAT_FIELDS) {
+    if (given && given[k] !== undefined) {
+      const s = formatToStore(given[k], texts[k]);
+      if (s) out[k] = s;
+      else delete out[k];
+      touched = true;
+    } else if (changed[k] && out[k]) {
+      delete out[k];
+      touched = true;
+    }
+  }
+  if (!touched) return undefined;
+  return Object.keys(out).length ? asJson(out) : Prisma.DbNull;
+}
 
 async function nextLotNumber(tx: Tx, catalogId: string) {
   const agg = await tx.lot.aggregate({ where: { catalogId }, _max: { lotNumber: true, sortOrder: true } });
@@ -117,6 +149,7 @@ async function createLotTx(user: UserPrincipal, catalog: { id: string; number: s
         author: input.author ?? null,
         printYear: input.printYear ?? null,
         printPlace: input.printPlace ?? null,
+        textFormat: nextTextFormat(null, input.textFormat, { description: input.description ?? null }, { description: false }),
         requirements: asJson(requirements),
         assignedById: user.userId,
       },
@@ -142,7 +175,7 @@ export async function updateLot(user: UserPrincipal, lotId: string, input: z.inf
     const clash = await db.lot.findUnique({ where: { catalogId_lotNumber: { catalogId: lot.catalogId, lotNumber: input.lotNumber } } });
     if (clash) throw new AppError("CONFLICT", `פריט מספר ${input.lotNumber} כבר קיים בקטלוג (${clash.title})`);
   }
-  const { status, requirements, ...fields } = input;
+  const { status, requirements, textFormat, ...fields } = input;
   // photography status and requirements belong to the books: a combined lot applies them to every one of its books
   const itemIds = await memberItemIds(lotId);
   const previousStatus = lot.status;
@@ -150,10 +183,22 @@ export async function updateLot(user: UserPrincipal, lotId: string, input: z.inf
     if (status) for (const itemId of itemIds) await changeStatus(tx, user, itemId, "PHOTO", status, { refType: "lot", refId: lotId });
     if (requirements) await tx.inventoryItem.updateMany({ where: { id: { in: itemIds } }, data: { requirements: asJson(requirements) } });
     // a person wrote the text: it is no longer "an AI text for an older composition"
-    const textEdited = (["shortDescription", "description"] as const).some((k) => fields[k] !== undefined && fields[k] !== lot[k]);
+    const changed = { description: fields.description !== undefined && fields.description !== lot.description };
+    const textEdited = changed.description || (fields.shortDescription !== undefined && fields.shortDescription !== lot.shortDescription);
+    const format = nextTextFormat(
+      lot.textFormat,
+      textFormat,
+      { description: fields.description !== undefined ? fields.description : lot.description },
+      changed,
+    );
     const u = await tx.lot.update({
       where: { id: lotId },
-      data: { ...fields, ...(requirements ? { requirements: asJson(requirements) } : {}), ...(textEdited ? { descriptionNeedsUpdate: false, aiDescriptionRunId: null } : {}) },
+      data: {
+        ...fields,
+        ...(requirements ? { requirements: asJson(requirements) } : {}),
+        ...(textEdited ? { descriptionNeedsUpdate: false, aiDescriptionRunId: null } : {}),
+        ...(format !== undefined ? { textFormat: format } : {}),
+      },
     });
     const describes = (["title", "shortDescription", "description"] as const).some((k) => fields[k] !== undefined && fields[k] !== lot[k]);
     if (describes) {
@@ -170,7 +215,7 @@ export async function updateLot(user: UserPrincipal, lotId: string, input: z.inf
     entityId: lotId,
     lotId,
     inventoryItemId: lot.inventoryItemId,
-    data: { ...input, previousStatus: status ? previousStatus : undefined } as object,
+    data: { ...input, textFormat: textFormat ? true : undefined, previousStatus: status ? previousStatus : undefined } as object,
   });
   return updated;
 }
@@ -190,6 +235,7 @@ export async function duplicateLot(user: UserPrincipal, lotId: string, consignor
     author: lot.author,
     printYear: lot.printYear,
     printPlace: lot.printPlace,
+    textFormat: readTextFormat(lot.textFormat),
     requirements: lot.requirements as unknown as CategoryRequirements,
   });
 }
@@ -213,6 +259,7 @@ export async function moveLotToCatalog(user: UserPrincipal, lotId: string, targe
     title: lot.title,
     shortDescription: lot.shortDescription,
     description: lot.description,
+    textFormat: readTextFormat(lot.textFormat),
     replaceActive: true,
     endOutcome: "WITHDRAWN",
   });
@@ -245,6 +292,7 @@ export async function deleteLot(user: UserPrincipal, lotId: string) {
   await db.$transaction(async (tx) => {
     await tx.lot.delete({ where: { id: lotId } });
     await syncItemCommercial(tx, user, lot.inventoryItemId, { reason: `השיוך לקטלוג ${lot.catalog.number} נמחק` });
+    await compactLotNumbers(tx, lot.catalogId);
   });
   await audit(user, {
     action: "lot.deleted",
@@ -313,7 +361,7 @@ export async function listLots(
       members: {
         where: { removedAt: null },
         orderBy: { sortOrder: "asc" },
-        select: { inventoryItemId: true, item: { select: { inventoryNumber: true, title: true, primaryAssetId: true, physicalStatus: true, consignor: { select: { id: true, name: true } }, currentLocation: { include: locationInclude } } } },
+        select: { inventoryItemId: true, item: { select: { inventoryNumber: true, title: true, primaryAssetId: true, physicalStatus: true, aiStatus: true, aiCompletedAt: true, aiError: true, consignor: { select: { id: true, name: true } }, currentLocation: { include: locationInclude } } } },
       },
     },
     orderBy:
@@ -350,6 +398,7 @@ export async function listLots(
       physicalStatus: m.item.physicalStatus,
       locationLabel: m.item.currentLocation ? locationLabel(m.item.currentLocation) : null,
       consignorId: m.item.consignor?.id ?? null,
+      ai: { aiStatus: m.item.aiStatus, hasAiResult: m.item.aiCompletedAt !== null, aiError: m.item.aiError },
       consignorName: m.item.consignor?.name ?? null,
     }));
     const firstWithPhoto = members.map((m) => m.item.primaryAssetId).find((x): x is string => !!x);

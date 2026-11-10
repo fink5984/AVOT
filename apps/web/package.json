@@ -19,6 +19,7 @@
     "storage:upload": "dotenv -e .env.local -- tsx scripts/storage-upload.ts",
     "migration:report": "dotenv -e .env.local -- tsx scripts/migration-report.ts",
     "ai:dry-run": "dotenv -e .env.local -- tsx --conditions=react-server scripts/ai-dry-run.ts",
+    "fix-crop": "dotenv -e .env.local -- tsx --conditions=react-server scripts/fix-crop.ts",
     "deskew": "dotenv -e .env.local -- tsx --conditions=react-server scripts/deskew-batch.ts",
     "postinstall": "prisma generate"
   },

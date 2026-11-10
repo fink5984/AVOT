@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { CheckCircle2, ClipboardCheck, GitCompare, History, RotateCcw, Sparkles } from "lucide-react";
 import { ITEM_TYPES, type ItemReviewStatus, type ItemType } from "@avot/shared";
@@ -12,6 +12,8 @@ import { useToast } from "@/components/ui/toast";
 import { fmt, t } from "@/i18n";
 import { ApiError, api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { RichTextEditor } from "@/components/ui/rich-text";
+import { ITEM_FORMAT_FIELDS, hasFormatting, plainText, readTextFormat, segmentsFor, serializeItemFormat, type Segment } from "@/lib/rich-text";
 import type { AiState } from "@/server/services/ai-analysis";
 import { RunCompare } from "./run-compare";
 
@@ -28,7 +30,13 @@ import { RunCompare } from "./run-compare";
 
 export const REVIEW_FIELDS = ["itemType", "title", "subtitle", "author", "printPlace", "printYear", "publisher", "edition", "extent", "bibliographicNotes", "conditionNotes", "catalogHeadline", "catalogDescription"] as const;
 export type ReviewField = (typeof REVIEW_FIELDS)[number];
-export type ReviewValues = { [K in ReviewField]: K extends "itemType" ? ItemType : K extends "title" ? string : string | null };
+/**
+ * The formatting (bold / underline / color) of the long texts travels as one more value: a JSON string of
+ * { field: segments }, so the draft, the dirty tracking and the autosave treat it like any other text field.
+ */
+export type ReviewKey = ReviewField | "textFormat";
+export type ReviewValues = { [K in ReviewField]: K extends "itemType" ? ItemType : K extends "title" ? string : string | null } & { textFormat: string | null };
+
 
 const LABEL: Record<ReviewField, string> = {
   itemType: "סוג הפריט",
@@ -205,7 +213,7 @@ export function ItemReviewPanel({
   useEffect(() => {
     const d = readDraft(itemId);
     if (!d || !canEdit) return;
-    const pending = Object.fromEntries(Object.entries(d.fields).filter(([k, v]) => !same(v, serverValues[k as ReviewField]))) as Partial<ReviewValues>;
+    const pending = Object.fromEntries(Object.entries(d.fields).filter(([k, v]) => !same(v, serverValues[k as ReviewKey]))) as Partial<ReviewValues>;
     if (!Object.keys(pending).length) {
       writeDraft(itemId, null);
       return;
@@ -235,12 +243,13 @@ export function ItemReviewPanel({
       inflight.current = true;
       if (alive.current) setStatus("saving");
       try {
-        const body = Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, typeof v === "string" ? (v.trim() ? v : null) : v]));
+        const body: Record<string, unknown> = Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, typeof v === "string" ? (v.trim() ? v : null) : v]));
+        if ("textFormat" in body) body.textFormat = body.textFormat ? JSON.parse(body.textFormat as string) : null;
         const r = await api<{ detailsVersion: number; reviewStatus: ItemReviewStatus }>(`/api/inventory/${itemId}`, { method: "PATCH", json: { ...body, expectedVersion: version.current }, keepalive: opts.keepalive });
         version.current = r.detailsVersion;
         base.current = { ...base.current, ...fields };
         // edits typed while the request was out stay dirty
-        for (const [k, v] of Object.entries(fields)) if (same(dirty.current[k as ReviewField], v)) delete dirty.current[k as ReviewField];
+        for (const [k, v] of Object.entries(fields)) if (same(dirty.current[k as ReviewKey], v)) delete dirty.current[k as ReviewKey];
         writeDraft(itemId, Object.keys(dirty.current).length ? { baseVersion: version.current, fields: dirty.current } : null);
         if (alive.current) {
           setReviewStatus(r.reviewStatus);
@@ -283,7 +292,7 @@ export function ItemReviewPanel({
     };
   }, [flush]);
 
-  function change<K extends ReviewField>(k: K, v: ReviewValues[K]) {
+  function change<K extends ReviewKey>(k: K, v: ReviewValues[K]) {
     setValues((cur) => ({ ...cur, [k]: v }));
     if (same(v, base.current[k])) delete dirty.current[k];
     else dirty.current = { ...dirty.current, [k]: v };
@@ -297,9 +306,9 @@ export function ItemReviewPanel({
 
   /** the newest stored details become the base of the edits */
   async function loadNewest() {
-    const r = await api<{ item: ReviewValues & { detailsVersion: number } }>(`/api/inventory/${itemId}`);
+    const r = await api<{ item: Omit<ReviewValues, "textFormat"> & { textFormat: unknown; detailsVersion: number } }>(`/api/inventory/${itemId}`);
     version.current = r.item.detailsVersion;
-    base.current = Object.fromEntries(REVIEW_FIELDS.map((f) => [f, r.item[f] ?? null])) as ReviewValues;
+    base.current = { ...(Object.fromEntries(REVIEW_FIELDS.map((f) => [f, r.item[f] ?? null])) as Omit<ReviewValues, "textFormat">), textFormat: serializeItemFormat(r.item.textFormat) };
     conflict.current = false;
     return base.current;
   }
@@ -478,10 +487,38 @@ export function ItemReviewPanel({
     );
   }
 
+  const formats = useMemo(() => {
+    try {
+      return readTextFormat(JSON.parse(values.textFormat ?? "null"), ITEM_FORMAT_FIELDS);
+    } catch {
+      return {};
+    }
+  }, [values.textFormat]);
+  /** a rich field: the text and its formatting change together (the formatting is dropped by the server if it stops matching) */
+  function changeRich(f: (typeof ITEM_FORMAT_FIELDS)[number], segs: Segment[]) {
+    const next = { ...formats };
+    if (hasFormatting(segs)) next[f] = segs;
+    else delete next[f];
+    change(f, plainText(segs) as ReviewValues[typeof f]);
+    change("textFormat", Object.keys(next).length ? JSON.stringify(next) : null);
+  }
+  const isRich = (f: ReviewField): f is (typeof ITEM_FORMAT_FIELDS)[number] => (ITEM_FORMAT_FIELDS as readonly string[]).includes(f);
+
   const text = (f: Exclude<ReviewField, "itemType">, opts: { rows?: number; className?: string } = {}) => (
     <Field label={LABEL[f]} required={f === "title"} hint={fieldHint(f)} className={opts.className}>
       {(p) =>
-        opts.rows ? (
+        opts.rows && isRich(f) ? (
+          <RichTextEditor
+            {...p}
+            aria-label={LABEL[f]}
+            rows={opts.rows}
+            maxLength={MAX[f]}
+            value={segmentsFor(values[f], formats[f])}
+            disabled={!editable}
+            onChange={(segs) => changeRich(f, segs)}
+            className={cn(dirty.current[f] !== undefined && "ring-1 ring-warn/40")}
+          />
+        ) : opts.rows ? (
           <Textarea {...p} rows={opts.rows} maxLength={MAX[f]} value={values[f] ?? ""} readOnly={!editable} onChange={(e) => change(f, e.target.value as ReviewValues[typeof f])} onBlur={() => void flush()} className={cn(dirty.current[f] !== undefined && "ring-1 ring-warn/40")} />
         ) : (
           <Input {...p} maxLength={MAX[f]} value={values[f] ?? ""} readOnly={!editable} onChange={(e) => change(f, e.target.value as ReviewValues[typeof f])} onBlur={() => void flush()} className={cn(dirty.current[f] !== undefined && "ring-1 ring-warn/40")} />

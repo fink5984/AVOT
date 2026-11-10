@@ -19,6 +19,7 @@ import { PhotographerNotes } from "@/components/photographer-notes";
 import { locationLabel } from "@/server/services/location-label";
 import { getAiState } from "@/server/services/ai-analysis";
 import { ItemReviewPanel } from "@/components/ai/item-review-panel";
+import { serializeItemFormat } from "@/lib/rich-text";
 
 export async function generateMetadata({ params }: { params: Promise<{ itemId: string }> }) {
   const { itemId } = await params;
@@ -200,6 +201,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
             conditionNotes: item.conditionNotes,
             catalogHeadline: item.catalogHeadline,
             catalogDescription: item.catalogDescription,
+            textFormat: serializeItemFormat(item.textFormat),
           }}
           detailsVersion={item.detailsVersion}
           ai={ai}

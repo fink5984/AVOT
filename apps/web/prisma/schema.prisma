@@ -388,6 +388,9 @@ model InventoryItem {
   catalogHeadline          String?
   catalogDescription       String?
   catalogDescriptionSource DescriptionSource?
+  /// character formatting (bold / underline / color) of bibliographicNotes, conditionNotes and catalogDescription, as text
+  /// segments; shown only while the segments spell exactly the stored text (src/lib/rich-text.ts)
+  textFormat               Json?
   /// grows on every change of the details (human or AI): optimistic concurrency for autosave and AI results
   detailsVersion           Int                @default(0)
   /// "מצב פרטי הפריט" (human review); transitions are InventoryStatusEvent rows with dimension REVIEW
@@ -690,6 +693,9 @@ model Lot {
   shortDescription String?
   /// long catalog description (versioned in LotDescriptionVersion)
   description      String?
+  /// character formatting (bold / underline / color) of shortDescription and description, as text segments; shown only
+  /// while the segments spell exactly the stored text (see src/lib/rich-text.ts) - the plain columns stay the source of truth
+  textFormat       Json?
   internalNotes    String?
   author           String?
   printYear        String?

@@ -22,6 +22,7 @@ import { Gallery } from "./gallery/gallery-client";
 import { LotControls, LotDetails, LotMenu, LotNotes } from "./lot-client";
 import { LotDisplayPanel } from "./lot-display";
 import { locationInclude, locationLabel } from "@/server/services/location-label";
+import { readTextFormat } from "@/lib/rich-text";
 
 export async function generateMetadata({ params }: { params: Promise<{ lotId: string }> }) {
   const { lotId } = await params;
@@ -70,6 +71,7 @@ export default async function LotPage({ params, searchParams }: { params: Promis
     shortDescription: lot.shortDescription,
     description: lot.description,
     internalNotes: lot.internalNotes,
+    textFormat: readTextFormat(lot.textFormat),
     requirements: lot.item.requirements as never,
   };
 

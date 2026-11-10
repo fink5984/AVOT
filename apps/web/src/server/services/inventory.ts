@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { BOOK_SIZES, DEFAULT_REQUIREMENTS, ITEM_REVIEW_STATUSES, ITEM_TYPES, PHOTO_CATEGORIES, classifyCode, formatInventoryNumber, type CategoryRequirements, type PhotoCategory } from "@avot/shared";
 import { db, type Tx } from "../db";
 import { asJson } from "../json";
@@ -12,6 +12,7 @@ import { changeStatus } from "./item-status";
 import { locationLabel, locationInclude } from "./location-label";
 import { requireConsignor } from "./consignors";
 import { changedMaterialFields, reviewAfterHumanEdit } from "./item-review";
+import { ITEM_FORMAT_FIELDS, formatToStore, itemTextFormatSchema, readTextFormat, type TextFormat } from "@/lib/rich-text";
 
 const optionalText = (max: number) => z.string().trim().max(max).nullish().transform((v) => (v ? v : null));
 const optionalMm = z.number().int().min(1).max(5000).nullish();
@@ -29,6 +30,8 @@ export const itemInputSchema = z.object({
   bibliographicNotes: optionalText(5000),
   internalNotes: optionalText(5000),
   conditionNotes: optionalText(2000),
+  /** bold / underline / color of the three long texts; null removes all formatting. Kept only while it spells the stored text */
+  textFormat: itemTextFormatSchema.nullish(),
   /** the catalog draft kept on the item (see schema.prisma); a person's edit marks it MANUAL */
   catalogHeadline: optionalText(500),
   catalogDescription: optionalText(20000),
@@ -172,6 +175,33 @@ export async function getItemOrThrow(orgId: string, id: string, tx: Tx = db) {
  * save is refused with 409 when the details changed since the client loaded them (an AI result, another user):
  * nothing newer is overwritten silently. A material change withdraws an approval (see item-review.ts).
  */
+/** The textFormat column after an edit: a field keeps its formatting only while it spells the stored text. */
+function nextItemTextFormat(
+  item: { textFormat: unknown } & Record<(typeof ITEM_FORMAT_FIELDS)[number], string | null>,
+  given: z.infer<typeof itemTextFormatSchema> | null | undefined,
+  fields: Partial<Record<(typeof ITEM_FORMAT_FIELDS)[number], string | null>>,
+): Prisma.InputJsonValue | typeof Prisma.DbNull | undefined {
+  const out: TextFormat = readTextFormat(item.textFormat, ITEM_FORMAT_FIELDS);
+  let touched = false;
+  for (const k of ITEM_FORMAT_FIELDS) {
+    const text = fields[k] !== undefined ? fields[k]! : item[k];
+    if (given === null) {
+      if (out[k]) touched = true;
+      delete out[k];
+    } else if (given && given[k] !== undefined) {
+      const stored = formatToStore(given[k], text ?? null);
+      if (stored) out[k] = stored;
+      else delete out[k];
+      touched = true;
+    } else if (out[k] && fields[k] !== undefined && fields[k] !== item[k]) {
+      delete out[k];
+      touched = true;
+    }
+  }
+  if (!touched) return undefined;
+  return Object.keys(out).length ? asJson(out) : Prisma.DbNull;
+}
+
 export async function updateItem(user: UserPrincipal, id: string, input: z.infer<typeof itemPatchSchema>, opts: { expectedVersion?: number } = {}) {
   const item = await getItemOrThrow(user.organizationId, id);
   if (opts.expectedVersion !== undefined && opts.expectedVersion !== item.detailsVersion) {
@@ -198,7 +228,9 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
         ? sizeFromDimensions(input.heightMm === undefined ? item.heightMm : input.heightMm, input.widthMm === undefined ? item.widthMm : input.widthMm)
         : undefined
       : undefined);
-  const material = changedMaterialFields(item, input);
+  const { textFormat: givenFormat, ...fields } = input;
+  const material = changedMaterialFields(item, fields);
+  const format = nextItemTextFormat(item, givenFormat, fields);
   const catalogEdited = (input.catalogHeadline !== undefined || input.catalogDescription !== undefined) && material.some((f) => f === "catalogHeadline" || f === "catalogDescription");
   const updated = await db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "InventoryItem" WHERE id = ${id}::uuid FOR UPDATE`;
@@ -211,7 +243,8 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
     const u = await tx.inventoryItem.update({
       where: { id },
       data: {
-        ...input,
+        ...fields,
+        ...(format !== undefined ? { textFormat: format } : {}),
         ...(sizeCategory ? { sizeCategory } : {}),
         ...(material.length ? { detailsVersion: { increment: 1 } } : {}),
         ...(catalogEdited ? { catalogDescriptionSource: "MANUAL" as const } : {}),
@@ -236,7 +269,9 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
     }
     return u;
   });
-  const { consignorId: _consignorId, ...otherFields } = input;
+  const { consignorId: _consignorId, textFormat: _format, ...textFields } = input;
+  // the formatting segments are not logged (they repeat the text); only the fact that formatting was saved
+  const otherFields = { ...textFields, ...(givenFormat !== undefined ? { textFormat: givenFormat === null ? null : true } : {}) };
   if (Object.keys(otherFields).length) await audit(user, { action: "inventory.updated", entityType: "inventory", entityId: id, inventoryItemId: id, data: otherFields as object });
   if (consignorChange) {
     await audit(user, { action: "inventory.consignor_changed", entityType: "inventory", entityId: id, inventoryItemId: id, data: { consignorId: input.consignorId!, ...consignorChange } });

@@ -11,6 +11,8 @@ import { Menu } from "@/components/ui/menu";
 import { Panel } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { LotFormDialog, type LotFormValue } from "@/components/lot-form-dialog";
+import { FormattedText } from "@/components/ui/rich-text";
+import { segmentsFor } from "@/lib/rich-text";
 import { t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -118,6 +120,9 @@ export function LotMenu({ lot, catalogId, canEdit, canAudit }: { lot: LotFormVal
 
 export function LotDetails({ lot, catalogId, canEdit }: { lot: LotFormValue; catalogId: string; canEdit: boolean }) {
   const [edit, setEdit] = useState(false);
+  const [more, setMore] = useState(false);
+  const full = segmentsFor(lot.description, lot.textFormat?.description);
+  const long = (lot.description?.length ?? 0) > 420;
   const rows = [
     ["מחבר", lot.author],
     ["מקום דפוס", lot.printPlace],
@@ -136,7 +141,7 @@ export function LotDetails({ lot, catalogId, canEdit }: { lot: LotFormValue; cat
       }
     >
       <div className="space-y-3 px-5 py-4 text-[13.5px]">
-        {rows.length === 0 && !lot.shortDescription ? (
+        {rows.length === 0 && !lot.shortDescription && !lot.description ? (
           <p className="text-muted">{canEdit ? "עדיין לא הוזנו פרטים — מחבר, מקום ושנת דפוס, תיאור." : "לא הוזנו פרטים."}</p>
         ) : (
           <>
@@ -151,6 +156,17 @@ export function LotDetails({ lot, catalogId, canEdit }: { lot: LotFormValue; cat
               </dl>
             )}
             {lot.shortDescription && <p className="whitespace-pre-line leading-relaxed text-ink-2">{lot.shortDescription}</p>}
+            {full.length > 0 && (
+              <div className="border-t border-rule pt-3">
+                <div className="mb-1 text-[12px] font-medium text-muted">תיאור לקטלוג</div>
+                <FormattedText segments={full} className={cn("whitespace-pre-line leading-relaxed", long && !more && "line-clamp-6")} />
+                {long && (
+                  <button type="button" onClick={() => setMore((m) => !m)} className="mt-1 text-[12.5px] font-medium text-ink-2 hover:text-ink hover:underline">
+                    {more ? "הצגה מקוצרת" : "הצגת התיאור המלא"}
+                  </button>
+                )}
+              </div>
+            )}
           </>
         )}
       </div>

@@ -41,3 +41,4 @@ apps/web/.next-uidev/
 
 # straightening batch reports (scripts/deskew-batch.ts)
 deskew-reports/
+fix-crop-reports/

@@ -11,6 +11,7 @@ import { changeStatus } from "./item-status";
 import { getItemOrThrow } from "./inventory";
 import { createPickTaskTx } from "./picking";
 import { activeLotOfItem, addFounderMember, memberItemIds, setMembersActive } from "./lot-members";
+import { ITEM_FORMAT_FIELDS, formatToStore, readTextFormat, textFormatSchema, type Segment, type TextFormat } from "@/lib/rich-text";
 
 /*
  * Catalog assignment = a Lot row linking one InventoryItem to one Catalog.
@@ -28,6 +29,8 @@ export const assignSchema = z.object({
   title: optionalText(300),
   shortDescription: optionalText(2000),
   description: optionalText(20000),
+  /** formatting of the texts above (a move between catalogs keeps it); kept only while it spells the stored text */
+  textFormat: textFormatSchema.optional(),
   /**
    * The book already has an active assignment: end it (with this outcome) and
    * open the new one. Without it the request is refused with 409.
@@ -36,6 +39,13 @@ export const assignSchema = z.object({
   endOutcome: z.enum(["UNSOLD", "WITHDRAWN"]).optional(),
 });
 export type AssignInput = z.input<typeof assignSchema>;
+
+function assignedTextFormat(input: { textFormat?: z.infer<typeof textFormatSchema> }, description: string | null, draftDescription?: Segment[] | null) {
+  const out: TextFormat = {};
+  const d = formatToStore(input.textFormat?.description ?? draftDescription, description);
+  if (d) out.description = d;
+  return Object.keys(out).length ? asJson(out) : undefined;
+}
 
 async function nextLotNumber(tx: Tx, catalogId: string) {
   const agg = await tx.lot.aggregate({ where: { catalogId }, _max: { lotNumber: true, sortOrder: true } });
@@ -126,6 +136,7 @@ export async function assignToCatalog(user: UserPrincipal, itemId: string, input
         // the catalog draft kept on the item (AI or manual) is the starting point of a new assignment
         shortDescription: input.shortDescription ?? item.catalogHeadline ?? null,
         description: input.description ?? item.catalogDescription ?? null,
+        textFormat: assignedTextFormat(input, input.description ?? item.catalogDescription ?? null, input.description ? null : readTextFormat(item.textFormat, ITEM_FORMAT_FIELDS).catalogDescription),
         status: item.photoStatus,
         photoCount: item.photoCount,
         requirements: asJson(item.requirements),
