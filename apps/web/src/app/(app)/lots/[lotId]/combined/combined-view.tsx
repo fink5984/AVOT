@@ -152,6 +152,7 @@ export async function CombinedLotView({ lot, user }: { lot: Lot; user: Awaited<R
         <div className="min-w-0 space-y-6">
           <BooksPanel lotId={lot.id} lotNumber={lot.lotNumber} books={books} canChange={open && canAssign} blockedReason={blockedReason} canCapture={canCapture} />
           <CombinedGallery
+            key={`gallery-${lot.compositionVersion}-${gallery.length}`}
             lotId={lot.id}
             lotNumber={lot.lotNumber}
             initial={gallery.map((a) => ({ ...toAssetDto(a), hidden: a.hidden, book: a.book })) as GalleryAsset[]}
@@ -159,7 +160,9 @@ export async function CombinedLotView({ lot, user }: { lot: Lot; user: Awaited<R
             canEdit={canEdit}
             canDownload={can(user.role, "photo.download")}
           />
-          <LotAiPanel lotId={lot.id} canGenerate={can(user.role, "ai.analyze") && lot.assignmentStatus === "ACTIVE"} canApply={can(user.role, "ai.apply") && open} initialNeedsUpdate={lot.descriptionNeedsUpdate} />
+          <LotAiPanel
+            key={`ai-${lot.compositionVersion}-${lot.descriptionNeedsUpdate}-${lot.aiDescriptionRunId ?? ""}`}
+            lotId={lot.id} canGenerate={can(user.role, "ai.analyze") && lot.assignmentStatus === "ACTIVE"} canApply={can(user.role, "ai.apply") && open} initialNeedsUpdate={lot.descriptionNeedsUpdate} />
         </div>
 
         <div className="space-y-4">

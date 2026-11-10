@@ -143,7 +143,7 @@ export async function listCatalogs(user: UserPrincipal, opts: { q?: string; stat
         : { updatedAt: "desc" as const };
   const catalogs = await db.catalog.findMany({ where, orderBy, take: 500, include: { auctionHouse: { select: { id: true, slug: true, name: true, accentColor: true } } } });
   const ids = catalogs.map((c) => c.id);
-  const lotStats = await db.lot.groupBy({ by: ["catalogId", "status"], where: { catalogId: { in: ids } }, _count: { _all: true }, _sum: { photoCount: true } });
+  const lotStats = await db.lot.groupBy({ by: ["catalogId", "status"], where: { catalogId: { in: ids }, mergedIntoLotId: null }, _count: { _all: true }, _sum: { photoCount: true } });
   return catalogs.map((c) => {
     const stats = lotStats.filter((s) => s.catalogId === c.id);
     return {
