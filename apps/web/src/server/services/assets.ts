@@ -10,6 +10,7 @@ import { storage } from "../storage";
 import { lockItem, recountItem } from "./lot-counters";
 import { resolveItemTarget } from "./inventory";
 import { log } from "../log";
+import { memberItemIds } from "./lot-members";
 
 /*
  * Source photos belong to the InventoryItem (the physical copy). A catalog lot
@@ -106,6 +107,56 @@ export async function listLotAssets(orgId: string, lot: { id: string; inventoryI
   );
 }
 
+/**
+ * The shared gallery of a COMBINED lot: the photos of every book in one list, in the lot's order. The photos stay
+ * owned by their books (no file or asset row is copied or changed); the lot only stores a presentation order, the
+ * hidden flags and its primary photo (LotDisplayAsset / Lot.primaryAssetId). Order: photos the lot placed explicitly
+ * first (by that order), then the rest by book order, category and the book's own photo order.
+ * Hidden photos are returned too (flagged) so the gallery can show them again; callers that publish filter them out.
+ */
+export async function listCombinedLotAssets(orgId: string, lot: { id: string; primaryAssetId: string | null }, opts: { itemId?: string } = {}) {
+  const itemIds = await memberItemIds(lot.id);
+  const wanted = opts.itemId ? itemIds.filter((i) => i === opts.itemId) : itemIds;
+  const [assets, display, items] = await Promise.all([
+    db.photoAsset.findMany({ where: { organizationId: orgId, inventoryItemId: { in: wanted }, deletedAt: null }, select: assetSelect }),
+    db.lotDisplayAsset.findMany({ where: { lotId: lot.id } }),
+    db.inventoryItem.findMany({ where: { id: { in: itemIds } }, select: { id: true, inventoryNumber: true, title: true, primaryAssetId: true } }),
+  ]);
+  const byId = new Map(display.map((d) => [d.assetId, d]));
+  const itemInfo = new Map(items.map((i) => [i.id, i]));
+  const bookIdx = new Map(itemIds.map((id, i) => [id, i]));
+  const catIdx = new Map(PHOTO_CATEGORIES.map((c, i) => [c, i]));
+  const firstItem = itemIds[0] ? itemInfo.get(itemIds[0]) : undefined;
+  const primary = lot.primaryAssetId ?? firstItem?.primaryAssetId ?? null;
+  const explicit = (a: (typeof assets)[number]) => byId.get(a.id)?.sortOrder ?? Number.POSITIVE_INFINITY;
+  const sorted = [...assets].sort(
+    (x, y) =>
+      explicit(x) - explicit(y) || (bookIdx.get(x.inventoryItemId) ?? 0) - (bookIdx.get(y.inventoryItemId) ?? 0) || (catIdx.get(x.category) ?? 0) - (catIdx.get(y.category) ?? 0) || x.sortOrder - y.sortOrder,
+  );
+  return sorted.map((a, i) => ({
+    ...a,
+    sortOrder: i + 1,
+    isPrimary: a.id === primary,
+    hidden: !!byId.get(a.id)?.hidden,
+    book: itemInfo.get(a.inventoryItemId) ? { id: a.inventoryItemId, inventoryNumber: itemInfo.get(a.inventoryItemId)!.inventoryNumber, title: itemInfo.get(a.inventoryItemId)!.title, index: (bookIdx.get(a.inventoryItemId) ?? 0) + 1 } : null,
+  }));
+}
+
+export const lotGalleryOrderSchema = z.object({ orderedAssetIds: z.array(z.string().uuid()).min(1).max(5000) });
+
+/** Saves the order of the lot's shared gallery (the visible photos, as listed). Hidden photos keep their flag. */
+export async function reorderLotGallery(user: UserPrincipal, lotId: string, orderedAssetIds: string[]) {
+  const lot = await db.lot.findFirst({ where: { id: lotId, organizationId: user.organizationId } });
+  if (!lot) throw notFound("הפריט");
+  const current = (await listCombinedLotAssets(user.organizationId, lot)).filter((a) => !a.hidden).map((a) => a.id);
+  const set = new Set(current);
+  if (orderedAssetIds.length !== set.size || orderedAssetIds.some((id) => !set.has(id))) throw new AppError("CONFLICT", "סדר התמונות בלוט השתנה בינתיים. רעננו את הגלריה ונסו שוב.");
+  await db.$transaction(
+    orderedAssetIds.map((assetId, i) => db.lotDisplayAsset.upsert({ where: { lotId_assetId: { lotId, assetId } }, create: { lotId, assetId, sortOrder: i + 1 }, update: { sortOrder: i + 1 } })),
+  );
+  await audit(user, { action: "photo.reordered_lot", entityType: "lot", entityId: lotId, lotId, inventoryItemId: lot.inventoryItemId, data: { combined: true, count: orderedAssetIds.length } });
+}
+
 export async function updateAsset(user: UserPrincipal, id: string, input: z.infer<typeof assetPatchSchema>) {
   const [asset] = await loadAssets(user, [id]);
   const updated = await db.photoAsset.update({
@@ -133,6 +184,7 @@ export async function reorderAssets(user: UserPrincipal, input: z.infer<typeof r
   if (!target) throw notFound("הספר");
   const lotScope = input.scope === "lot";
   if (lotScope && !target.lot) throw new AppError("VALIDATION", "סדר תצוגה לקטלוג מחייב פריט קטלוג");
+  if (lotScope && (await memberItemIds(target.lot!.id)).length > 1) throw new AppError("VALIDATION", "בלוט משולב סדר התמונות נקבע בגלריה המשותפת של הלוט");
   const current = await db.photoAsset.findMany({
     where: { organizationId: user.organizationId, inventoryItemId: target.itemId, category: input.category, deletedAt: null },
     select: { id: true },
@@ -174,7 +226,7 @@ export async function setLotAssetHidden(user: UserPrincipal, lotId: string, asse
   const lot = await db.lot.findFirst({ where: { id: lotId, organizationId: user.organizationId } });
   if (!lot) throw notFound("הפריט");
   const [asset] = await loadAssets(user, [assetId]);
-  if (asset!.inventoryItemId !== lot.inventoryItemId) throw new AppError("VALIDATION", "התמונה אינה של ספר זה");
+  if (!(await memberItemIds(lotId)).includes(asset!.inventoryItemId)) throw new AppError("VALIDATION", "התמונה אינה של ספר בלוט זה");
   await db.$transaction(async (tx) => {
     await tx.lotDisplayAsset.upsert({ where: { lotId_assetId: { lotId, assetId } }, create: { lotId, assetId, hidden }, update: { hidden } });
     if (hidden && lot.primaryAssetId === assetId) await tx.lot.update({ where: { id: lotId }, data: { primaryAssetId: null } });
@@ -192,7 +244,7 @@ export async function setPrimary(user: UserPrincipal, assetId: string, lotId?: s
   const itemId = asset!.inventoryItemId;
   if (lotId) {
     const lot = await db.lot.findFirst({ where: { id: lotId, organizationId: user.organizationId } });
-    if (!lot || lot.inventoryItemId !== itemId) throw new AppError("VALIDATION", "התמונה אינה של ספר זה");
+    if (!lot || !(await memberItemIds(lotId)).includes(itemId)) throw new AppError("VALIDATION", "התמונה אינה של ספר בלוט זה");
     await db.lot.update({ where: { id: lotId }, data: { primaryAssetId: assetId } });
     await audit(user, { action: "photo.set_primary_lot", entityType: "asset", entityId: assetId, lotId, inventoryItemId: itemId });
     return;
@@ -203,7 +255,7 @@ export async function setPrimary(user: UserPrincipal, assetId: string, lotId?: s
     await tx.photoAsset.update({ where: { id: assetId }, data: { isPrimary: true } });
     await tx.inventoryItem.update({ where: { id: itemId }, data: { primaryAssetId: assetId } });
     // lots whose primary was just "the item's primary" keep following it
-    if (item.primaryAssetId) await tx.lot.updateMany({ where: { inventoryItemId: itemId, primaryAssetId: item.primaryAssetId }, data: { primaryAssetId: null } });
+    if (item.primaryAssetId) await tx.lot.updateMany({ where: { primaryAssetId: item.primaryAssetId, members: { some: { inventoryItemId: itemId, removedAt: null } } }, data: { primaryAssetId: null } });
   });
   await audit(user, { action: "photo.set_primary", entityType: "asset", entityId: assetId, lotId: asset!.lotId, inventoryItemId: itemId });
 }

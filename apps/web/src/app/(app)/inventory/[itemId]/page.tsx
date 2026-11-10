@@ -231,6 +231,11 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
                       <Link href={`/lots/${l.id}`} className="mt-1 block font-medium hover:underline">
                         קטלוג <span className="num">{l.catalog.number}</span> · פריט <span className="num">{l.lotNumber}</span>
                       </Link>
+                      {l.mergedIntoLotId ? (
+                        <div className="text-[12px] font-medium text-accent">אוחד ללוט משולב · נשמר כהיסטוריה</div>
+                      ) : l.bookCount > 1 ? (
+                        <div className="text-[12px] font-medium text-accent">לוט משולב · <span className="num">{l.bookCount}</span> ספרים נמכרים יחד</div>
+                      ) : null}
                       <div className="text-[12px] text-muted">
                         {l.catalog.name} · {fmt.date(l.assignedAt)}
                         {l.endedAt && <> – {fmt.date(l.endedAt)}</>} · {t.assignment[l.assignmentStatus]}

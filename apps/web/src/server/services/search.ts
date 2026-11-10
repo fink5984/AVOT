@@ -79,8 +79,11 @@ export async function globalSearch(user: UserPrincipal, raw: string) {
       where: {
         organizationId: orgId,
         catalog: catalogScope(user),
+        // a lot merged into another one is history; its books are found through the combined lot
+        mergedIntoLotId: null,
         OR: [
           { title: { contains: q, mode: "insensitive" } },
+          { members: { some: { removedAt: null, item: { OR: [{ title: { contains: q, mode: "insensitive" } }, { inventoryNumber: { contains: q.toUpperCase() } }] } } } },
           { subtitle: { contains: q, mode: "insensitive" } },
           { author: { contains: q, mode: "insensitive" } },
           { printPlace: { contains: q, mode: "insensitive" } },

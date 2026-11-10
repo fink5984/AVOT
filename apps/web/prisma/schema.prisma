@@ -452,6 +452,7 @@ model InventoryItem {
   analyses        InventoryAnalysis[]
   pickTasks       PickTask[]
   aliases         InventoryNumberAlias[]
+  lotMemberships  LotMember[]
 
   @@unique([organizationId, serial])
   @@unique([organizationId, inventoryNumber])
@@ -673,6 +674,10 @@ model Catalog {
 /// presentation copy, initialised from the InventoryItem.
 /// At most one ACTIVE assignment per item — enforced by the partial unique
 /// index "Lot_inventoryItemId_active_key" (raw SQL in the migration).
+///
+/// COMBINED LOTS: the books of a lot are the LotMember rows (source of truth: one row for an ordinary lot, two or
+/// more for a combined lot). Lot.inventoryItemId is only the "anchor" kept for older code and for the unique index:
+/// always a present member (the first one); it never means "the book of this lot" when the lot has several.
 model Lot {
   id               String              @id @default(uuid()) @db.Uuid
   organizationId   String              @db.Uuid
@@ -706,23 +711,137 @@ model Lot {
   endReason        String?
   /// reference to a designed catalog page (future layout module)
   pageRef          Json?
+  /// set on a lot that was merged into another lot: it stays as ENDED history, is never shown as a separate lot and
+  /// its number is never reused; cleared when its book leaves the combined lot and the lot is reactivated
+  mergedIntoLotId  String?             @db.Uuid
+  /// grows on every change of the lot's books (merge, add, remove): an AI description written for an older composition is stale
+  compositionVersion Int               @default(1)
+  /// the lot holds an applied AI description that was written for a previous composition
+  descriptionNeedsUpdate Boolean       @default(false)
+  /// the LotAiRun whose text is the lot's current description (null = written by hand)
+  aiDescriptionRunId String?           @db.Uuid
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
 
   organization        Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   catalog             Catalog                 @relation(fields: [catalogId], references: [id], onDelete: Restrict)
   item                InventoryItem           @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  mergedInto          Lot?                    @relation("LotMerge", fields: [mergedIntoLotId], references: [id], onDelete: SetNull)
+  mergedFrom          Lot[]                   @relation("LotMerge")
   assets              PhotoAsset[]
   categoryNotes       LotCategoryNote[]
   displayAssets       LotDisplayAsset[]
   descriptionVersions LotDescriptionVersion[]
   pickTasks           PickTask[]
+  members             LotMember[]
+  aiRuns              LotAiRun[]
+  compositionEvents   LotCompositionEvent[]
 
   @@unique([catalogId, lotNumber])
   @@index([organizationId])
   @@index([catalogId, sortOrder])
   @@index([catalogId, status])
   @@index([inventoryItemId])
+  @@index([mergedIntoLotId])
+}
+
+/// The books of a catalog lot. An ordinary lot has one present member, a combined lot two or more. Books stay
+/// independent inventory items (never copied, merged or re-owned); this table only says which books are sold together.
+/// Rows are never deleted when a book leaves or the lot is merged away / dissolved: removedAt closes them, so the
+/// history of every membership stays. Two partial unique indexes (raw SQL in the migration):
+///  - "LotMember_item_active_key": a book is present in at most one ACTIVE lot (isActive = present AND the lot is ACTIVE);
+///  - "LotMember_lot_item_present_key": a book is present at most once in one lot.
+model LotMember {
+  id              String    @id @default(uuid()) @db.Uuid
+  organizationId  String    @db.Uuid
+  lotId           String    @db.Uuid
+  inventoryItemId String    @db.Uuid
+  /// order of the books inside the lot (1-based)
+  sortOrder       Int
+  /// the lot this book was the only book of before it joined a combined lot (reactivated when it leaves)
+  originLotId     String?   @db.Uuid
+  /// present in the lot (removedAt is null) AND the lot is ACTIVE: maintained together with Lot.assignmentStatus
+  isActive        Boolean   @default(true)
+  addedAt         DateTime  @default(now())
+  addedById       String?   @db.Uuid
+  removedAt       DateTime?
+  removedById     String?   @db.Uuid
+  /// MERGED | REMOVED | DISSOLVED | free text
+  removalReason   String?
+
+  lot  Lot           @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  item InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+
+  @@index([lotId, removedAt])
+  @@index([inventoryItemId, isActive])
+  @@index([organizationId])
+}
+
+/// Immutable history of a lot's composition: every merge, addition, removal and dissolution (who, when, which books,
+/// and the presentation the lot had before), so nothing about a combination is ever lost.
+model LotCompositionEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  lotId          String   @db.Uuid
+  /// MERGE | ADD | REMOVE | DISSOLVE | REORDER
+  kind           String
+  itemIds        Json
+  userId         String?  @db.Uuid
+  data           Json?
+  createdAt      DateTime @default(now())
+
+  lot Lot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+
+  @@index([lotId, createdAt])
+}
+
+/// A shared AI description run for a lot: its own history, never touching the books' own analyses. The result reaches
+/// the lot's description fields only when a person applies it (as a LotDescriptionVersion).
+model LotAiRun {
+  id                       String           @id @default(uuid()) @db.Uuid
+  organizationId           String           @db.Uuid
+  lotId                    String           @db.Uuid
+  status                   AiAnalysisStatus @default(RUNNING)
+  /// Lot.compositionVersion when the run started
+  compositionVersion       Int
+  /// the books that were in the lot: [{itemId, inventoryNumber, sortOrder, detailsVersion, reviewStatus}]
+  members                  Json
+  /// the structured input that was sent: one block per book with its own id and a verified flag
+  input                    Json?
+  provider                 String?
+  model                    String?
+  /// AiSettingsVersion.version used (null = built-in defaults)
+  settingsVersion          Int?
+  promptVersion            String?
+  examplesVersion          String?
+  examplesHash             String?
+  proposedTitle            String?
+  proposedShortDescription String?
+  proposedDescription      String?
+  /// the validated model answer
+  result                   Json?
+  requestCount             Int              @default(0)
+  inputTokens              Int?
+  cachedInputTokens        Int?
+  outputTokens             Int?
+  costUsd                  Decimal?         @db.Decimal(12, 6)
+  costEstimated            Boolean          @default(true)
+  usage                    Json?
+  durationMs               Int?
+  error                    String?
+  createdById              String?          @db.Uuid
+  createdAt                DateTime         @default(now())
+  finishedAt               DateTime?
+  /// applied to the lot by a person after the preview: appliedVersion = the LotDescriptionVersion it became
+  appliedAt                DateTime?
+  appliedById              String?          @db.Uuid
+  appliedVersion           Int?
+  discardedAt              DateTime?
+
+  lot Lot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+
+  @@index([lotId, createdAt])
+  @@index([organizationId, createdAt])
 }
 
 /// Per-catalog presentation of an item's photos (order / hidden) without copying files.

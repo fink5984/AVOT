@@ -2,6 +2,7 @@ import "server-only";
 import type { CommercialStatus, ItemReviewStatus, LotStatus, PhysicalStatus } from "@avot/shared";
 import type { Tx } from "../db";
 import type { Principal } from "../auth/principal";
+import { refreshLotsOfItem } from "./lot-members";
 
 type Dimension = "PHOTO" | "PHYSICAL" | "COMMERCIAL" | "REVIEW";
 type StatusOf<D extends Dimension> = D extends "PHOTO" ? LotStatus : D extends "PHYSICAL" ? PhysicalStatus : D extends "REVIEW" ? ItemReviewStatus : CommercialStatus;
@@ -48,10 +49,8 @@ export async function changeStatus<D extends Dimension>(
     } as never,
   });
   if (dimension === "PHOTO") {
-    await tx.lot.updateMany({
-      where: { inventoryItemId: itemId },
-      data: { status: to as LotStatus, completedAt: to === "COMPLETED" ? new Date() : null },
-    });
+    // every lot the book is a member of (ordinary: the same value; combined: derived from all its books)
+    await refreshLotsOfItem(tx, itemId);
   }
   await tx.inventoryStatusEvent.create({
     data: {

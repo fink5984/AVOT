@@ -12,6 +12,7 @@ import { changeStatus } from "./item-status";
 import { assignToCatalog, syncItemCommercial } from "./assignments";
 import { createItemTx, findItemByOpId, itemProgress, setItemCategoryNote, type CategoryProgress } from "./inventory";
 import { locationInclude, locationLabel } from "./location-label";
+import { addFounderMember, memberItemIds, moveCombinedLot } from "./lot-members";
 
 /*
  * A Lot is a catalog lot: one inventory book's participation in a catalog.
@@ -120,6 +121,7 @@ async function createLotTx(user: UserPrincipal, catalog: { id: string; number: s
         assignedById: user.userId,
       },
     });
+    await addFounderMember(tx, created);
     await tx.lotDescriptionVersion.create({
       data: { lotId: created.id, version: 1, title: created.title, shortDescription: created.shortDescription, description: created.description, createdById: user.userId },
     });
@@ -135,17 +137,24 @@ async function createLotTx(user: UserPrincipal, catalog: { id: string; number: s
 
 export async function updateLot(user: UserPrincipal, lotId: string, input: z.infer<typeof lotPatchSchema>) {
   const lot = await getLotForUser(user, lotId);
+  if (lot.mergedIntoLotId) throw new AppError("CONFLICT", "הפריט אוחד ללוט אחר - יש לערוך את הלוט המשולב");
   if (input.lotNumber && input.lotNumber !== lot.lotNumber) {
     const clash = await db.lot.findUnique({ where: { catalogId_lotNumber: { catalogId: lot.catalogId, lotNumber: input.lotNumber } } });
     if (clash) throw new AppError("CONFLICT", `פריט מספר ${input.lotNumber} כבר קיים בקטלוג (${clash.title})`);
   }
   const { status, requirements, ...fields } = input;
-  const previousStatus = (await db.inventoryItem.findUniqueOrThrow({ where: { id: lot.inventoryItemId }, select: { photoStatus: true } })).photoStatus;
+  // photography status and requirements belong to the books: a combined lot applies them to every one of its books
+  const itemIds = await memberItemIds(lotId);
+  const previousStatus = lot.status;
   const updated = await db.$transaction(async (tx) => {
-    // photography status and requirements belong to the book
-    if (status) await changeStatus(tx, user, lot.inventoryItemId, "PHOTO", status, { refType: "lot", refId: lotId });
-    if (requirements) await tx.inventoryItem.update({ where: { id: lot.inventoryItemId }, data: { requirements: asJson(requirements) } });
-    const u = await tx.lot.update({ where: { id: lotId }, data: { ...fields, ...(requirements ? { requirements: asJson(requirements) } : {}) } });
+    if (status) for (const itemId of itemIds) await changeStatus(tx, user, itemId, "PHOTO", status, { refType: "lot", refId: lotId });
+    if (requirements) await tx.inventoryItem.updateMany({ where: { id: { in: itemIds } }, data: { requirements: asJson(requirements) } });
+    // a person wrote the text: it is no longer "an AI text for an older composition"
+    const textEdited = (["shortDescription", "description"] as const).some((k) => fields[k] !== undefined && fields[k] !== lot[k]);
+    const u = await tx.lot.update({
+      where: { id: lotId },
+      data: { ...fields, ...(requirements ? { requirements: asJson(requirements) } : {}), ...(textEdited ? { descriptionNeedsUpdate: false, aiDescriptionRunId: null } : {}) },
+    });
     const describes = (["title", "shortDescription", "description"] as const).some((k) => fields[k] !== undefined && fields[k] !== lot[k]);
     if (describes) {
       const last = await tx.lotDescriptionVersion.aggregate({ where: { lotId }, _max: { version: true } });
@@ -169,6 +178,7 @@ export async function updateLot(user: UserPrincipal, lotId: string, input: z.inf
 /** A second physical copy: a NEW inventory book with the same metadata, as the next lot. Photos are not copied. */
 export async function duplicateLot(user: UserPrincipal, lotId: string, consignorId: string | undefined) {
   const lot = await getLotForUser(user, lotId);
+  if ((await memberItemIds(lotId)).length > 1) throw new AppError("CONFLICT", "לא ניתן לשכפל לוט משולב - שכפול יוצר עותק פיזי נוסף של ספר אחד");
   // never assumed: the second copy may belong to somebody else, so the caller must name its consignor
   return createLot(user, lot.catalogId, {
     consignorId,
@@ -194,6 +204,9 @@ export async function moveLotToCatalog(user: UserPrincipal, lotId: string, targe
   await getCatalog(user, targetCatalogId);
   if (lot.catalogId === targetCatalogId) return lot;
   if (lot.assignmentStatus !== "ACTIVE") throw new AppError("CONFLICT", "השיוך הזה כבר הסתיים — שייכו את הספר מחדש ממסך המלאי");
+  if (lot.mergedIntoLotId) throw new AppError("CONFLICT", "הפריט אוחד ללוט אחר - יש להעביר את הלוט המשולב");
+  const target = await getCatalog(user, targetCatalogId);
+  if ((await memberItemIds(lotId)).length > 1) return moveCombinedLot(user, lot, target, lotNumber);
   const moved = await assignToCatalog(user, lot.inventoryItemId, {
     catalogId: targetCatalogId,
     lotNumber,
@@ -225,6 +238,8 @@ export async function reorderLots(user: UserPrincipal, catalogId: string, ordere
 export async function deleteLot(user: UserPrincipal, lotId: string) {
   const lot = await getLotForUser(user, lotId);
   if (lot.commercialStatus !== "ASSIGNED") throw new AppError("CONFLICT", "לפריט יש מצב מסחרי (הוצע / נמכר / לא נמכר) — לא ניתן למחוק, רק לסיים שיוך");
+  if (lot.mergedIntoLotId) throw new AppError("CONFLICT", "הפריט אוחד ללוט אחר - נשמר כהיסטוריה ואינו ניתן למחיקה");
+  if ((await memberItemIds(lotId)).length > 1) throw new AppError("CONFLICT", "זה לוט משולב - יש לפרק אותו ל\"פירוק הלוט\" לפני הסרתו מהקטלוג");
   const picks = await db.pickTask.count({ where: { lotId } });
   if (picks) throw new AppError("CONFLICT", "לפריט קיימות משימות ליקוט");
   await db.$transaction(async (tx) => {
@@ -269,6 +284,8 @@ export async function listLots(
     where: {
       organizationId: user.organizationId,
       catalogId,
+      // a lot that was merged into another one is history, not a row of the catalog
+      mergedIntoLotId: null,
       item: { deletionRequestedAt: null },
       ...(opts.status && opts.status !== "ALL" ? { status: opts.status as never } : {}),
       ...(opts.assignment === "active" ? { assignmentStatus: "ACTIVE" as const } : {}),
@@ -278,13 +295,27 @@ export async function listLots(
               { title: { contains: q, mode: "insensitive" } },
               { subtitle: { contains: q, mode: "insensitive" } },
               { author: { contains: q, mode: "insensitive" } },
-              { item: { inventoryNumber: { contains: q.toUpperCase() } } },
+              {
+                members: {
+                  some: {
+                    removedAt: null,
+                    item: { OR: [{ inventoryNumber: { contains: q.toUpperCase() } }, { title: { contains: q, mode: "insensitive" } }, { author: { contains: q, mode: "insensitive" } }] },
+                  },
+                },
+              },
               ...(asNumber !== undefined ? [{ lotNumber: asNumber }] : []),
             ],
           }
         : {}),
     },
-    include: { item: { select: { inventoryNumber: true, primaryAssetId: true, physicalStatus: true, currentLocation: { include: locationInclude } } } },
+    include: {
+      item: { select: { inventoryNumber: true, primaryAssetId: true, physicalStatus: true, currentLocation: { include: locationInclude } } },
+      members: {
+        where: { removedAt: null },
+        orderBy: { sortOrder: "asc" },
+        select: { inventoryItemId: true, item: { select: { inventoryNumber: true, title: true, primaryAssetId: true, physicalStatus: true, consignor: { select: { id: true, name: true } }, currentLocation: { include: locationInclude } } } },
+      },
+    },
     orderBy:
       opts.sort === "title"
         ? { title: "asc" }
@@ -295,29 +326,46 @@ export async function listLots(
             : { lotNumber: "asc" },
     take: 2000,
   });
-  const itemIds = [...new Set(lots.map((l) => l.inventoryItemId))];
+  const itemIds = [...new Set(lots.flatMap((l) => (l.members.length ? l.members.map((m) => m.inventoryItemId) : [l.inventoryItemId])))];
   const counts = await db.photoAsset.groupBy({
     by: ["inventoryItemId", "category"],
     where: { inventoryItemId: { in: itemIds }, deletedAt: null },
     _count: { _all: true },
   });
   const firstThumbs = await db.photoAsset.findMany({
-    where: { inventoryItemId: { in: lots.filter((l) => !l.primaryAssetId && !l.item.primaryAssetId).map((l) => l.inventoryItemId) }, deletedAt: null, thumbKey: { not: null } },
+    where: { inventoryItemId: { in: itemIds }, deletedAt: null, thumbKey: { not: null } },
     orderBy: [{ category: "asc" }, { sortOrder: "asc" }],
     distinct: ["inventoryItemId"],
     select: { id: true, inventoryItemId: true },
   });
-  return lots.map(({ item, ...l }) => {
+  return lots.map(({ item, members, ...l }) => {
+    const ids = members.length ? members.map((m) => m.inventoryItemId) : [l.inventoryItemId];
     const byCat = Object.fromEntries(
-      PHOTO_CATEGORIES.map((c) => [c, counts.find((x) => x.inventoryItemId === l.inventoryItemId && x.category === c)?._count._all ?? 0]),
+      PHOTO_CATEGORIES.map((c) => [c, counts.filter((x) => ids.includes(x.inventoryItemId) && x.category === c).reduce((n, x) => n + x._count._all, 0)]),
     ) as Record<PhotoCategory, number>;
+    const books = members.map((m) => ({
+      itemId: m.inventoryItemId,
+      inventoryNumber: m.item.inventoryNumber,
+      title: m.item.title,
+      physicalStatus: m.item.physicalStatus,
+      locationLabel: m.item.currentLocation ? locationLabel(m.item.currentLocation) : null,
+      consignorId: m.item.consignor?.id ?? null,
+      consignorName: m.item.consignor?.name ?? null,
+    }));
+    const firstWithPhoto = members.map((m) => m.item.primaryAssetId).find((x): x is string => !!x);
+    const statuses = new Set(members.map((m) => m.item.physicalStatus));
     return {
       ...l,
+      bookCount: Math.max(1, members.length),
+      books,
+      consignorName: books[0]?.consignorName ?? null,
+      consignorId: books[0]?.consignorId ?? null,
       inventoryNumber: item.inventoryNumber,
-      physicalStatus: item.physicalStatus,
-      locationLabel: item.currentLocation ? locationLabel(item.currentLocation) : null,
+      // one value when all books agree, otherwise the first (the lot page lists every book)
+      physicalStatus: statuses.size > 1 ? ("MIXED" as const) : item.physicalStatus,
+      locationLabel: members.length > 1 ? null : item.currentLocation ? locationLabel(item.currentLocation) : null,
       counts: byCat,
-      thumbAssetId: l.primaryAssetId ?? item.primaryAssetId ?? firstThumbs.find((t) => t.inventoryItemId === l.inventoryItemId)?.id ?? null,
+      thumbAssetId: l.primaryAssetId ?? item.primaryAssetId ?? firstWithPhoto ?? ids.map((id) => firstThumbs.find((t) => t.inventoryItemId === id)?.id).find((x) => !!x) ?? null,
     };
   });
 }

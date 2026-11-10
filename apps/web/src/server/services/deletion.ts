@@ -47,6 +47,8 @@ export async function previewDeleteItems(user: UserPrincipal, ids: string[]): Pr
       commercialStatus: true,
       deletionRequestedAt: true,
       pickTasks: { where: { status: { in: ["OPEN", "PICKED", "PACKED"] } }, select: { id: true } },
+      // a book of an active combined lot cannot be deleted from under it
+      lotMemberships: { where: { isActive: true, removedAt: null }, select: { lot: { select: { lotNumber: true, _count: { select: { members: { where: { removedAt: null } } } } } } } },
     },
   });
   if (items.length !== new Set(ids).size) throw notFound("חלק מהספרים");
@@ -55,6 +57,7 @@ export async function previewDeleteItems(user: UserPrincipal, ids: string[]): Pr
   for (const i of items) {
     const base = { id: i.id, inventoryNumber: i.inventoryNumber, title: i.title };
     if (i.deletionRequestedAt) blocked.push({ ...base, reason: "המחיקה כבר בתהליך" });
+    else if (i.lotMemberships.some((m) => m.lot._count.members > 1)) blocked.push({ ...base, reason: `הספר נמצא בלוט משולב (פריט ${i.lotMemberships.find((m) => m.lot._count.members > 1)!.lot.lotNumber}) - הסירו אותו מהלוט או פרקו את הלוט קודם` });
     else if (i.pickTasks.length) blocked.push({ ...base, reason: "יש משימת ליקוט פעילה — סיימו או בטלו אותה קודם" });
     else if (i.commercialStatus === "SOLD" && i.physicalStatus !== "SHIPPED") blocked.push({ ...base, reason: "הספר נמכר וטרם נשלח" });
     else deletable.push(base);
@@ -63,8 +66,8 @@ export async function previewDeleteItems(user: UserPrincipal, ids: string[]): Pr
   const [photos, files, lots, sold] = await Promise.all([
     db.photoAsset.count({ where: { inventoryItemId: { in: ok } } }),
     db.photoFile.count({ where: { asset: { inventoryItemId: { in: ok } } } }),
-    db.lot.count({ where: { inventoryItemId: { in: ok } } }),
-    db.lot.count({ where: { inventoryItemId: { in: ok }, commercialStatus: "SOLD" } }),
+    db.lot.count({ where: { members: { some: { inventoryItemId: { in: ok } } } } }),
+    db.lot.count({ where: { members: { some: { inventoryItemId: { in: ok } } }, commercialStatus: "SOLD" } }),
   ]);
   return { deletable, blocked, photos, files, catalogAssignments: lots, soldAssignments: sold };
 }
@@ -131,7 +134,11 @@ async function deleteOneItem(job: Job, itemId: string) {
       await tx.pickTask.deleteMany({ where: { inventoryItemId: itemId } });
       await tx.stockCountEntry.deleteMany({ where: { inventoryItemId: itemId } });
       await tx.captureSession.updateMany({ where: { inventoryItemId: itemId }, data: { inventoryItemId: null, lotId: null } });
-      // lots cascade to LotDisplayAsset / LotDescriptionVersion / LotCategoryNote
+      // a combined lot that still holds other books is never deleted with one of them
+      const stillShared = await tx.lotMember.findFirst({ where: { inventoryItemId: itemId, isActive: true, removedAt: null, lot: { members: { some: { removedAt: null, inventoryItemId: { not: itemId } } } } } });
+      if (stillShared) throw new AppError("CONFLICT", `הספר ${item.inventoryNumber} נמצא בלוט משולב - הסירו אותו מהלוט לפני המחיקה`);
+      // the book's memberships (history rows included) go with it; lots cascade to LotDisplayAsset / LotDescriptionVersion / LotCategoryNote / LotMember
+      await tx.lotMember.deleteMany({ where: { inventoryItemId: itemId } });
       await tx.lot.deleteMany({ where: { inventoryItemId: itemId } });
       // assets cascade to PhotoFile / LotDisplayAsset
       await tx.photoAsset.deleteMany({ where: { inventoryItemId: itemId } });
@@ -231,9 +238,10 @@ export async function requestDeleteCatalogs(user: UserPrincipal, ids: string[]) 
 async function deleteCatalogRows(job: Job, catalogId: string) {
   const catalog = await db.catalog.findFirst({ where: { id: catalogId, organizationId: job.organizationId } });
   if (!catalog) return;
-  const lots = await db.lot.findMany({ where: { catalogId }, select: { id: true, inventoryItemId: true, commercialStatus: true } });
-  const soldItems = new Set(lots.filter((l) => l.commercialStatus === "SOLD").map((l) => l.inventoryItemId));
-  const itemIds = [...new Set(lots.map((l) => l.inventoryItemId))];
+  const lots = await db.lot.findMany({ where: { catalogId }, select: { id: true, inventoryItemId: true, commercialStatus: true, members: { where: { removedAt: null }, select: { inventoryItemId: true } } } });
+  const itemsOf = (l: (typeof lots)[number]) => [...new Set([l.inventoryItemId, ...l.members.map((m) => m.inventoryItemId)])];
+  const soldItems = new Set(lots.filter((l) => l.commercialStatus === "SOLD").flatMap(itemsOf));
+  const itemIds = [...new Set(lots.flatMap(itemsOf))];
   const principal = { kind: "user", userId: job.createdById, organizationId: job.organizationId, role: "ADMIN" } as unknown as UserPrincipal;
   await db.$transaction(
     async (tx) => {
@@ -297,9 +305,18 @@ export async function removeLotsFromCatalog(user: UserPrincipal, catalogId: stri
       failed.push({ lotId: lot.id, message: `פריט ${lot.lotNumber}: קיימות משימות ליקוט` });
       continue;
     }
+    if (lot.mergedIntoLotId) {
+      failed.push({ lotId: lot.id, message: `פריט ${lot.lotNumber}: אוחד ללוט אחר ונשמר כהיסטוריה` });
+      continue;
+    }
+    const bookIds = (await db.lotMember.findMany({ where: { lotId: lot.id, removedAt: null }, select: { inventoryItemId: true } })).map((m) => m.inventoryItemId);
+    if (bookIds.length > 1) {
+      failed.push({ lotId: lot.id, message: `פריט ${lot.lotNumber}: זה לוט משולב - יש לפרק אותו לפני הסרתו מהקטלוג` });
+      continue;
+    }
     await db.$transaction(async (tx) => {
       await tx.lot.delete({ where: { id: lot.id } });
-      await syncItemCommercial(tx, user, lot.inventoryItemId, { reason: `השיוך לקטלוג ${catalog.number} הוסר` });
+      for (const itemId of bookIds.length ? bookIds : [lot.inventoryItemId]) await syncItemCommercial(tx, user, itemId, { reason: `השיוך לקטלוג ${catalog.number} הוסר` });
     });
     done.push(lot.id);
   }

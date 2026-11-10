@@ -4,6 +4,7 @@ import { db } from "@/server/db";
 import { forbidden } from "@/server/errors";
 import { json, parseJson, route } from "@/server/http";
 import { deleteLot, getLotForUser, lotPatchSchema, updateLot } from "@/server/services/lots";
+import { memberItemIds } from "@/server/services/lot-members";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -25,6 +26,9 @@ export const GET = route<Ctx>(async (req, { params }) => {
       status: item.photoStatus,
       photoCount: item.photoCount,
       inventoryNumber: item.inventoryNumber,
+      // API v1 clients read one book: the anchor. A combined lot lists all its books here.
+      inventoryItemIds: await memberItemIds(lot.id),
+      bookCount: (await memberItemIds(lot.id)).length,
     },
   });
 });

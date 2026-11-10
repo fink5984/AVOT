@@ -7,6 +7,7 @@ import { AppError, notFound } from "../errors";
 import { audit } from "../audit";
 import type { UserPrincipal } from "../auth/principal";
 import { assertHouse } from "../auth/houses";
+import { addFounderMember } from "./lot-members";
 import { createItemTx } from "./inventory";
 import { syncItemCommercial } from "./assignments";
 
@@ -235,6 +236,7 @@ export async function importLots(user: UserPrincipal, catalogId: string, text: s
             assignedById: user.userId,
           },
         });
+        await addFounderMember(tx, lot);
         await tx.lotDescriptionVersion.create({
           data: { lotId: lot.id, version: 1, title: lot.title, shortDescription: lot.shortDescription, source: "IMPORT", createdById: user.userId },
         });

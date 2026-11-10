@@ -23,11 +23,13 @@ export default async function LabelsPage({ params, searchParams }: { params: Pro
   const lots = await db.lot.findMany({
     where: {
       catalogId,
+      // a lot merged into another one has no label of its own
+      mergedIntoLotId: null,
       ...(sp.lot ? { id: sp.lot } : {}),
       ...(from || to ? { lotNumber: { gte: from ?? 1, lte: to ?? 99999 } } : {}),
     },
     orderBy: { lotNumber: "asc" },
-    select: { id: true, lotNumber: true, title: true },
+    select: { id: true, lotNumber: true, title: true, _count: { select: { members: { where: { removedAt: null } } } } },
   });
   const base = env().APP_URL.replace(/\/$/, "");
   const codes = await Promise.all(lots.map((l) => QRCode.toString(`${base}/l/${l.id}`, { type: "svg", margin: 0, errorCorrectionLevel: "M" })));
@@ -44,6 +46,7 @@ export default async function LabelsPage({ params, searchParams }: { params: Pro
               <div className="text-[8pt] text-muted">קטלוג {catalog.number}</div>
               <div className="num text-start text-[22pt] font-bold leading-none">{l.lotNumber}</div>
               <div className="mt-[1.5mm] line-clamp-2 text-[8.5pt] leading-tight">{l.title}</div>
+              {l._count.members > 1 && <div className="mt-[1mm] text-[8pt] font-semibold">לוט משולב · {l._count.members} ספרים</div>}
             </div>
           </div>
         ))}

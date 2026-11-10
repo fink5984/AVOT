@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRightLeft, Ban, BookPlus, Camera, CircleCheck, CircleDashed, Copy, CornerDownLeft, Gavel, Library, MoreHorizontal, Pencil, Plus, Search, Trash2, X } from "lucide-react";
+import { ArrowRightLeft, Ban, BookPlus, Camera, CircleCheck, CircleDashed, Copy, CornerDownLeft, Gavel, Layers, Library, MoreHorizontal, Pencil, Plus, Search, Trash2, X } from "lucide-react";
 import { LOT_STATUSES, PHOTO_CATEGORIES, type CommercialStatus, type LotStatus, type PhotoCategory } from "@avot/shared";
 import { Button, ButtonLink, IconButton } from "@/components/ui/button";
 import { CommercialStatusBadge, LOT_TONE, LotStatusBadge, toneDot } from "@/components/ui/badge";
@@ -19,6 +19,7 @@ import { LotFormDialog, type LotFormValue } from "@/components/lot-form-dialog";
 import { AddFromInventoryDialog } from "@/components/inventory/add-from-inventory-dialog";
 import { QuickBookDialog } from "@/components/consignors/quick-book-dialog";
 import { ConsignorPickDialog } from "@/components/consignors/consignor-pick-dialog";
+import { MergeLotsDialog } from "./merge-lots-dialog";
 import { fmt, t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -40,6 +41,11 @@ export interface LotRow {
   assignmentStatus: "ACTIVE" | "ENDED";
   commercialStatus: CommercialStatus;
   locationLabel: string | null;
+  /** 1 for an ordinary lot, 2+ for a combined lot */
+  bookCount: number;
+  books: { itemId: string; inventoryNumber: string; title: string; locationLabel: string | null; consignorId: string | null }[];
+  consignorId: string | null;
+  consignorName: string | null;
 }
 
 type Sort = "number" | "title" | "updated" | "status";
@@ -57,7 +63,7 @@ export function LotsTable({
   lots: LotRow[];
   initialStatus: string;
   otherCatalogs: { id: string; number: string; name: string; house?: string }[];
-  perms: { create: boolean; edit: boolean; status: boolean; capture: boolean; commercial?: boolean };
+  perms: { create: boolean; edit: boolean; status: boolean; capture: boolean; commercial?: boolean; assign?: boolean };
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -73,6 +79,7 @@ export function LotsTable({
   const [moveIds, setMoveIds] = useState<string[] | null>(null);
   const [removeIds, setRemoveIds] = useState<string[] | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
   const quickRef = useRef<HTMLInputElement>(null);
 
   const visible = useMemo(() => {
@@ -85,7 +92,8 @@ export function LotsTable({
           l.title.toLowerCase().includes(needle) ||
           l.subtitle?.toLowerCase().includes(needle) ||
           l.author?.toLowerCase().includes(needle) ||
-          l.inventoryNumber.toLowerCase().includes(needle),
+          l.inventoryNumber.toLowerCase().includes(needle) ||
+          l.books.some((b) => b.inventoryNumber.toLowerCase().includes(needle) || b.title.toLowerCase().includes(needle)),
       );
     }
     const sorted = [...rows];
@@ -180,7 +188,7 @@ export function LotsTable({
     const items: MenuItems = [];
     if (perms.edit) {
       items.push({ label: "עריכת פרטים", icon: <Pencil />, onSelect: () => openEdit(l.id) });
-      items.push({ label: "עותק פיזי נוסף (ספר חדש)", icon: <Copy />, onSelect: () => setDupFor(l) });
+      if (l.bookCount < 2) items.push({ label: "עותק פיזי נוסף (ספר חדש)", icon: <Copy />, onSelect: () => setDupFor(l) });
       if (otherCatalogs.length && l.assignmentStatus === "ACTIVE") items.push({ label: "העברה לקטלוג אחר", icon: <ArrowRightLeft />, onSelect: () => setMoveIds([l.id]) });
     }
     if (perms.commercial) {
@@ -335,7 +343,15 @@ export function LotsTable({
                       {l.title}
                     </Link>
                     <div className="truncate text-[12.5px] text-muted">
-                      <span className="num font-mono text-[11.5px] text-ink-2">{l.inventoryNumber}</span>
+                      {l.bookCount > 1 && (
+                        <span className="me-2 inline-flex items-center gap-1 rounded-md bg-accent-soft px-1.5 py-0.5 text-[11.5px] font-semibold text-accent" title="לוט משולב: כמה ספרים נמכרים יחד">
+                          <Layers className="size-3" aria-hidden />
+                          <span className="num">{l.bookCount}</span> ספרים
+                        </span>
+                      )}
+                      <span className="num font-mono text-[11.5px] text-ink-2">
+                        {l.bookCount > 1 ? l.books.map((b) => b.inventoryNumber).join(" · ") : l.inventoryNumber}
+                      </span>
                       {l.locationLabel && <span className="ms-2 text-[11.5px]">{l.locationLabel}</span>}
                       {(l.subtitle || l.author) && <span> · {[l.author, l.subtitle].filter(Boolean).join(" · ")}</span>}
                     </div>
@@ -408,6 +424,11 @@ export function LotsTable({
               ))}
             </select>
           )}
+          {perms.assign && selected.size >= 2 && (
+            <Button size="sm" className="border-white/15 bg-white/8 text-paper shadow-none hover:bg-white/14" icon={<Layers />} onClick={() => setMergeOpen(true)}>
+              איחוד ללוט
+            </Button>
+          )}
           {perms.edit && otherCatalogs.length > 0 && (
             <Button size="sm" className="border-white/15 bg-white/8 text-paper shadow-none hover:bg-white/14" icon={<ArrowRightLeft />} onClick={() => setMoveIds([...selected])}>
               העברה לקטלוג אחר
@@ -424,6 +445,13 @@ export function LotsTable({
         </div>
       )}
 
+      <MergeLotsDialog
+        open={mergeOpen}
+        onClose={() => setMergeOpen(false)}
+        catalogId={catalogId}
+        lots={lots.filter((l) => selected.has(l.id))}
+        onDone={() => setSelected(new Set())}
+      />
       <AddFromInventoryDialog open={pickerOpen} onClose={() => setPickerOpen(false)} catalogId={catalogId} catalogLabel={catalogLabel} />
       <RemoveLotsDialog catalogId={catalogId} ids={removeIds} lots={lots} onClose={() => setRemoveIds(null)} onDone={() => setSelected(new Set())} />
       <QuickBookDialog

@@ -51,6 +51,10 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
     assignmentStatus: l.assignmentStatus,
     commercialStatus: l.commercialStatus,
     locationLabel: l.locationLabel,
+    bookCount: l.bookCount,
+    books: l.books.map((b) => ({ itemId: b.itemId, inventoryNumber: b.inventoryNumber, title: b.title, locationLabel: b.locationLabel, consignorId: b.consignorId })),
+    consignorId: l.consignorId,
+    consignorName: l.consignorName,
   }));
   const activeLots = lots.filter((l) => l.assignmentStatus === "ACTIVE").length;
   const sold = lots.filter((l) => l.commercialStatus === "SOLD").length;
@@ -107,6 +111,7 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
           status: can(user.role, "lot.status"),
           capture: can(user.role, "photo.capture"),
           commercial: can(user.role, "commercial.edit"),
+          assign: can(user.role, "catalog.assign"),
         }}
       />
     </>

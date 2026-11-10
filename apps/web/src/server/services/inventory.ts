@@ -219,8 +219,15 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
     });
     const review = await reviewAfterHumanEdit(tx, user, item, material);
     if (review) Object.assign(u, await tx.inventoryItem.findUniqueOrThrow({ where: { id }, select: { reviewStatus: true, reviewChangedAt: true, reviewChangedById: true, approvedAt: true, approvedById: true } }));
-    const active = await tx.lot.findFirst({ where: { inventoryItemId: id, assignmentStatus: "ACTIVE" } });
-    if (active) {
+    // the lot the book is a member of (ordinary or combined)
+    const activeMember = await tx.lotMember.findFirst({ where: { inventoryItemId: id, isActive: true, removedAt: null }, include: { lot: true } });
+    const active = activeMember?.lot ?? null;
+    const lotBooks = active ? await tx.lotMember.count({ where: { lotId: active.id, removedAt: null } }) : 0;
+    if (input.consignorId && input.consignorId !== item.consignorId && lotBooks > 1) {
+      throw new AppError("CONFLICT", `הספר נמצא בלוט משולב (פריט ${active!.lotNumber}) וכל הספרים בלוט משולב חייבים להשתייך לאותו מפקיד. פרקו את הלוט או הסירו את הספר ממנו לפני שינוי המפקיד.`);
+    }
+    // an ordinary lot follows the book's details; a combined lot has its own shared title and text (never copied from one book)
+    if (active && lotBooks <= 1) {
       const lotPatch: Record<string, string | null> = {};
       for (const f of LOT_COPY_FIELDS) {
         if (input[f] !== undefined && active[f] === item[f]) lotPatch[f] = input[f] ?? (f === "title" ? item.title : null);
@@ -296,7 +303,7 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
       and.push({ reviewStatus: { in: ["PENDING_REVIEW", "IN_REVIEW"] } });
       break;
     case "no_catalog":
-      and.push({ lots: { none: { assignmentStatus: "ACTIVE" } }, physicalStatus: { not: "SHIPPED" }, commercialStatus: { not: "SOLD" } });
+      and.push({ lotMemberships: { none: { isActive: true, removedAt: null } }, physicalStatus: { not: "SHIPPED" }, commercialStatus: { not: "SOLD" } });
       break;
     case "no_photos":
       and.push({ photoCount: 0 });
@@ -317,9 +324,9 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
       and.push({ commercialStatus: "UNSOLD" });
       break;
   }
-  if (o.notInCatalogId) and.push({ lots: { none: { catalogId: o.notInCatalogId, assignmentStatus: "ACTIVE" } } });
+  if (o.notInCatalogId) and.push({ lotMemberships: { none: { isActive: true, removedAt: null, lot: { catalogId: o.notInCatalogId } } } });
   if (o.consignorId) and.push({ consignorId: o.consignorId });
-  if (o.houseId) and.push({ lots: { some: { assignmentStatus: "ACTIVE", catalog: { auctionHouseId: o.houseId } } } });
+  if (o.houseId) and.push({ lotMemberships: { some: { isActive: true, removedAt: null, lot: { catalog: { auctionHouseId: o.houseId } } } } });
   if (o.photoStatus) and.push({ photoStatus: o.photoStatus as never });
   if (o.physicalStatus) and.push({ physicalStatus: o.physicalStatus as never });
   if (o.reviewStatus && (ITEM_REVIEW_STATUSES as readonly string[]).includes(o.reviewStatus)) and.push({ reviewStatus: o.reviewStatus as never });
@@ -340,9 +347,10 @@ export async function listInventory(user: UserPrincipal, o: InventoryListOptions
       include: {
         currentLocation: { include: locationInclude },
         consignor: { select: { id: true, name: true } },
-        lots: {
-          where: { assignmentStatus: "ACTIVE" },
-          include: { catalog: { select: { id: true, number: true, name: true, auctionHouse: { select: { id: true, slug: true, name: true, accentColor: true } } } } },
+        // the lot the book is in now (ordinary or combined)
+        lotMemberships: {
+          where: { isActive: true, removedAt: null },
+          include: { lot: { include: { catalog: { select: { id: true, number: true, name: true, auctionHouse: { select: { id: true, slug: true, name: true, accentColor: true } } } } } } },
         },
       },
     }),
@@ -361,7 +369,7 @@ export async function listInventory(user: UserPrincipal, o: InventoryListOptions
     page,
     pageSize,
     items: rows.map((r) => {
-      const lot = r.lots[0];
+      const lot = r.lotMemberships[0]?.lot;
       const visible = lot ? canSeeHouse(user, lot.catalog.auctionHouse.id) : false;
       return {
         id: r.id,
@@ -412,8 +420,11 @@ export async function inventoryCounts(orgId: string) {
 export async function findItemByCode(orgId: string, raw: string, tx: Tx = db) {
   const code = classifyCode(raw);
   if (code.type === "LOT") {
-    const lot = await tx.lot.findFirst({ where: { id: code.value, organizationId: orgId }, select: { inventoryItemId: true } });
-    return lot ? tx.inventoryItem.findUnique({ where: { id: lot.inventoryItemId } }) : null;
+    const lot = await tx.lot.findFirst({ where: { id: code.value, organizationId: orgId }, select: { id: true, inventoryItemId: true } });
+    if (!lot) return null;
+    // a combined lot has several books: its label cannot stand for one of them (each book is scanned by its own tag)
+    if ((await tx.lotMember.count({ where: { lotId: lot.id, removedAt: null } })) > 1) return null;
+    return tx.inventoryItem.findUnique({ where: { id: lot.inventoryItemId } });
   }
   const value = code.type === "ITEM" ? code.value : code.value.trim();
   if (!value) return null;
@@ -432,9 +443,16 @@ export async function getItemDetail(user: UserPrincipal, id: string) {
       currentLocation: { include: locationInclude },
       consignor: { select: { id: true, name: true, archivedAt: true } },
       categoryNotes: true,
-      lots: {
-        orderBy: { assignedAt: "desc" },
-        include: { catalog: { select: { id: true, number: true, name: true, status: true, auctionHouse: { select: { id: true, slug: true, name: true, accentColor: true } } } } },
+      lotMemberships: {
+        orderBy: { lot: { assignedAt: "desc" } },
+        include: {
+          lot: {
+            include: {
+              catalog: { select: { id: true, number: true, name: true, status: true, auctionHouse: { select: { id: true, slug: true, name: true, accentColor: true } } } },
+              _count: { select: { members: { where: { removedAt: null } } } },
+            },
+          },
+        },
       },
       pickTasks: { orderBy: { createdAt: "desc" }, take: 20 },
     },
@@ -455,7 +473,8 @@ export async function getItemDetail(user: UserPrincipal, id: string) {
   const users = new Map((await db.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true } })).map((u) => [u.id, u.name]));
   return {
     item,
-    lots: item.lots.map((l) => ({ ...l, hidden: !canSeeHouse(user, l.catalog.auctionHouse.id) })),
+    // every lot the book was ever a member of (newest first); a lot merged into another one is history of the same book
+    lots: [...new Map(item.lotMemberships.map((m) => [m.lot.id, m.lot])).values()].map(({ _count, ...l }) => ({ ...l, bookCount: _count.members, hidden: !canSeeHouse(user, l.catalog.auctionHouse.id) })),
     categoryCounts: Object.fromEntries(PHOTO_CATEGORIES.map((c) => [c, counts.find((x) => x.category === c)?._count._all ?? 0])) as Record<PhotoCategory, number>,
     events: events.map((e) => ({ ...e, userName: e.userId ? (users.get(e.userId) ?? null) : null })),
     moves: moves.map((m) => ({

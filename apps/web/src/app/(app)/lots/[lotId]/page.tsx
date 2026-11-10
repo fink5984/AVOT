@@ -6,6 +6,8 @@ import { requirePageUser } from "@/server/auth/principal";
 import { can } from "@/server/auth/permissions";
 import { db } from "@/server/db";
 import { lotProgress } from "@/server/services/lots";
+import { memberCounts } from "@/server/services/lot-members";
+import { CombinedLotView } from "./combined/combined-view";
 import { listAssets } from "@/server/services/assets";
 import { toAssetDto } from "@/server/services/asset-dto";
 import { ButtonLink } from "@/components/ui/button";
@@ -41,13 +43,15 @@ export default async function LotPage({ params, searchParams }: { params: Promis
     include: { catalog: { include: { auctionHouse: true } }, item: { include: { currentLocation: { include: locationInclude }, consignor: { select: { id: true, name: true } } } } },
   });
   if (!lot || !canSeeHouse(user, lot.catalog.auctionHouseId)) notFound();
+  // several books sold as one lot: the combined view (books, shared gallery, shared description)
+  if ((await memberCounts([lot.id])).get(lot.id)! > 1) return <CombinedLotView lot={lot} user={user} />;
 
   const [progress, prev, next, assets, siblings] = await Promise.all([
     lotProgress(lot.id),
-    db.lot.findFirst({ where: { catalogId: lot.catalogId, lotNumber: { lt: lot.lotNumber } }, orderBy: { lotNumber: "desc" }, select: { id: true, lotNumber: true } }),
-    db.lot.findFirst({ where: { catalogId: lot.catalogId, lotNumber: { gt: lot.lotNumber } }, orderBy: { lotNumber: "asc" }, select: { id: true, lotNumber: true } }),
+    db.lot.findFirst({ where: { catalogId: lot.catalogId, mergedIntoLotId: null, lotNumber: { lt: lot.lotNumber } }, orderBy: { lotNumber: "desc" }, select: { id: true, lotNumber: true } }),
+    db.lot.findFirst({ where: { catalogId: lot.catalogId, mergedIntoLotId: null, lotNumber: { gt: lot.lotNumber } }, orderBy: { lotNumber: "asc" }, select: { id: true, lotNumber: true } }),
     listAssets(user.organizationId, lot.inventoryItemId),
-    db.lot.findMany({ where: { catalogId: lot.catalogId, id: { not: lot.id } }, select: { id: true, lotNumber: true, title: true }, orderBy: { lotNumber: "asc" } }),
+    db.lot.findMany({ where: { catalogId: lot.catalogId, mergedIntoLotId: null, id: { not: lot.id } }, select: { id: true, lotNumber: true, title: true }, orderBy: { lotNumber: "asc" } }),
   ]);
 
   const unmet = progress.filter((p) => !p.satisfied).map((p) => t.category[p.category]);

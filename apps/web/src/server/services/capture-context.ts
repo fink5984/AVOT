@@ -1,6 +1,7 @@
 import "server-only";
 import type { LotStatus } from "@avot/shared";
 import { db } from "../db";
+import { AppError } from "../errors";
 import { listAssets } from "./assets";
 import { toAssetDto, type AssetDto } from "./asset-dto";
 
@@ -46,9 +47,11 @@ export const INVENTORY_CATALOG_NUMBER = "INV";
 export async function loadCaptureContext(orgId: string, targetId: string): Promise<CaptureLotContext | null> {
   const lot = await db.lot.findFirst({ where: { id: targetId, organizationId: orgId }, include: { catalog: true, item: { include: { consignor: { select: { id: true, name: true } } } } } });
   if (lot) {
+    // photos are taken for one physical book: a combined lot has several, so the book must be chosen
+    if ((await db.lotMember.count({ where: { lotId: lot.id, removedAt: null } })) > 1) throw new AppError("CONFLICT", "זה לוט משולב מכמה ספרים. בחרו את הספר לצילום מרשימת \"הספרים בלוט\".");
     const [prev, next, assets] = await Promise.all([
-      db.lot.findFirst({ where: { catalogId: lot.catalogId, lotNumber: { lt: lot.lotNumber } }, orderBy: { lotNumber: "desc" }, select: { id: true, lotNumber: true, title: true } }),
-      db.lot.findFirst({ where: { catalogId: lot.catalogId, lotNumber: { gt: lot.lotNumber } }, orderBy: { lotNumber: "asc" }, select: { id: true, lotNumber: true, title: true } }),
+      db.lot.findFirst({ where: { catalogId: lot.catalogId, mergedIntoLotId: null, lotNumber: { lt: lot.lotNumber } }, orderBy: { lotNumber: "desc" }, select: { id: true, lotNumber: true, title: true } }),
+      db.lot.findFirst({ where: { catalogId: lot.catalogId, mergedIntoLotId: null, lotNumber: { gt: lot.lotNumber } }, orderBy: { lotNumber: "asc" }, select: { id: true, lotNumber: true, title: true } }),
       listAssets(orgId, lot.inventoryItemId),
     ]);
     return {

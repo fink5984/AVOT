@@ -44,6 +44,35 @@ export async function createPickTask(user: UserPrincipal, itemId: string, reason
   return db.$transaction((tx) => createPickTaskTx(tx, user, itemId, { reason, note }));
 }
 
+/**
+ * Fulfilment of a sold lot (ordinary or combined): one task per book, all tied to the lot. The lot is ready to ship
+ * only when EVERY book is packed or shipped - one scanned book never makes a combined lot "shipped".
+ */
+export async function lotFulfilment(lotId: string, tx: Tx | typeof db = db) {
+  const tasks = await tx.pickTask.findMany({
+    where: { lotId, status: { not: "CANCELLED" } },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, status: true, item: { select: { id: true, inventoryNumber: true, title: true } } },
+  });
+  const members = await tx.lotMember.count({ where: { lotId, removedAt: null } });
+  const total = Math.max(tasks.length, members);
+  const picked = tasks.filter((t) => t.status !== "OPEN").length;
+  const packed = tasks.filter((t) => t.status === "PACKED" || t.status === "SHIPPED").length;
+  const shipped = tasks.filter((t) => t.status === "SHIPPED").length;
+  return {
+    total,
+    created: tasks.length,
+    picked,
+    packed,
+    shipped,
+    /** every book has a task and all are packed or shipped */
+    readyToShip: total > 0 && tasks.length === members && packed === total,
+    allShipped: total > 0 && tasks.length === members && shipped === total,
+    label: `נאספו ${picked} מתוך ${total} ספרים`,
+    books: tasks.map((t) => ({ taskId: t.id, status: t.status, itemId: t.item.id, inventoryNumber: t.item.inventoryNumber, title: t.item.title })),
+  };
+}
+
 /** Open tasks in walking order (zone / shelf / cell) — a pick route through the warehouse. */
 export async function listPickTasks(orgId: string, opts: { status?: "open" | "all" | (typeof OPEN)[number]; zoneId?: string } = {}) {
   const statusWhere =
@@ -57,9 +86,18 @@ export async function listPickTasks(orgId: string, opts: { status?: "open" | "al
     orderBy: { createdAt: "asc" },
     take: 1000,
   });
+  // progress of the lots the tasks belong to ("2 of 3 books picked")
+  const lotIds = [...new Set(tasks.map((t) => t.lotId).filter((x): x is string => !!x))];
+  const lotTasks = lotIds.length ? await db.pickTask.findMany({ where: { lotId: { in: lotIds }, status: { not: "CANCELLED" } }, select: { lotId: true, status: true } }) : [];
+  const progressOf = (lotId: string | null) => {
+    if (!lotId) return null;
+    const own = lotTasks.filter((x) => x.lotId === lotId);
+    return own.length > 1 ? { total: own.length, picked: own.filter((x) => x.status !== "OPEN").length } : null;
+  };
   return tasks
     .map((t) => ({
       id: t.id,
+      lotProgress: progressOf(t.lotId),
       status: t.status,
       reason: t.reason,
       createdAt: t.createdAt.toISOString(),

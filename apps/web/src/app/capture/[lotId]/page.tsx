@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { PHOTO_CATEGORIES, type PhotoCategory } from "@avot/shared";
 import { requirePageUser } from "@/server/auth/principal";
 import { can } from "@/server/auth/permissions";
@@ -7,6 +7,7 @@ import { env } from "@/server/env";
 import { loadCaptureContext } from "@/server/services/capture-context";
 import { CaptureStudio } from "@/components/capture/studio";
 import { getLotForUser } from "@/server/services/lots";
+import { memberCounts } from "@/server/services/lot-members";
 
 export const metadata = { title: "צילום" };
 
@@ -15,6 +16,8 @@ export default async function CapturePage({ params, searchParams }: { params: Pr
   const { lotId } = await params;
   const { category } = await searchParams;
   if (!/^[0-9a-f-]{36}$/i.test(lotId)) notFound();
+  // a combined lot has several books: photos are taken per book, chosen from the lot page
+  if ((await memberCounts([lotId])).get(lotId)! > 1) redirect(`/lots/${lotId}`);
   // the id may be a catalog lot or an inventory book (scanned tag / inventory screen)
   const ctx = await loadCaptureContext(user.organizationId, lotId);
   if (!ctx) notFound();

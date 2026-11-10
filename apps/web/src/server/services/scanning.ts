@@ -50,11 +50,11 @@ async function itemView(tx: Tx, user: UserPrincipal, itemId: string): Promise<No
     where: { id: itemId },
     include: {
       currentLocation: { include: locationInclude },
-      lots: { where: { assignmentStatus: "ACTIVE" }, include: { catalog: { include: { auctionHouse: true } } } },
+      lotMemberships: { where: { isActive: true, removedAt: null }, include: { lot: { include: { catalog: { include: { auctionHouse: true } } } } } },
       pickTasks: { where: { status: { in: ["OPEN", "PICKED", "PACKED"] } } },
     },
   });
-  const lot = i.lots[0];
+  const lot = i.lotMemberships[0]?.lot;
   const allowed: string[] = [];
   if (!storeBlockedReason(i.physicalStatus)) allowed.push("אחסון / העברה");
   if (i.pickTasks.some((t) => t.status === "OPEN")) allowed.push("ליקוט");

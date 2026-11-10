@@ -14,6 +14,7 @@ import { INVENTORY_CATALOG_NUMBER } from "./capture-context";
 import { keys, storage } from "../storage";
 import { log } from "../log";
 import { safeSegment, uniqueName } from "./filenames";
+import { activeLotOfItem, memberItemIds } from "./lot-members";
 
 export const exportRequestSchema = z.object({
   scope: z.enum(["category", "lot", "catalog", "selection", "item"]),
@@ -100,6 +101,8 @@ interface ExportRow {
   height: number | null;
   files: { role: string; storageKey: string; extension: string; sha256: string; sizeBytes: bigint; mimeType: string }[];
   processed: { key: string; ext: string } | null;
+  /** photo of a combined lot: `index` is the position in the lot's shared gallery (all books), files are named by it */
+  combined?: boolean;
 }
 
 interface BookContext {
@@ -111,6 +114,8 @@ interface BookContext {
   title: string;
   /** set → apply that lot's presentation (hidden photos, order) */
   lotId: string | null;
+  /** a combined lot: every book of the lot, in the lot's order (itemId is only the first of them) */
+  itemIds?: string[];
 }
 
 const exportAssetInclude = { createdBy: { select: { name: true } }, files: { where: { uploadStatus: "VERIFIED" as const } } };
@@ -123,23 +128,28 @@ const exportAssetInclude = { createdBy: { select: { name: true } }, files: { whe
 async function collect(orgId: string, p: ExportRequest): Promise<ExportRow[]> {
   let books: BookContext[] = [];
   let only: Set<string> | null = null;
-  const lotCtx = (l: { id: string; lotNumber: number; title: string; inventoryItemId: string; item: { inventoryNumber: string }; catalog: { number: string; name: string } }) => ({
-    itemId: l.inventoryItemId,
-    inventoryNumber: l.item.inventoryNumber,
-    catalogNumber: l.catalog.number,
-    catalogName: l.catalog.name,
-    lotNumber: l.lotNumber,
-    title: l.title,
-    lotId: l.id,
-  });
+  const lotCtx = async (l: { id: string; lotNumber: number; title: string; inventoryItemId: string; item: { inventoryNumber: string }; catalog: { number: string; name: string } }): Promise<BookContext> => {
+    const ids = await memberItemIds(l.id);
+    return {
+      itemId: l.inventoryItemId,
+      inventoryNumber: l.item.inventoryNumber,
+      catalogNumber: l.catalog.number,
+      catalogName: l.catalog.name,
+      lotNumber: l.lotNumber,
+      title: l.title,
+      lotId: l.id,
+      ...(ids.length > 1 ? { itemIds: ids } : {}),
+    };
+  };
   const lotInclude = { item: { select: { inventoryNumber: true } }, catalog: { select: { number: true, name: true } } } as const;
 
   if ((p.scope === "lot" || p.scope === "category") && p.lotId) {
     const lot = await db.lot.findFirst({ where: { id: p.lotId, organizationId: orgId }, include: lotInclude });
-    if (lot) books = [lotCtx(lot)];
+    if (lot) books = [await lotCtx(lot)];
   } else if (p.scope === "catalog") {
-    const lots = await db.lot.findMany({ where: { catalogId: p.catalogId!, organizationId: orgId }, include: lotInclude, orderBy: { lotNumber: "asc" } });
-    books = lots.map(lotCtx);
+    // lots merged into another lot are history: their books are exported with the combined lot
+    const lots = await db.lot.findMany({ where: { catalogId: p.catalogId!, organizationId: orgId, mergedIntoLotId: null }, include: lotInclude, orderBy: { lotNumber: "asc" } });
+    books = await Promise.all(lots.map(lotCtx));
   } else if (p.scope === "item" || p.scope === "category") {
     const item = await db.inventoryItem.findFirst({ where: { id: p.inventoryItemId!, organizationId: orgId } });
     if (item) books = [{ itemId: item.id, inventoryNumber: item.inventoryNumber, catalogNumber: INVENTORY_CATALOG_NUMBER, catalogName: "מלאי", lotNumber: Number(item.serial), title: item.title, lotId: null }];
@@ -153,54 +163,73 @@ async function collect(orgId: string, p: ExportRequest): Promise<ExportRow[]> {
     for (const a of picked) {
       if (seen.has(a.inventoryItemId)) continue;
       seen.add(a.inventoryItemId);
-      const active = a.lot ?? (await db.lot.findFirst({ where: { inventoryItemId: a.inventoryItemId, assignmentStatus: "ACTIVE" }, include: lotInclude }));
-      books.push(
-        active
-          ? { ...lotCtx(active), lotId: null }
-          : { itemId: a.inventoryItemId, inventoryNumber: a.item.inventoryNumber, catalogNumber: INVENTORY_CATALOG_NUMBER, catalogName: "מלאי", lotNumber: Number(a.item.serial), title: a.item.title, lotId: null },
-      );
+      // the book's catalog lot: the one the photo was shot for, else the book's active lot (ordinary or combined)
+      const active = a.lot ?? (await activeLotOfItem(a.inventoryItemId).then((l) => (l ? db.lot.findUnique({ where: { id: l.id }, include: lotInclude }) : null)));
+      if (active) {
+        const ctx = await lotCtx(active);
+        // a combined lot is exported as one unit in the order of its shared gallery
+        books.push(ctx.itemIds ? ctx : { ...ctx, lotId: null });
+      } else {
+        books.push({ itemId: a.inventoryItemId, inventoryNumber: a.item.inventoryNumber, catalogNumber: INVENTORY_CATALOG_NUMBER, catalogName: "מלאי", lotNumber: Number(a.item.serial), title: a.item.title, lotId: null });
+      }
     }
+    // two selected photos of different books of one combined lot: one lot entry
+    books = books.filter((b, i) => !b.itemIds || books.findIndex((x) => x.lotId === b.lotId) === i);
   }
   if (!books.length) return [];
 
-  const [assets, display] = await Promise.all([
+  const allItemIds = [...new Set(books.flatMap((b) => b.itemIds ?? [b.itemId]))];
+  const [assets, display, itemRows] = await Promise.all([
     db.photoAsset.findMany({
-      where: { organizationId: orgId, inventoryItemId: { in: books.map((b) => b.itemId) }, deletedAt: null, ...(p.scope === "category" ? { category: p.category! } : {}) },
+      where: { organizationId: orgId, inventoryItemId: { in: allItemIds }, deletedAt: null, ...(p.scope === "category" ? { category: p.category! } : {}) },
       include: exportAssetInclude,
       orderBy: [{ category: "asc" }, { sortOrder: "asc" }],
     }),
     db.lotDisplayAsset.findMany({ where: { lotId: { in: books.map((b) => b.lotId).filter((x): x is string => !!x) } } }),
+    db.inventoryItem.findMany({ where: { id: { in: allItemIds } }, select: { id: true, inventoryNumber: true } }),
   ]);
+  const numberOf = new Map(itemRows.map((i) => [i.id, i.inventoryNumber]));
 
   const rows: ExportRow[] = [];
+  const toRow = (a: (typeof assets)[number], b: BookContext, category: PhotoCategory, index: number, combined: boolean): ExportRow => ({
+    assetId: a.id,
+    catalogNumber: b.catalogNumber,
+    catalogName: b.catalogName,
+    lotNumber: b.lotNumber,
+    lotTitle: b.title,
+    inventoryNumber: numberOf.get(a.inventoryItemId) ?? b.inventoryNumber,
+    category,
+    index,
+    displayName: a.displayName,
+    capturedAt: a.capturedAt,
+    createdBy: a.createdBy?.name ?? null,
+    width: a.width,
+    height: a.height,
+    files: a.files,
+    // only the finished full-resolution file counts: while the photo is queued / preview-only / failed the key may be an older version
+    processed: a.processedKey && (a.imageState === "DONE" || a.imageState === "NEEDS_REVIEW") ? { key: a.processedKey, ext: a.processedKey.split(".").pop() ?? "jpg" } : null,
+    ...(combined ? { combined: true } : {}),
+  });
   for (const b of books) {
     const shown = display.filter((d) => d.lotId === b.lotId);
     const byId = new Map(shown.map((d) => [d.assetId, d]));
+    if (b.itemIds) {
+      // combined lot: ONE sequence over all the books' visible photos, in the lot's gallery order
+      const bookIdx = new Map(b.itemIds.map((id, i) => [id, i]));
+      const catIdx = new Map(PHOTO_CATEGORIES.map((c, i) => [c, i]));
+      const explicit = (a: (typeof assets)[number]) => byId.get(a.id)?.sortOrder ?? Number.POSITIVE_INFINITY;
+      const list = assets
+        .filter((a) => bookIdx.has(a.inventoryItemId) && a.files.length > 0 && !byId.get(a.id)?.hidden && (!only || only.has(a.id)))
+        .sort((x, y) => explicit(x) - explicit(y) || bookIdx.get(x.inventoryItemId)! - bookIdx.get(y.inventoryItemId)! || catIdx.get(x.category)! - catIdx.get(y.category)! || x.sortOrder - y.sortOrder);
+      list.forEach((a, i) => rows.push(toRow(a, b, a.category, i + 1, true)));
+      continue;
+    }
     const key = (a: (typeof assets)[number]) => byId.get(a.id)?.sortOrder ?? 1_000_000 + a.sortOrder;
     for (const category of PHOTO_CATEGORIES) {
       const list = assets
         .filter((a) => a.inventoryItemId === b.itemId && a.category === category && a.files.length > 0 && !byId.get(a.id)?.hidden && (!only || only.has(a.id)))
         .sort((x, y) => key(x) - key(y));
-      list.forEach((a, i) =>
-        rows.push({
-          assetId: a.id,
-          catalogNumber: b.catalogNumber,
-          catalogName: b.catalogName,
-          lotNumber: b.lotNumber,
-          lotTitle: b.title,
-          inventoryNumber: b.inventoryNumber,
-          category,
-          index: i + 1,
-          displayName: a.displayName,
-          capturedAt: a.capturedAt,
-          createdBy: a.createdBy?.name ?? null,
-          width: a.width,
-          height: a.height,
-          files: a.files,
-          // only the finished full-resolution file counts: while the photo is queued / preview-only / failed the key may be an older version
-          processed: a.processedKey && (a.imageState === "DONE" || a.imageState === "NEEDS_REVIEW") ? { key: a.processedKey, ext: a.processedKey.split(".").pop() ?? "jpg" } : null,
-        }),
-      );
+      list.forEach((a, i) => rows.push(toRow(a, b, category, i + 1, false)));
     }
   }
   return rows;
@@ -258,8 +287,9 @@ export async function runExportJob(job: Job): Promise<void> {
         lotFolders.set(r.lotNumber, lotFolder);
       }
       const slug = CATEGORY_SLUG[r.category];
-      const stem = `L${padLotNumber(r.lotNumber)}-${slug}-${padLotNumber(r.index)}`;
-      const dir = `${catalogFolder}/${lotFolder}/${slug}`;
+      // a combined lot: one folder, files numbered in the lot's gallery order and named by the book they belong to
+      const stem = r.combined ? `L${padLotNumber(r.lotNumber)}-${padLotNumber(r.index)}-${safeSegment(r.inventoryNumber, 30)}-${slug}` : `L${padLotNumber(r.lotNumber)}-${slug}-${padLotNumber(r.index)}`;
+      const dir = r.combined ? `${catalogFolder}/${lotFolder}` : `${catalogFolder}/${lotFolder}/${slug}`;
       const entryFiles: string[] = [];
       let version = p.variant === "catalog-jpeg" ? "catalog-jpeg" : p.variant;
       for (const f of r.files) {
@@ -344,16 +374,23 @@ export async function runExportJob(job: Job): Promise<void> {
   log.info("export finished", { jobId: job.id, files: rows.length, bytes: put.sizeBytes });
 }
 
-/** CSV export of lot metadata (not photos), synchronous — small payload. */
+/** CSV export of lot metadata (not photos), synchronous — small payload. A combined lot is ONE row with ONE lot number. */
 export async function lotsCsv(orgId: string, catalogId: string): Promise<{ filename: string; body: string }> {
   const catalog = await db.catalog.findFirst({ where: { id: catalogId, organizationId: orgId } });
   if (!catalog) throw notFound("הקטלוג");
-  const lots = await db.lot.findMany({ where: { catalogId }, orderBy: { lotNumber: "asc" }, include: { item: { select: { inventoryNumber: true } } } });
-  const counts = await db.photoAsset.groupBy({ by: ["inventoryItemId", "category"], where: { inventoryItemId: { in: lots.map((l) => l.inventoryItemId) }, deletedAt: null }, _count: { _all: true } });
-  const header = ["lot_number", "inventory_number", "title", "subtitle", "author", "print_year", "print_place", "short_description", "status", "commercial_status", "assignment", ...PHOTO_CATEGORIES.map((c) => `photos_${CATEGORY_SLUG[c]}`), "photos_total", "updated_at"];
+  const lots = await db.lot.findMany({
+    where: { catalogId, mergedIntoLotId: null },
+    orderBy: { lotNumber: "asc" },
+    include: { item: { select: { inventoryNumber: true } }, members: { where: { removedAt: null }, orderBy: { sortOrder: "asc" }, select: { inventoryItemId: true, item: { select: { inventoryNumber: true, title: true } } } } },
+  });
+  const itemIdsOf = (l: (typeof lots)[number]) => (l.members.length ? l.members.map((m) => m.inventoryItemId) : [l.inventoryItemId]);
+  const counts = await db.photoAsset.groupBy({ by: ["inventoryItemId", "category"], where: { inventoryItemId: { in: lots.flatMap(itemIdsOf) }, deletedAt: null }, _count: { _all: true } });
+  const header = ["lot_number", "inventory_number", "book_count", "title", "subtitle", "author", "print_year", "print_place", "short_description", "status", "commercial_status", "assignment", ...PHOTO_CATEGORIES.map((c) => `photos_${CATEGORY_SLUG[c]}`), "photos_total", "updated_at"];
   const lines = lots.map((l) => {
-    const per = PHOTO_CATEGORIES.map((c) => counts.find((x) => x.inventoryItemId === l.inventoryItemId && x.category === c)?._count._all ?? 0);
-    return [l.lotNumber, l.item.inventoryNumber, l.title, l.subtitle, l.author, l.printYear, l.printPlace, l.shortDescription, l.status, l.commercialStatus, l.assignmentStatus, ...per, per.reduce((a, b) => a + b, 0), l.updatedAt.toISOString()]
+    const ids = itemIdsOf(l);
+    const per = PHOTO_CATEGORIES.map((c) => counts.filter((x) => ids.includes(x.inventoryItemId) && x.category === c).reduce((n, x) => n + x._count._all, 0));
+    const numbers = l.members.length > 1 ? l.members.map((m) => m.item.inventoryNumber).join(" | ") : l.item.inventoryNumber;
+    return [l.lotNumber, numbers, Math.max(1, l.members.length), l.title, l.subtitle, l.author, l.printYear, l.printPlace, l.shortDescription, l.status, l.commercialStatus, l.assignmentStatus, ...per, per.reduce((a, b) => a + b, 0), l.updatedAt.toISOString()]
       .map(csvCell)
       .join(",");
   });

@@ -10,6 +10,7 @@ import { asJson } from "../json";
 import { changeStatus } from "./item-status";
 import { getItemOrThrow } from "./inventory";
 import { createPickTaskTx } from "./picking";
+import { activeLotOfItem, addFounderMember, memberItemIds, setMembersActive } from "./lot-members";
 
 /*
  * Catalog assignment = a Lot row linking one InventoryItem to one Catalog.
@@ -41,20 +42,34 @@ async function nextLotNumber(tx: Tx, catalogId: string) {
   return { lotNumber: (agg._max.lotNumber ?? 0) + 1, sortOrder: (agg._max.sortOrder ?? 0) + 1 };
 }
 
-/** Item commercial status follows its assignments: active lot → its state; else the latest ended lot's outcome; else UNASSIGNED. */
+/**
+ * Item commercial status follows its assignments: active lot (ordinary or combined) → its state; else the latest ended
+ * lot the book is still a member of → its outcome; else UNASSIGNED. A lot that was merged into another one no longer
+ * counts (its membership was closed when it merged).
+ */
 export async function syncItemCommercial(tx: Tx, principal: Principal, itemId: string, ref: { reason?: string; refId?: string } = {}) {
-  const active = await tx.lot.findFirst({ where: { inventoryItemId: itemId, assignmentStatus: "ACTIVE" }, select: { commercialStatus: true } });
-  const latest = active ?? (await tx.lot.findFirst({ where: { inventoryItemId: itemId }, orderBy: [{ endedAt: "desc" }, { assignedAt: "desc" }], select: { commercialStatus: true } }));
+  const active = await activeLotOfItem(itemId, tx);
+  const latest =
+    active ??
+    (
+      await tx.lotMember.findFirst({
+        where: { inventoryItemId: itemId, removedAt: null },
+        orderBy: [{ lot: { endedAt: "desc" } }, { lot: { assignedAt: "desc" } }],
+        select: { lot: { select: { commercialStatus: true } } },
+      })
+    )?.lot;
   const to: CommercialStatus = latest?.commercialStatus ?? "UNASSIGNED";
   await changeStatus(tx, principal, itemId, "COMMERCIAL", to, { reason: ref.reason, refType: "lot", refId: ref.refId });
 }
 
+/** Ends a lot (ordinary or combined): every one of its books gets the outcome in the same transaction. */
 async function endLotTx(tx: Tx, principal: Principal, lotId: string, outcome: "SOLD" | "UNSOLD" | "WITHDRAWN", reason: string | null) {
   const lot = await tx.lot.update({
     where: { id: lotId },
     data: { assignmentStatus: "ENDED", commercialStatus: outcome, endedAt: new Date(), endReason: reason },
   });
-  await syncItemCommercial(tx, principal, lot.inventoryItemId, { reason: reason ?? undefined, refId: lotId });
+  await setMembersActive(tx, lotId, false);
+  for (const itemId of await memberItemIds(lotId, tx)) await syncItemCommercial(tx, principal, itemId, { reason: reason ?? undefined, refId: lotId });
   return lot;
 }
 
@@ -70,11 +85,15 @@ export async function assignToCatalog(user: UserPrincipal, itemId: string, input
   const result = await db.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT id FROM "InventoryItem" WHERE id = ${itemId}::uuid FOR UPDATE`;
     await tx.$queryRaw`SELECT id FROM "Catalog" WHERE id = ${catalog.id}::uuid FOR UPDATE`;
-    const active = await tx.lot.findFirst({
-      where: { inventoryItemId: itemId, assignmentStatus: "ACTIVE" },
-      include: { catalog: { include: { auctionHouse: true } } },
+    const activeMember = await tx.lotMember.findFirst({
+      where: { inventoryItemId: itemId, isActive: true, removedAt: null },
+      include: { lot: { include: { catalog: { include: { auctionHouse: true } } } } },
     });
+    const active = activeMember?.lot ?? null;
     if (active) {
+      if ((await tx.lotMember.count({ where: { lotId: active.id, removedAt: null } })) > 1) {
+        throw new AppError("CONFLICT", `הספר הוא חלק מלוט משולב (פריט ${active.lotNumber}). הסירו אותו מהלוט או פרקו את הלוט לפני שיוך לקטלוג אחר.`);
+      }
       if (active.catalogId === catalog.id) throw new AppError("CONFLICT", `הספר כבר משויך לקטלוג זה (פריט ${active.lotNumber})`);
       if (!input.replaceActive) {
         throw new AppError("CONFLICT", `הספר כבר משויך לקטלוג פעיל: ${active.catalog.auctionHouse.name}, קטלוג ${active.catalog.number}, פריט ${active.lotNumber}`, {
@@ -114,6 +133,7 @@ export async function assignToCatalog(user: UserPrincipal, itemId: string, input
       },
     });
     const fromDraft = !input.description && !input.shortDescription && !!(item.catalogDescription || item.catalogHeadline);
+    await addFounderMember(tx, lot);
     await tx.lotDescriptionVersion.create({
       data: {
         lotId: lot.id,
@@ -159,29 +179,41 @@ export async function setLotCommercialStatus(user: UserPrincipal, lotId: string,
   const lot = await db.lot.findFirst({ where: { id: lotId, organizationId: user.organizationId }, include: { catalog: true } });
   if (!lot) throw notFound("הפריט");
   assertHouse(user, lot.catalog.auctionHouseId);
+  if (lot.mergedIntoLotId) throw new AppError("CONFLICT", "הפריט אוחד ללוט אחר - המצב המסחרי נקבע בלוט המשולב");
   if (lot.commercialStatus === input.status) return lot;
   const updated = await db.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT id FROM "InventoryItem" WHERE id = ${lot.inventoryItemId}::uuid FOR UPDATE`;
-    if (lot.assignmentStatus === "ENDED") {
-      const newer = await tx.lot.findFirst({ where: { inventoryItemId: lot.inventoryItemId, id: { not: lot.id }, assignedAt: { gt: lot.assignedAt } } });
-      if (newer) throw new AppError("CONFLICT", "הספר שויך מאז לקטלוג אחר — לא ניתן לשנות שיוך היסטורי");
-      if (lot.commercialStatus === "SOLD") throw new AppError("CONFLICT", "הפריט כבר מסומן כנמכר");
+    // one sale unit: the lot and ALL its books change together or not at all
+    const itemIds = (await memberItemIds(lot.id, tx)).sort();
+    if (itemIds.length) await tx.$queryRaw`SELECT id FROM "InventoryItem" WHERE id = ANY(${itemIds}::uuid[]) ORDER BY id FOR UPDATE`;
+    await tx.$queryRaw`SELECT id FROM "Lot" WHERE id = ${lot.id}::uuid FOR UPDATE`;
+    const current = await tx.lot.findUniqueOrThrow({ where: { id: lot.id } });
+    if (current.commercialStatus === input.status) return current;
+    if (current.assignmentStatus === "ENDED") {
+      for (const itemId of itemIds) {
+        const newer = await tx.lotMember.findFirst({ where: { inventoryItemId: itemId, removedAt: null, lotId: { not: lot.id }, lot: { assignedAt: { gt: lot.assignedAt } } } });
+        if (newer) throw new AppError("CONFLICT", "הספר שויך מאז לקטלוג אחר — לא ניתן לשנות שיוך היסטורי");
+      }
+      if (current.commercialStatus === "SOLD") throw new AppError("CONFLICT", "הפריט כבר מסומן כנמכר");
       if (input.status === "ASSIGNED" || input.status === "OFFERED") {
-        const other = await tx.lot.findFirst({ where: { inventoryItemId: lot.inventoryItemId, assignmentStatus: "ACTIVE" } });
-        if (other) throw new AppError("CONFLICT", "לספר יש שיוך פעיל אחר");
+        for (const itemId of itemIds) {
+          const other = await activeLotOfItem(itemId, tx);
+          if (other && other.id !== lot.id) throw new AppError("CONFLICT", "לספר יש שיוך פעיל אחר");
+        }
       }
     }
     let row;
     if (input.status === "SOLD" || input.status === "UNSOLD" || input.status === "WITHDRAWN") {
       row = await endLotTx(tx, user, lot.id, input.status, input.reason ?? null);
-      if (input.status === "SOLD") await createPickTaskTx(tx, user, lot.inventoryItemId, { lotId: lot.id, reason: `נמכר — קטלוג ${lot.catalog.number}, פריט ${lot.lotNumber}` });
+      // a pick task for EVERY book of the lot, all tied to the lot (progress "2 of 3" is read from them)
+      if (input.status === "SOLD") for (const itemId of itemIds) await createPickTaskTx(tx, user, itemId, { lotId: lot.id, reason: `נמכר — קטלוג ${lot.catalog.number}, פריט ${lot.lotNumber}` });
     } else {
       row = await tx.lot.update({ where: { id: lot.id }, data: { commercialStatus: input.status, assignmentStatus: "ACTIVE", endedAt: null, endReason: null } });
-      await syncItemCommercial(tx, user, lot.inventoryItemId, { refId: lot.id });
+      await setMembersActive(tx, lot.id, true);
+      for (const itemId of itemIds) await syncItemCommercial(tx, user, itemId, { refId: lot.id });
     }
     await audit(
       user,
-      { action: "lot.commercial_status", entityType: "lot", entityId: lot.id, lotId: lot.id, inventoryItemId: lot.inventoryItemId, data: { from: lot.commercialStatus, to: input.status, reason: input.reason ?? null } },
+      { action: "lot.commercial_status", entityType: "lot", entityId: lot.id, lotId: lot.id, inventoryItemId: lot.inventoryItemId, data: { from: lot.commercialStatus, to: input.status, reason: input.reason ?? null, books: itemIds.length } },
       tx,
     );
     return row;

@@ -758,8 +758,13 @@ function lotIsOpenForAi(lot: { assignmentStatus: string; commercialStatus: strin
  * (the version history keeps every earlier text). Nothing is sent to any external system.
  */
 async function applyToLot(tx: Tx, itemId: string, before: AiValues, patch: Partial<AiValues>, userId: string | null, snapshot: Record<string, unknown>): Promise<AppliedReport["lot"]> {
-  const lot = await tx.lot.findFirst({ where: { inventoryItemId: itemId, assignmentStatus: "ACTIVE" }, include: { catalog: { select: { status: true, number: true } } } });
+  const member = await tx.lotMember.findFirst({ where: { inventoryItemId: itemId, isActive: true, removedAt: null }, include: { lot: { include: { catalog: { select: { status: true, number: true } } } } } });
+  const lot = member?.lot;
   if (!lot) return null;
+  // a combined lot has its own shared description (its own AI run): one book's analysis never writes into it
+  if ((await tx.lotMember.count({ where: { lotId: lot.id, removedAt: null } })) > 1) {
+    return { lotId: lot.id, fields: [], descriptionVersion: null, skippedReason: `הספר נמצא בלוט משולב (פריט ${lot.lotNumber}); התיאור המשותף של הלוט לא שונה` };
+  }
   if (!lotIsOpenForAi(lot)) return { lotId: lot.id, fields: [], descriptionVersion: null, skippedReason: `הפריט בקטלוג ${lot.catalog.number} כבר הוצע / נמכר או שהקטלוג בארכיון; התיאור שבקטלוג לא שונה` };
   snapshot.lot = { id: lot.id, title: lot.title, subtitle: lot.subtitle, author: lot.author, printYear: lot.printYear, printPlace: lot.printPlace, shortDescription: lot.shortDescription, description: lot.description };
   const data: Record<string, string | null> = {};
@@ -810,7 +815,8 @@ export async function restoreRun(user: UserPrincipal, runId: string) {
     const appliedLot = (run.applied as unknown as AppliedReport).lot;
     if (snap.lot && appliedLot?.fields.length) {
       const lot = await tx.lot.findFirst({ where: { id: snap.lot.id, assignmentStatus: "ACTIVE" }, include: { catalog: { select: { status: true } } } });
-      if (lot && lotIsOpenForAi(lot)) {
+      const combined = lot ? (await tx.lotMember.count({ where: { lotId: lot.id, removedAt: null } })) > 1 : false;
+      if (lot && !combined && lotIsOpenForAi(lot)) {
         const lotData: Record<string, string | null> = {};
         for (const f of appliedLot.fields) {
           const aiValue = f === "shortDescription" ? written.catalogHeadline : f === "description" ? written.catalogDescription : written[f as AiWritable];
