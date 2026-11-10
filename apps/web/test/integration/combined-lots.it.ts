@@ -129,6 +129,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
     return ids;
   }
 
+  const approveAll = (lots: { item: { id: string } }[]) => db.inventoryItem.updateMany({ where: { id: { in: lots.map((l) => l.item.id) } }, data: { reviewStatus: "APPROVED" } });
   const members = (lotId: string) => db.lotMember.findMany({ where: { lotId, removedAt: null }, orderBy: { sortOrder: "asc" } });
   const merge = (catalogId: string, lots: { lot: { id: string } }[], keep = 0) => mergeLots(ctx.editor, { catalogId, lotIds: lots.map((l) => l.lot.id), keepLotId: lots[keep]!.lot.id });
 
@@ -139,7 +140,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       const { catalog, lots } = await setup(3);
       const [a, b, c] = lots as [(typeof lots)[number], (typeof lots)[number], (typeof lots)[number]];
       const r = await merge(catalog.id, [a, b]);
-      expect(r.lotNumber).toBe(a.lot.lotNumber);
+      expect(r.lotNumber).toBe(1); // the kept lot is the first one: its number is unchanged
       expect(r.itemIds).toEqual([a.item.id, b.item.id]);
       expect(r.absorbed).toEqual([b.lot.lotNumber]);
 
@@ -149,14 +150,15 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       const ended = await db.lot.findUniqueOrThrow({ where: { id: b.lot.id } });
       expect(ended.assignmentStatus).toBe("ENDED");
       expect(ended.mergedIntoLotId).toBe(a.lot.id);
-      expect(ended.lotNumber).toBe(b.lot.lotNumber); // history keeps its number
+      expect(ended.lotNumber).toBeLessThan(0); // history leaves the visible numbering
       // the untouched lot keeps its number; no renumbering, no recycling
-      expect((await db.lot.findUniqueOrThrow({ where: { id: c.lot.id } })).lotNumber).toBe(c.lot.lotNumber);
+      // the numbers close up: no gap where the merged lot was
+      expect((await db.lot.findUniqueOrThrow({ where: { id: c.lot.id } })).lotNumber).toBe(2);
       expect(await db.lot.count({ where: { catalogId: catalog.id } })).toBe(3);
 
       // the catalog shows the merged lot as ONE row
       const rows = await listLots(ctx.editor, catalog.id);
-      expect(rows.map((x) => x.lotNumber)).toEqual([a.lot.lotNumber, c.lot.lotNumber]);
+      expect(rows.map((x) => x.lotNumber)).toEqual([1, 2]);
       expect(rows[0]!.bookCount).toBe(2);
       expect(rows[0]!.books.map((x) => x.itemId)).toEqual([a.item.id, b.item.id]);
       expect(rows[1]!.bookCount).toBe(1);
@@ -170,10 +172,11 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
     it("keeps the lot number the user chose among the selected lots (not necessarily the lowest)", async () => {
       const { catalog, lots } = await setup(3);
       const r = await merge(catalog.id, lots, 2);
-      expect(r.lotNumber).toBe(lots[2]!.lot.lotNumber);
+      expect(r.lotNumber).toBe(1); // the only visible lot of the catalog now
       expect(r.itemIds).toEqual(lots.map((l) => l.item.id)); // books keep the order of their lot numbers
       const ended = await db.lot.findMany({ where: { catalogId: catalog.id, mergedIntoLotId: lots[2]!.lot.id }, orderBy: { lotNumber: "asc" } });
-      expect(ended.map((l) => l.lotNumber)).toEqual([lots[0]!.lot.lotNumber, lots[1]!.lot.lotNumber]);
+      expect(ended.every((l) => l.lotNumber < 0)).toBe(true);
+      expect(ended).toHaveLength(2);
       // a shared title can be set at merge time
       const { catalog: c2, lots: l2 } = await setup(2);
       await mergeLots(ctx.editor, { catalogId: c2.id, lotIds: l2.map((x) => x.lot.id), keepLotId: l2[0]!.lot.id, title: "אוסף מיוחד" });
@@ -399,7 +402,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       const back = await db.lot.findUniqueOrThrow({ where: { id: lots[1]!.lot.id } });
       expect(back.assignmentStatus).toBe("ACTIVE");
       expect(back.mergedIntoLotId).toBeNull();
-      expect(back.lotNumber).toBe(lots[1]!.lot.lotNumber);
+      expect(back.lotNumber).toBe(3); // joins the end of the catalog
       expect((await members(back.id)).map((m) => m.inventoryItemId)).toEqual([lots[1]!.item.id]);
       expect((await members(lots[0]!.lot.id)).map((m) => m.inventoryItemId)).toEqual([lots[0]!.item.id]);
       // history rows stay
@@ -407,7 +410,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       expect(await db.lotCompositionEvent.count({ where: { lotId: lots[0]!.lot.id, kind: "REMOVE" } })).toBe(1);
       // the last book of a lot cannot be "removed"
       await expect(removeBookFromLot(ctx.editor, lots[0]!.lot.id, lots[0]!.item.id)).rejects.toThrow(/הספר היחיד/);
-      expect((await listLots(ctx.editor, catalog.id)).map((x) => x.lotNumber)).toEqual(lots.map((l) => l.lot.lotNumber));
+      expect((await listLots(ctx.editor, catalog.id)).map((x) => x.lotNumber)).toEqual([1, 2, 3]);
     });
 
     it("removing the lot's own (first) book gives that book a NEW number: the combined lot keeps its number", async () => {
@@ -416,7 +419,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       const r = await removeBookFromLot(ctx.editor, lots[0]!.lot.id, lots[0]!.item.id);
       expect(r.newLot.restored).toBe(false);
       const fresh = await db.lot.findUniqueOrThrow({ where: { id: r.newLot.lotId } });
-      expect(fresh.lotNumber).toBeGreaterThan(Math.max(...lots.map((l) => l.lot.lotNumber))); // never a recycled number
+      expect(fresh.lotNumber).toBe(2); // the next number after the combined lot (1): no gaps
       const kept = await db.lot.findUniqueOrThrow({ where: { id: lots[0]!.lot.id } });
       expect(kept.inventoryItemId).not.toBe(lots[0]!.item.id); // the anchor moved to a present book
       expect((await members(kept.id)).map((m) => m.inventoryItemId)).toEqual([lots[1]!.item.id, lots[2]!.item.id]);
@@ -551,6 +554,12 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       const lotBefore = await db.lot.findUniqueOrThrow({ where: { id: lots[0]!.lot.id } });
       fake.requests = [];
       fake.answer = () => lotAnswer();
+      // only when EVERY book of the lot was reviewed and approved by a person
+      await expect(generateLotDescription(ctx.editor, lots[0]!.lot.id)).rejects.toMatchObject({ details: { code: "BOOKS_NOT_APPROVED" } });
+      expect(fake.requests).toHaveLength(0);
+      expect((await getLotAiState(ctx.editor, lots[0]!.lot.id)).unapproved).toHaveLength(2);
+      await approveAll(lots);
+      expect((await getLotAiState(ctx.editor, lots[0]!.lot.id)).unapproved).toHaveLength(0);
       const run = await generateLotDescription(ctx.editor, lots[0]!.lot.id);
       expect(run.status).toBe("COMPLETED");
       expect(fake.requests).toHaveLength(1);
@@ -561,7 +570,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       expect(req.userText).toContain('"bookId": "book-3"');
       expect(req.userText).toContain("מחבר מאושר");
       const blocks = JSON.parse(req.userText.split("```json")[1]!.split("```")[0]!) as { bookId: string; verified: boolean }[];
-      expect(blocks.map((b) => [b.bookId, b.verified])).toEqual([["book-1", true], ["book-2", false], ["book-3", false]]);
+      expect(blocks.map((b) => [b.bookId, b.verified])).toEqual([["book-1", true], ["book-2", true], ["book-3", true]]);
       expect(req.userText).not.toContain(lots[0]!.item.inventoryNumber); // nothing operational is sent
       expect(req.instructions).toContain("verified = false");
       expect(run.provider).toBe("openai");
@@ -600,6 +609,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       await db.inventoryItem.update({ where: { id: lots[1]!.item.id }, data: { aiStatus: "COMPLETED", aiCompletedAt: new Date(), originalBaseline: { t: 1 }, originalBaselineAt: new Date(), reviewStatus: "APPROVED", detailsVersion: 4, catalogDescription: "תיאור ספר", catalogHeadline: "כותרת ספר" } });
       await db.inventoryAnalysis.create({ data: { organizationId: ctx.org.id, inventoryItemId: lots[1]!.item.id, kind: "catalog_ai", status: "COMPLETED", result: { findings: [{ kind: "signature", transcription: "חתימה", reading: "probable", attribution: null, significance: "x" }] } } });
       await merge(catalog.id, lots);
+      await approveAll(lots);
       const snap = async () => ser({ items: (await db.inventoryItem.findMany({ where: { id: { in: lots.map((l) => l.item.id) } }, orderBy: { id: "asc" } })).map(({ updatedAt: _u, ...x }) => x), analyses: await db.inventoryAnalysis.findMany({ where: { inventoryItemId: { in: lots.map((l) => l.item.id) } }, orderBy: { id: "asc" } }), status: await db.inventoryStatusEvent.count({ where: { inventoryItemId: { in: lots.map((l) => l.item.id) } } }) });
       const before = await snap();
       fake.requests = [];
@@ -617,6 +627,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
     it("a composition change marks the description as needing an update, keeps it, and blocks applying an old proposal", async () => {
       const { catalog, lots } = await setup(3);
       await merge(catalog.id, lots);
+      await approveAll(lots);
       const run1 = await generateLotDescription(ctx.editor, lots[0]!.lot.id);
       await applyLotAiRun(ctx.editor, run1.id, {});
       const text = (await db.lot.findUniqueOrThrow({ where: { id: lots[0]!.lot.id } })).description;
@@ -652,6 +663,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       await expect(generateLotDescription(ctx.editor, solo.lots[0]!.lot.id)).rejects.toThrow(/אינו לוט משולב|לא לוט משולב/);
       const { catalog, lots } = await setup(2);
       await merge(catalog.id, lots);
+      await approveAll(lots);
       let n = 0;
       fake.requests = [];
       fake.answer = () => (++n === 1 ? lotAnswer({ description: "This is a very long English description of the books in the lot that should be rejected for the language", title: "A lot of books in English language" }) : lotAnswer());

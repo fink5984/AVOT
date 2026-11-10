@@ -204,6 +204,24 @@ export const mergeSchema = z.object({
 export type MergeInput = z.input<typeof mergeSchema>;
 
 /**
+ * After a merge the catalog's lot numbers close up: the visible lots (everything except lots merged into another lot)
+ * become 1..N in their current order, so there are no gaps. Lots that were merged away are history: they move to
+ * negative numbers (never shown) so they never collide with a real number. Done in two statements because of the
+ * unique (catalog, number) constraint.
+ */
+export async function compactLotNumbers(tx: Tx, catalogId: string) {
+  await tx.$executeRaw`UPDATE "Lot" SET "lotNumber" = "lotNumber" + 100000000 WHERE "catalogId" = ${catalogId}::uuid`;
+  await tx.$executeRaw`
+    UPDATE "Lot" l SET "lotNumber" = r.n
+    FROM (
+      SELECT id,
+        CASE WHEN "mergedIntoLotId" IS NULL THEN row_number() OVER (PARTITION BY ("mergedIntoLotId" IS NULL) ORDER BY "lotNumber")
+             ELSE -row_number() OVER (PARTITION BY ("mergedIntoLotId" IS NULL) ORDER BY "lotNumber") END AS n
+      FROM "Lot" WHERE "catalogId" = ${catalogId}::uuid
+    ) r WHERE l.id = r.id`;
+}
+
+/**
  * Absorbs the single-book `others` lots and the unassigned `newItemIds` books into `keeper` (a lot that exists in the
  * catalog, ordinary or already combined). Caller has locked rows and checked the keeper. Returns the final member ids.
  */
@@ -342,7 +360,9 @@ export async function mergeLots(user: UserPrincipal, raw: MergeInput) {
       const others = lots.filter((l) => l.id !== keeper.id);
       const finalIds = await absorb(tx, user, keeper, catalog, others, [], "MERGE");
       if (input.title) await setSharedTitle(tx, user, keeper.id, input.title);
-      return { lotId: keeper.id, lotNumber: keeper.lotNumber, itemIds: finalIds, absorbed: others.map((l) => l.lotNumber) };
+      await compactLotNumbers(tx, catalog.id);
+      const after = await tx.lot.findUniqueOrThrow({ where: { id: keeper.id }, select: { lotNumber: true } });
+      return { lotId: keeper.id, lotNumber: after.lotNumber, previousLotNumber: keeper.lotNumber, itemIds: finalIds, absorbed: others.map((l) => l.lotNumber) };
     },
     { timeout: 60_000 },
   );
@@ -448,6 +468,7 @@ export async function addBooksToLot(user: UserPrincipal, lotId: string, raw: z.i
       }
       assertSameConsignor(all);
       const finalIds = await absorb(tx, user, keeper, head.catalog, others, itemIds, "ADD");
+      if (others.length) await compactLotNumbers(tx, head.catalogId);
       return { lotId, itemIds: finalIds };
     },
     { timeout: 60_000 },
@@ -492,9 +513,11 @@ async function openLotForItem(tx: Tx, user: UserPrincipal, catalog: { id: string
 
 /** Puts a lot that was absorbed back as an active ordinary lot of its book. */
 async function reactivateAbsorbed(tx: Tx, user: UserPrincipal, l: Lot, itemId: string, reason: string) {
+  // its old number was given up when the numbers closed up after the merge: it joins the end of the catalog
+  const agg = await tx.lot.aggregate({ where: { catalogId: l.catalogId }, _max: { lotNumber: true } });
   await tx.lot.update({
     where: { id: l.id },
-    data: { assignmentStatus: "ACTIVE", commercialStatus: "ASSIGNED", endedAt: null, endReason: null, mergedIntoLotId: null, inventoryItemId: itemId },
+    data: { assignmentStatus: "ACTIVE", commercialStatus: "ASSIGNED", endedAt: null, endReason: null, mergedIntoLotId: null, inventoryItemId: itemId, lotNumber: Math.max(agg._max.lotNumber ?? 0, 0) + 1 },
   });
   await tx.lotMember.create({ data: { organizationId: l.organizationId, lotId: l.id, inventoryItemId: itemId, sortOrder: 1, originLotId: null, isActive: true, addedById: user.userId } });
   await refreshLotMirror(tx, l.id);

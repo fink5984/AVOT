@@ -56,7 +56,7 @@ export function MergeLotsDialog({ open, onClose, catalogId, lots, onDone }: { op
         json: { lotIds: sorted.map((l) => l.id), keepLotId: keep, title: title.trim() || undefined },
       });
       toast.success(`נוצר לוט משולב: פריט ${r.lotNumber} · ${r.itemIds.length} ספרים`, {
-        detail: `פריטים ${r.absorbed.join(", ")} הפסיקו להיות פריטים נפרדים ונשמרו בהיסטוריה. מספרי הפריטים לא ישמשו שוב.`,
+        detail: `המספרים בקטלוג הסתדרו מחדש ברצף. הפריטים שאוחדו נשמרו בהיסטוריה.`,
       });
       onDone();
       onClose();
@@ -107,7 +107,7 @@ export function MergeLotsDialog({ open, onClose, catalogId, lots, onDone }: { op
             ))}
           </div>
           <p className="mt-2 text-[12.5px] leading-relaxed text-muted">
-            הפריטים האחרים ייסגרו כפריטים נפרדים אך יישמרו בהיסטוריה. מספרי הפריטים שהתפנו לא ימוחזרו אוטומטית, ושאר הפריטים בקטלוג לא ישנו את מספרם.
+            הפריטים האחרים ייסגרו כפריטים נפרדים אך יישמרו בהיסטוריה. אחרי האיחוד מספרי הפריטים בקטלוג יסתדרו מחדש ברצף, בלי חוסרים.
           </p>
         </fieldset>
 

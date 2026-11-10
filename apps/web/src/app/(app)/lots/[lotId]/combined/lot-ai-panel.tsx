@@ -18,6 +18,7 @@ interface AiState {
   appliedBasedOnOlderComposition: boolean;
   appliedRunId: string | null;
   available: boolean;
+  unapproved: { itemId: string; inventoryNumber: string; title: string }[];
   settings: { provider: string; model: string } | null;
   runs: LotAiRunSummary[];
 }
@@ -126,7 +127,7 @@ export function LotAiPanel({ lotId, canGenerate, canApply, initialNeedsUpdate }:
       }
       actions={
         canGenerate && (
-          <Button size="sm" variant="primary" icon={<Sparkles />} loading={busy} disabled={!!state && !state.available} onClick={generate}>
+          <Button size="sm" variant="primary" icon={<Sparkles />} loading={busy} disabled={!!state && (!state.available || state.unapproved.length > 0)} onClick={generate}>
             יצירת תיאור משותף ב-AI
           </Button>
         )
@@ -148,6 +149,18 @@ export function LotAiPanel({ lotId, canGenerate, canApply, initialNeedsUpdate }:
           </div>
         )}
 
+        {state && state.unapproved.length > 0 && (
+          <p role="status" className="rounded-lg bg-warn-soft px-3.5 py-2.5 text-[13px] leading-relaxed text-warn">
+            יצירת תיאור משותף אפשרית רק אחרי שפרטי כל הספרים בלוט נבדקו ואושרו. ממתינים לאישור:{" "}
+            {state.unapproved.map((u, i) => (
+              <span key={u.itemId}>
+                {i > 0 && ", "}
+                <a href={`/inventory/${u.itemId}`} className="num font-mono underline">{u.inventoryNumber}</a>
+              </span>
+            ))}
+            .
+          </p>
+        )}
         <p className="text-[12.5px] leading-relaxed text-muted">
           התיאור נכתב על סמך הפרטים השמורים של כל הספרים (ביבליוגרפיה, תיאורים קיימים, הערות מצב וממצאים), ומעדיף מידע שאושר בידי אדם. מידע שטרם אושר יסומן כלא מאומת.
           {state?.settings ? (

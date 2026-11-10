@@ -135,7 +135,10 @@ export async function getLotAiState(user: UserPrincipal, lotId: string) {
   } catch {
     available = false;
   }
+  const members = await lotMembers(lotId);
+  const unapproved = members.filter((m) => m.item.reviewStatus !== "APPROVED").map((m) => ({ itemId: m.inventoryItemId, inventoryNumber: m.item.inventoryNumber, title: m.item.title }));
   return {
+    unapproved,
     compositionVersion: lot.compositionVersion,
     descriptionNeedsUpdate: lot.descriptionNeedsUpdate,
     /** the applied AI text was written for another composition of books */
@@ -210,6 +213,8 @@ export async function generateLotDescription(user: UserPrincipal, lotId: string)
     const fresh = await tx.lot.findUniqueOrThrow({ where: { id: lotId }, select: { compositionVersion: true } });
     const built = await buildLotInput(lotId);
     if (built.books.length < 2) throw new AppError("CONFLICT", "זה אינו לוט משולב - התיאור המשותף נועד ללוט של כמה ספרים");
+    const pending = built.snapshot.filter((s) => s.reviewStatus !== "APPROVED");
+    if (pending.length) throw new AppError("CONFLICT", `יצירת תיאור משותף אפשרית רק כשפרטי כל הספרים בלוט נבדקו ואושרו. ממתינים לאישור: ${pending.map((p) => p.inventoryNumber).join(", ")}`, { code: "BOOKS_NOT_APPROVED", pending: pending.map((p) => p.inventoryNumber) });
     if (await tx.lotAiRun.count({ where: { lotId, status: "RUNNING" } })) throw new AppError("CONFLICT", "יצירת תיאור כבר רצה עבור הלוט. המתינו לסיומה.");
     return { input: built.books, snapshot: built.snapshot, books: built.books, compositionVersion: fresh.compositionVersion };
   });

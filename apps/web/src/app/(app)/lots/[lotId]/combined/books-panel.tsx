@@ -163,7 +163,7 @@ export function BooksPanel({
         open={!!removing}
         onClose={() => setRemoving(null)}
         title="הסרת ספר מהלוט"
-        description={removing ? `הספר ${removing.inventoryNumber} · ${removing.title} יחזור להיות פריט נפרד בקטלוג, במספר הפריט ההיסטורי שלו אם הוא פנוי ואחרת במספר חדש. הספר, התמונות והניתוחים שלו לא משתנים.` : undefined}
+        description={removing ? `הספר ${removing.inventoryNumber} · ${removing.title} יחזור להיות פריט נפרד בקטלוג, במספר הפריט הבא בקטלוג. הספר, התמונות והניתוחים שלו לא משתנים.` : undefined}
         width="sm"
       >
         <p className="text-[13px] leading-relaxed text-muted">התיאור המשותף של הלוט יישמר, אך יסומן כ״דורש עדכון״ כי הוא נכתב להרכב קודם.</p>
@@ -175,7 +175,7 @@ export function BooksPanel({
               removing &&
               run(async () => {
                 const r = await api<{ newLot: { lotNumber: number; restored: boolean } }>(`/api/lots/${lotId}/members/${removing.itemId}`, { method: "DELETE" });
-                toast.success(`הספר הוסר מהלוט: פריט ${r.newLot.lotNumber}${r.newLot.restored ? " (המספר ההיסטורי)" : " (מספר חדש)"}`);
+                toast.success(`הספר הוסר מהלוט: פריט ${r.newLot.lotNumber}${r.newLot.restored ? "" : ""}`);
                 setRemoving(null);
               })
             }
@@ -194,7 +194,7 @@ export function BooksPanel({
         width="sm"
       >
         <ul className="mb-1 list-disc space-y-1 ps-5 text-[13px] text-ink-2">
-          <li>מספרי הפריטים ההיסטוריים יחזרו לספרים שהגיעו מהם; ספר שאין לו מספר פנוי יקבל מספר חדש.</li>
+          <li>כל ספר יקבל מספר פריט חדש בסוף הקטלוג (מספרי הפריטים לא ממוחזרים).</li>
           <li>מידע האיחוד נשמר ואינו נמחק.</li>
         </ul>
         <div className="mt-5 flex gap-2">

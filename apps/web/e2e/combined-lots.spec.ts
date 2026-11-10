@@ -43,17 +43,17 @@ test.describe("combined lots", () => {
     await expect(dialog).toBeVisible();
     await dialog.getByRole("radio").nth(1).check();
     await dialog.getByLabel("כותרת משותפת (לא חובה)").fill("שלושה ספרים של אנה");
-    await dialog.getByRole("button", { name: new RegExp(`^איחוד 3 ספרים ללוט ${b.lotNumber}`) }).click();
-    await expect(page.getByText(`נוצר לוט משולב: פריט ${b.lotNumber} · 3 ספרים`)).toBeVisible();
+    await dialog.getByRole("button", { name: /^איחוד 3 ספרים ללוט/ }).click();
+    await expect(page.getByText("נוצר לוט משולב: פריט 1 · 3 ספרים")).toBeVisible();
 
     // the catalog shows ONE row for the combined lot; the absorbed lots are gone from the table, other lots keep their numbers
-    await expect(rowOf(b.lotNumber).getByText("3 ספרים")).toBeVisible();
-    await expect(page.getByLabel(`בחירת פריט ${a.lotNumber}`)).toHaveCount(0);
-    await expect(page.getByLabel(`בחירת פריט ${c.lotNumber}`)).toHaveCount(0);
-    await expect(rowOf(d.lotNumber)).toBeVisible();
+    // the numbers close up: the combined lot is 1 and the other lot is 2 (no gaps)
+    await expect(rowOf(1).getByText("3 ספרים")).toBeVisible();
+    await expect(rowOf(2).getByText("ספר ד של בועז")).toBeVisible();
+    await expect(page.getByLabel("בחירת פריט 3")).toHaveCount(0);
 
     // the lot page
-    await rowOf(b.lotNumber).getByRole("link", { name: "שלושה ספרים של אנה" }).click();
+    await rowOf(1).getByRole("link", { name: "שלושה ספרים של אנה" }).click();
     await expect(page.getByRole("heading", { level: 1, name: "שלושה ספרים של אנה" })).toBeVisible();
     await expect(page.getByText("לוט משולב ·").first()).toBeVisible();
     await expect(page.getByText("הספרים בלוט")).toBeVisible();
@@ -89,10 +89,10 @@ test.describe("combined lots", () => {
     await expect(page.getByText("נוספו 1 ספרים ללוט")).toBeVisible();
 
     await page.getByRole("button", { name: "פירוק הלוט" }).click();
-    await page.getByRole("dialog", { name: new RegExp(`פירוק לוט ${b.lotNumber}`) }).getByRole("button", { name: "פירוק הלוט" }).click();
+    await page.getByRole("dialog", { name: /פירוק לוט \d+/ }).getByRole("button", { name: "פירוק הלוט" }).click();
     await expect(page.getByText("הלוט פורק: כל ספר חזר להיות פריט נפרד")).toBeVisible();
 
     await page.goto(`/catalogs/${catalogId}`);
-    for (const n of [a.lotNumber, b.lotNumber, c.lotNumber, d.lotNumber]) await expect(page.getByLabel(`בחירת פריט ${n}`)).toBeVisible();
+    for (const n of [1, 2, 3, 4]) await expect(page.getByLabel(`בחירת פריט ${n}`)).toBeVisible();
   });
 });
