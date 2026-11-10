@@ -2,12 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, ClipboardCheck, GitCompare, History, RotateCcw, Sparkles } from "lucide-react";
-import { ITEM_TYPES, type ItemReviewStatus, type ItemType } from "@avot/shared";
+import { CheckCircle2, ClipboardCheck, FileText, GitCompare, History, RotateCcw, Sparkles } from "lucide-react";
+import { BOOK_SIZES, ITEM_TYPES, type BookSize, type ItemReviewStatus, type ItemType } from "@avot/shared";
 import { Button } from "@/components/ui/button";
 import { ReviewStatusBadge } from "@/components/ui/badge";
 import { Field, Input, Select, Textarea } from "@/components/ui/field";
 import { Panel } from "@/components/ui/misc";
+import { Dialog } from "@/components/ui/dialog";
+import { OPEN_DETAILS_EVENT } from "@/lib/item-events";
+import { ConsignorSelect } from "@/components/consignors/consignor-select";
+import type { ConsignorLite } from "@/components/consignors/consignor-dialog";
 import { useToast } from "@/components/ui/toast";
 import { fmt, t } from "@/i18n";
 import { ApiError, api, errorMessage } from "@/lib/api";
@@ -34,8 +38,29 @@ export type ReviewField = (typeof REVIEW_FIELDS)[number];
  * The formatting (bold / underline / color) of the long texts travels as one more value: a JSON string of
  * { field: segments }, so the draft, the dirty tracking and the autosave treat it like any other text field.
  */
-export type ReviewKey = ReviewField | "textFormat";
-export type ReviewValues = { [K in ReviewField]: K extends "itemType" ? ItemType : K extends "title" ? string : string | null } & { textFormat: string | null };
+export type ReviewKey = ReviewField | "textFormat" | AdminKey;
+/**
+ * The administrative details of the full-details window (not written by the AI): they travel through the very same
+ * draft / autosave / version check as the review fields, so there is one save mechanism and one source of truth.
+ * Numbers are held as text while typing ("" = none).
+ */
+export const ADMIN_KEYS = ["internalNotes", "heightMm", "widthMm", "depthMm", "sizeCategory", "barcode", "consignorId"] as const;
+export type AdminKey = (typeof ADMIN_KEYS)[number];
+export type AdminValues = { internalNotes: string | null; heightMm: string | null; widthMm: string | null; depthMm: string | null; sizeCategory: BookSize; barcode: string | null; consignorId: string | null };
+export type ReviewValues = { [K in ReviewField]: K extends "itemType" ? ItemType : K extends "title" ? string : string | null } & { textFormat: string | null } & AdminValues;
+/** a short, human summary of who did what to the details, for the reviewer (computed on the server from the history) */
+export interface ReviewSummary {
+  startedBy: string | null;
+  startedAt: string | null;
+  lastEditBy: string | null;
+  lastEditAt: string | null;
+  aiAdditionBy: string | null;
+  aiAdditionAt: string | null;
+  /** the approval that stood before the last material change */
+  previousApprovedBy: string | null;
+  previousApprovedAt: string | null;
+}
+const MM_KEYS = ["heightMm", "widthMm", "depthMm"] as const;
 
 
 const LABEL: Record<ReviewField, string> = {
@@ -51,7 +76,7 @@ const LABEL: Record<ReviewField, string> = {
   bibliographicNotes: "פרטים ביבליוגרפיים",
   conditionNotes: "מצב העותק",
   catalogHeadline: "כותרת קטלוגית",
-  catalogDescription: "תיאור קטלוגי (טיוטה)",
+  catalogDescription: "תיאור קטלוגי",
 };
 const MAX: Record<ReviewField, number> = {
   itemType: 20,
@@ -139,16 +164,27 @@ export function ItemReviewPanel({
   ai,
   canEdit,
   canReview,
+  canApprove,
   canRestore,
   canRewrite = false,
   canApply = false,
+  inventoryNumber,
+  consignor: serverConsignor,
+  summary,
 }: {
   itemId: string;
   values: ReviewValues;
   detailsVersion: number;
   ai: AiState;
   canEdit: boolean;
+  /** may start a review (item.review) */
   canReview: boolean;
+  /** may give the final approval (item.review.approve); the server checks it again */
+  canApprove: boolean;
+  inventoryNumber: string;
+  /** the book's consignor (name for the picker); null on books that predate consignors */
+  consignor: ConsignorLite | null;
+  summary: ReviewSummary;
   canRestore: boolean;
   /** "שכתוב ב-AI" of the catalog draft (editor with AI access, provider configured) */
   canRewrite?: boolean;
@@ -173,6 +209,10 @@ export function ItemReviewPanel({
   const [compare, setCompare] = useState<{ a: string; b: string } | null>(null);
   /** a name the rewrite proposed: never applied by itself (the item's name is the person's), offered under the field */
   const [titleProposal, setTitleProposal] = useState<{ title: string; before: string } | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [consignor, setConsignor] = useState<ConsignorLite | null>(serverConsignor);
+  /** the pending edits came from an applied AI addition: the history says so */
+  const aiOrigin = useRef(false);
 
   const base = useRef(serverValues); // values of the version the edits are based on
   const version = useRef(serverVersion);
@@ -189,6 +229,13 @@ export function ItemReviewPanel({
   };
 
   useEffect(() => setReviewStatus(ai.reviewStatus), [ai.reviewStatus]);
+
+  // the pencil at the top of the page and "פרטי הספר המלאים" open the same window
+  useEffect(() => {
+    const open = () => setDetailsOpen(true);
+    window.addEventListener(OPEN_DETAILS_EVENT, open);
+    return () => window.removeEventListener(OPEN_DETAILS_EVENT, open);
+  }, []);
 
   // new server data (AI result, router.refresh after another save): adopt it unless local edits are pending
   useEffect(() => {
@@ -245,7 +292,13 @@ export function ItemReviewPanel({
       try {
         const body: Record<string, unknown> = Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, typeof v === "string" ? (v.trim() ? v : null) : v]));
         if ("textFormat" in body) body.textFormat = body.textFormat ? JSON.parse(body.textFormat as string) : null;
-        const r = await api<{ detailsVersion: number; reviewStatus: ItemReviewStatus }>(`/api/inventory/${itemId}`, { method: "PATCH", json: { ...body, expectedVersion: version.current }, keepalive: opts.keepalive });
+        for (const k of MM_KEYS) if (k in body) body[k] = body[k] === null ? null : Number(body[k]);
+        // a barcode or a consignor can be replaced, never emptied; the default barcode is the inventory number
+        if ("barcode" in body && (!body.barcode || body.barcode === inventoryNumber)) delete body.barcode;
+        if ("consignorId" in body && !body.consignorId) delete body.consignorId;
+        const viaAi = aiOrigin.current;
+        const r = await api<{ detailsVersion: number; reviewStatus: ItemReviewStatus }>(`/api/inventory/${itemId}`, { method: "PATCH", json: { ...body, expectedVersion: version.current, editSource: viaAi ? "ai" : "manual" }, keepalive: opts.keepalive });
+        if (viaAi && !Object.keys(dirty.current).some((k) => !(k in fields))) aiOrigin.current = false;
         version.current = r.detailsVersion;
         base.current = { ...base.current, ...fields };
         // edits typed while the request was out stay dirty
@@ -306,9 +359,19 @@ export function ItemReviewPanel({
 
   /** the newest stored details become the base of the edits */
   async function loadNewest() {
-    const r = await api<{ item: Omit<ReviewValues, "textFormat"> & { textFormat: unknown; detailsVersion: number } }>(`/api/inventory/${itemId}`);
+    const r = await api<{ item: Record<ReviewField, string | null> & { textFormat: unknown; detailsVersion: number; heightMm: number | null; widthMm: number | null; depthMm: number | null; sizeCategory: BookSize; internalNotes: string | null; barcode: string; consignor: ConsignorLite | null } }>(`/api/inventory/${itemId}`);
     version.current = r.item.detailsVersion;
-    base.current = { ...(Object.fromEntries(REVIEW_FIELDS.map((f) => [f, r.item[f] ?? null])) as Omit<ReviewValues, "textFormat">), textFormat: serializeItemFormat(r.item.textFormat) };
+    const admin: AdminValues = {
+      internalNotes: r.item.internalNotes,
+      heightMm: r.item.heightMm === null ? null : String(r.item.heightMm),
+      widthMm: r.item.widthMm === null ? null : String(r.item.widthMm),
+      depthMm: r.item.depthMm === null ? null : String(r.item.depthMm),
+      sizeCategory: r.item.sizeCategory,
+      barcode: r.item.barcode !== inventoryNumber ? r.item.barcode : null,
+      consignorId: r.item.consignor?.id ?? null,
+    };
+    setConsignor(r.item.consignor ? { id: r.item.consignor.id, name: r.item.consignor.name } : null);
+    base.current = { ...(Object.fromEntries(REVIEW_FIELDS.map((f) => [f, r.item[f] ?? null])) as unknown as Omit<ReviewValues, "textFormat" | AdminKey>), textFormat: serializeItemFormat(r.item.textFormat), ...admin };
     conflict.current = false;
     return base.current;
   }
@@ -384,6 +447,7 @@ export function ItemReviewPanel({
       }
       // applied at once (autosave saves it); the previous values stay here for "ביטול השכתוב"
       setBeforeRewrite(Object.fromEntries(changed.map((f) => [f, values[f]])) as Partial<ReviewValues>);
+      aiOrigin.current = true;
       for (const f of changed) change(f, r.fields[f] as ReviewValues[typeof f]);
       setAdditions("");
       toast.success(`נוספו הפרטים ב-${changed.length} שדות`);
@@ -529,41 +593,108 @@ export function ItemReviewPanel({
 
   const applied = latest?.applied;
   const findings = latest?.result?.findings ?? [];
-  return (
-    <Panel
-      title={
-        <span className="flex flex-wrap items-center gap-2">
-          פרטי הפריט ובדיקה
-          <ReviewStatusBadge status={reviewStatus} />
+  const approved = reviewStatus === "APPROVED";
+  const busyAi = ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING";
+  const when = (iso: string | null) => (iso ? fmt.dateTime(new Date(iso)) : "");
+
+  async function closeDetails() {
+    setDetailsOpen(false);
+    await flush();
+  }
+
+  /** the few lines the reviewer needs: where the book stands, who touched it, whether the AI added anything */
+  const summaryBlock = (
+    <div className="rounded-md bg-stone-2/60 px-3.5 py-3 text-[13px] leading-relaxed" data-testid="review-summary">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="font-medium text-ink">
+          {reviewStatus === "NOT_STARTED" ? "הספר טרם נותח" : reviewStatus === "PENDING_REVIEW" ? "ממתין לבדיקה - עדיין לא התחילה בדיקה אנושית" : reviewStatus === "IN_REVIEW" ? "בבדיקה" : "מאושר"}
         </span>
-      }
-      actions={
-        <>
+        {reviewStatus === "IN_REVIEW" && summary.startedBy && (
+          <span className="text-ink-2">
+            · הבדיקה התחילה על ידי {summary.startedBy} {when(summary.startedAt)}
+          </span>
+        )}
+        {approved && ai.approvedBy && (
+          <span className="text-ink-2">
+            · אושר על ידי {ai.approvedBy}
+            {ai.approvedAt ? ` ${when(ai.approvedAt)}` : ""}
+          </span>
+        )}
+      </div>
+      <ul className="mt-1 space-y-0.5 text-[12.5px] text-ink-2">
+        {summary.lastEditBy && (
+          <li>
+            נערך לאחרונה על ידי {summary.lastEditBy} · {when(summary.lastEditAt)}
+          </li>
+        )}
+        {summary.aiAdditionAt && (
+          <li>
+            הוספת מידע באמצעות AI: {summary.aiAdditionBy ?? "משתמש"} · {when(summary.aiAdditionAt)}
+          </li>
+        )}
+        {latestCompleted && <li>נותח ב-AI {fmt.dateTime(new Date(latestCompleted.createdAt))}</li>}
+        {!approved && summary.previousApprovedBy && (
+          <li className="text-warn">
+            האישור הקודם ({summary.previousApprovedBy}, {when(summary.previousApprovedAt)}) בוטל בגלל שינוי בפרטים - נדרש אישור חדש
+          </li>
+        )}
+        {!approved && reviewList.length > 0 && <li className="text-warn">יש {reviewList.length} הערות AI שדורשות תשומת לב</li>}
+      </ul>
+      <a href="#item-history" className="mt-1 inline-block text-[12px] font-medium text-info underline">
+        היסטוריית פעולות מפורטת
+      </a>
+    </div>
+  );
+
+  const aiAdditions = canRewrite && canEdit && (
+    <div className="space-y-2.5 rounded-md border border-rule bg-stone-2/50 p-3">
+      <Field label="הוספת מידע או תיקון" hint="מה שבדקתם ולא מופיע בפרטים, או מה שצריך לתקן: ייחוס חתימה, מקור העותק, רקע, ממצא מיוחד, שנה או שם. ה-AI יוסיף או יתקן רק את זה, במקום המתאים, בלי לנסח מחדש שדות ופסקאות שלא ביקשתם לשנות. ההוספה חלה מיד ואפשר לבטל.">
+        {(p) => <Textarea {...p} rows={3} maxLength={4000} value={additions} onChange={(e) => setAdditions(e.target.value)} placeholder="למשל: החתימה בשער היא של רבי משה סופר. העותק מספריית בית המדרש בפרשבורג." />}
+      </Field>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button size="sm" variant="primary" icon={<Sparkles />} loading={busy === "rewrite"} disabled={!!busy || busyAi} onClick={() => void rewrite()}>
+          הוספת המידע ב-AI
+        </Button>
+        {beforeRewrite && (
+          <span className="text-[12px] text-ink-2">
+            השכתוב הוחל ({Object.keys(beforeRewrite).map((f) => LABEL[f as ReviewField]).join(", ")})
+            <button type="button" className="ms-2 inline-flex min-h-8 items-center font-medium text-info underline" onClick={undoRewrite}>
+              ביטול השכתוב
+            </button>
+          </span>
+        )}
+      </div>
+      {rewriteSkipped.length > 0 && (
+        <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
+          חלק מהפעולות לא בוצעו כי לא ניתן היה לאמת אותן מול הטקסט הנוכחי: {rewriteSkipped.map((x) => `${x.field} (${x.reason})`).join("; ")}
+        </div>
+      )}
+    </div>
+  );
+
+  const num = (k: (typeof MM_KEYS)[number], label: string) => (
+    <Field label={label} className="sm:col-span-2">
+      {(p) => <Input {...p} type="number" min={1} max={5000} inputMode="numeric" className={cn("num", dirty.current[k] !== undefined && "ring-1 ring-warn/40")} readOnly={!editable} value={values[k] ?? ""} onChange={(e) => change(k, (e.target.value.trim() ? e.target.value.trim() : null) as ReviewValues[typeof k])} onBlur={() => void flush()} />}
+    </Field>
+  );
+
+  return (
+    <>
+      <Panel
+        title={
+          <span className="flex flex-wrap items-center gap-2">
+            תוכן לפרסום בקטלוג
+            <ReviewStatusBadge status={reviewStatus} />
+          </span>
+        }
+        actions={
           <span className={cn("text-[12px]", status === "conflict" || status === "error" ? "text-danger" : status === "offline" ? "text-warn" : "text-muted")} role="status" aria-live="polite">
             {STATUS_TEXT[status]}
           </span>
-          {canReview && (reviewStatus === "NOT_STARTED" || reviewStatus === "PENDING_REVIEW") && (
-            <Button size="sm" icon={<ClipboardCheck />} loading={busy === "start"} onClick={() => void review("start")}>
-              התחל בדיקה
-            </Button>
-          )}
-        </>
-      }
-    >
-      <div className="space-y-5 px-5 py-4">
-        {(ai.reviewChangedAt || latestCompleted) && (
-          <p className="text-[12px] text-muted">
-            {latestCompleted && <>נותח ב-AI {fmt.dateTime(new Date(latestCompleted.createdAt))}</>}
-            {latestCompleted && ai.reviewChangedAt && " · "}
-            {ai.reviewChangedAt && (
-              <>
-                {t.reviewStatus[reviewStatus]} {fmt.dateTime(new Date(ai.reviewChangedAt))}
-                {ai.reviewChangedBy && <> · {ai.reviewChangedBy}</>}
-              </>
-            )}
-            {ai.approvedAt && ai.approvedBy && reviewStatus === "APPROVED" && <> · אושר על ידי {ai.approvedBy}</>}
-          </p>
-        )}
+        }
+      >
+        <div className="space-y-4 px-4 py-4 sm:px-5">
+          {summaryBlock}
         {reviewStatus !== "APPROVED" && ai.hasSuccessfulAnalysis && (
           <div className="rounded-md border border-warn/30 bg-warn-soft px-3.5 py-2.5 text-[13px]">
             <div className="font-medium text-ink">{reviewList.length ? `לבדוק לפני אישור (${reviewList.length})` : "הפרטים מולאו ב-AI וטרם אושרו"}</div>
@@ -601,127 +732,35 @@ export function ItemReviewPanel({
           </p>
         )}
 
-        <FieldGroup title="זיהוי הפריט">
-          {text("title", { className: "sm:col-span-4" })}
-          <Field label={LABEL.itemType} hint={fieldHint("itemType")} className="sm:col-span-2">
-            {(p) => (
-              <Select {...p} value={values.itemType} disabled={!editable} onChange={(e) => change("itemType", e.target.value as ItemType)} onBlur={() => void flush()}>
-                {ITEM_TYPES.map((x) => (
-                  <option key={x} value={x}>
-                    {t.itemType[x]}
-                  </option>
-                ))}
-              </Select>
-            )}
-          </Field>
-          {text("subtitle", { className: "sm:col-span-3" })}
-          {text("author", { className: "sm:col-span-3" })}
-        </FieldGroup>
 
-        <FieldGroup title="פרטי הדפוס">
-          {text("printPlace", { className: "sm:col-span-2" })}
-          {text("printYear", { className: "sm:col-span-2" })}
-          {text("publisher", { className: "sm:col-span-2" })}
-          {text("edition", { className: "sm:col-span-3" })}
-          {text("extent", { className: "sm:col-span-3" })}
-        </FieldGroup>
+          <div className="space-y-4" id="catalog-content">
+            {text("catalogHeadline", { className: "text-[16px] font-semibold" })}
+            {text("catalogDescription", { rows: 10 })}
+            {applied?.lot?.skippedReason && <p className="text-[12px] text-muted">{applied.lot.skippedReason}</p>}
+          </div>
+          {aiAdditions}
 
-        <FieldGroup title="תיאור העותק">
-          {text("bibliographicNotes", { rows: 3, className: "sm:col-span-6" })}
-          {text("conditionNotes", { rows: 2, className: "sm:col-span-6" })}
-        </FieldGroup>
-
-        <FieldGroup title="טיוטה לקטלוג" note={applied?.lot?.skippedReason ?? undefined}>
-          {text("catalogHeadline", { className: "sm:col-span-6" })}
-          {text("catalogDescription", { rows: 9, className: "sm:col-span-6" })}
-          {canRewrite && canEdit && (
-            <div className="space-y-2.5 rounded-md border border-rule bg-stone-2/50 p-3 sm:col-span-6">
-              <Field label="הוספת מידע או תיקון" hint="מה שבדקתם ולא מופיע בפרטים, או מה שצריך לתקן: ייחוס חתימה, מקור העותק, רקע, ממצא מיוחד, שנה או שם. ה-AI יוסיף או יתקן רק את זה, במקום המתאים, בלי לנסח מחדש שדות ופסקאות שלא ביקשתם לשנות. ההוספה חלה מיד ואפשר לבטל.">
-                {(p) => <Textarea {...p} rows={3} maxLength={4000} value={additions} onChange={(e) => setAdditions(e.target.value)} placeholder="למשל: החתימה בשער היא של רבי משה סופר. העותק מספריית בית המדרש בפרשבורג." />}
-              </Field>
-              <div className="flex flex-wrap items-center gap-3">
-                <Button size="sm" variant="primary" icon={<Sparkles />} loading={busy === "rewrite"} disabled={!!busy || ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING"} onClick={() => void rewrite()}>
-                  הוספת המידע ב-AI
-                </Button>
-                {beforeRewrite && (
-                  <span className="text-[12px] text-ink-2">
-                    השכתוב הוחל ({Object.keys(beforeRewrite).map((f) => LABEL[f as ReviewField]).join(", ")})
-                    <button type="button" className="ms-2 font-medium text-info underline" onClick={undoRewrite}>
-                      ביטול השכתוב
-                    </button>
-                  </span>
-                )}
-              </div>
-              {rewriteSkipped.length > 0 && (
-                <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
-                  חלק מהפעולות לא בוצעו כי לא ניתן היה לאמת אותן מול הטקסט הנוכחי: {rewriteSkipped.map((x) => `${x.field} (${x.reason})`).join("; ")}
-                </div>
-              )}
-            </div>
-          )}
-        </FieldGroup>
-
-        {latest?.result && (latest.result.identification.summary || findings.length > 0 || latest.result.catalogHighlight?.status === "found" || latest.images.some((i) => i.status === "skipped")) && (
-          <section className="space-y-2.5 border-t border-rule pt-4 text-[13px]">
-            <h3 className="text-[12px] font-semibold text-muted">מה זוהה בתמונות</h3>
-            {latest.result.identification.summary && <p className="text-ink-2">{latest.result.identification.summary}</p>}
-            {latest.result.catalogHighlight?.status === "found" && latest.result.catalogHighlight.mainFeature && (
-              <div className="rounded-md border border-info/30 bg-info-soft px-3 py-2">
-                <div className="flex flex-wrap items-baseline gap-x-2">
-                  <Sparkles className="size-3.5 self-center text-info" aria-hidden />
-                  <span className="text-[12px] text-muted">המאפיין המרכזי:</span>
-                  <span className="font-medium text-ink">{latest.result.catalogHighlight.mainFeature}</span>
-                  <span className={cn("text-[12px]", latest.result.catalogHighlight.verified ? "text-muted" : "text-warn")}>
-                    {latest.result.catalogHighlight.verified ? "מאומת" : "לא מאומת"}
-                    {latest.result.catalogHighlight.confidence ? ` · ביטחון ${CONFIDENCE[latest.result.catalogHighlight.confidence]?.replace("ביטחון ", "")}` : ""}
-                  </span>
-                </div>
-                {latest.result.catalogHighlight.reason && <div className="text-[12.5px] text-ink-2">{latest.result.catalogHighlight.reason}</div>}
-              </div>
+          <div className="flex flex-wrap items-center gap-2 border-t border-rule pt-4">
+            {canReview && (reviewStatus === "NOT_STARTED" || reviewStatus === "PENDING_REVIEW") && (
+              <Button icon={<ClipboardCheck />} loading={busy === "start"} onClick={() => void review("start")}>
+                התחל בדיקה
+              </Button>
             )}
-            {latest.result.manuscriptAnalysis?.isManuscript && latest.result.manuscriptAnalysis.unreadable.length > 0 && (
-              <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">חלקים בכתב היד שלא נקראו היטב: {latest.result.manuscriptAnalysis.unreadable.join("; ")}</div>
+            {canApprove && !approved && (
+              <Button variant="primary" icon={<CheckCircle2 />} loading={busy === "approve"} disabled={status === "conflict" || busyAi} onClick={() => void review("approve")}>
+                סיום בדיקה ואישור
+              </Button>
             )}
-            {findings.length > 0 && (
-              <ul className="space-y-1.5">
-                {findings.map((f, i) => (
-                  <li key={i} className="rounded-md bg-stone-2 px-3 py-2">
-                    <div className="flex flex-wrap items-baseline gap-x-2">
-                      <span className="font-medium text-ink">{FINDING[f.kind] ?? f.kind}</span>
-                      <span className={cn("text-[12px]", f.reading === "certain" ? "text-muted" : "text-warn")}>{READING[f.reading]}</span>
-                    </div>
-                    {f.transcription && <div className="mt-0.5 whitespace-pre-line text-ink">&quot;{f.transcription}&quot;</div>}
-                    {f.attribution && (
-                      <div className="mt-0.5 text-[12px] text-ink-2">
-                        ייחוס: {f.attribution}
-                        {f.attributionBasis && <> - {f.attributionBasis}</>}
-                      </div>
-                    )}
-                    {f.significance && <div className="text-[12px] text-ink-2">{f.significance}</div>}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {latest.images.some((i) => i.status === "skipped") && (
-              <p className="text-[12px] text-warn">
-                תמונות שלא נשלחו לניתוח: {latest.images.filter((i) => i.status === "skipped").map((i) => `${t.categoryShort[i.category as keyof typeof t.categoryShort] ?? i.category} (${i.reason})`).join(" · ")}
-              </p>
-            )}
-          </section>
-        )}
-
-        <div className="flex flex-wrap items-center gap-2 border-t border-rule pt-4">
-          {canReview && reviewStatus !== "APPROVED" && (
-            <Button variant="primary" icon={<CheckCircle2 />} loading={busy === "approve"} disabled={status === "conflict" || ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING"} onClick={() => void review("approve")}>
-              סיימתי לבדוק - אשר פרטים
+            <Button variant="ghost" icon={<FileText />} onClick={() => setDetailsOpen(true)}>
+              פרטי הספר המלאים
             </Button>
-          )}
-          {ai.runs.length > 0 && (
-            <Button variant="ghost" size="sm" icon={<History />} onClick={() => setShowRuns((s) => !s)}>
-              היסטוריית ניתוחי AI ({ai.runs.length})
-            </Button>
-          )}
-        </div>
+            {ai.runs.length > 0 && (
+              <Button variant="ghost" size="sm" icon={<History />} onClick={() => setShowRuns((s) => !s)}>
+                היסטוריית ניתוחי AI ({ai.runs.length})
+              </Button>
+            )}
+          </div>
+          {!canApprove && !approved && <p className="text-[12px] text-muted">האישור הסופי של הפרטים נעשה על ידי משתמש מורשה.</p>}
 
         {showRuns && applied && applied.warnings.length > 0 && (
           <div className="rounded-md bg-stone-2 px-3 py-2 text-[12px] text-ink-2">
@@ -818,7 +857,160 @@ export function ItemReviewPanel({
             </table>
           </div>
         )}
-      </div>
-    </Panel>
+        </div>
+      </Panel>
+
+      <Dialog
+        open={detailsOpen}
+        onClose={() => void closeDetails()}
+        title={`פרטי הספר המלאים · ${inventoryNumber}`}
+        description="כל פרטי הספר במקום אחד. השינויים נשמרים אוטומטית, יחד עם הכותרת והתיאור הקטלוגיים."
+        width="xl"
+        footer={
+          <>
+            <Button onClick={() => void closeDetails()}>סגירה</Button>
+            <span className={cn("text-[12px]", status === "conflict" || status === "error" ? "text-danger" : status === "offline" ? "text-warn" : "text-muted")} role="status" aria-live="polite">
+              {STATUS_TEXT[status]}
+            </span>
+          </>
+        }
+      >
+        {status === "conflict" && (
+          <div className="rounded-md bg-danger-soft px-3 py-2.5 text-[13px] text-danger" role="alert">
+            <p>{message}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button size="sm" onClick={() => void applyMineOverNewest()}>
+                החלת השינויים שלי על הגרסה החדשה
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => void discardMine()}>
+                ביטול השינויים שלי וטעינת הגרסה החדשה
+              </Button>
+            </div>
+          </div>
+        )}
+        {status === "error" && message && (
+          <p className="rounded-md bg-danger-soft px-3 py-2 text-[13px] text-danger" role="alert">
+            {message}
+          </p>
+        )}
+
+        <div className="space-y-5">
+          <FieldGroup title="זיהוי הספר">
+            {text("title", { className: "sm:col-span-4" })}
+            <Field label={LABEL.itemType} hint={fieldHint("itemType")} className="sm:col-span-2">
+              {(p) => (
+                <Select {...p} value={values.itemType} disabled={!editable} onChange={(e) => change("itemType", e.target.value as ItemType)} onBlur={() => void flush()}>
+                  {ITEM_TYPES.map((x) => (
+                    <option key={x} value={x}>
+                      {t.itemType[x]}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            {text("subtitle", { className: "sm:col-span-3" })}
+            {text("author", { className: "sm:col-span-3" })}
+          </FieldGroup>
+
+          <FieldGroup title="פרטי הדפוס">
+            {text("printPlace", { className: "sm:col-span-2" })}
+            {text("printYear", { className: "sm:col-span-2" })}
+            {text("publisher", { className: "sm:col-span-2" })}
+            {text("edition", { className: "sm:col-span-3" })}
+            {text("extent", { className: "sm:col-span-3" })}
+          </FieldGroup>
+
+          <FieldGroup title="מידע ביבליוגרפי">
+            {text("bibliographicNotes", { rows: 3, className: "sm:col-span-6" })}
+            {text("conditionNotes", { rows: 2, className: "sm:col-span-6" })}
+          </FieldGroup>
+
+          <FieldGroup title="מידע מנהלי">
+            <Field label="מפקיד" hint={!consignor ? "ספר ישן ללא מפקיד - אפשר להשלים כאן" : undefined} className="sm:col-span-6">
+              {(p) => (
+                <ConsignorSelect
+                  id={p.id}
+                  value={consignor}
+                  onChange={(c) => {
+                    setConsignor(c);
+                    if (c) change("consignorId", c.id);
+                  }}
+                />
+              )}
+            </Field>
+            {num("heightMm", "גובה (מ״מ)")}
+            {num("widthMm", "רוחב (מ״מ)")}
+            {num("depthMm", "עובי (מ״מ)")}
+            <Field label="קטגוריית גודל" hint="ריק = לפי המידות" className="sm:col-span-3">
+              {(p) => (
+                <Select {...p} value={values.sizeCategory} disabled={!editable} onChange={(e) => change("sizeCategory", e.target.value as BookSize)} onBlur={() => void flush()}>
+                  {BOOK_SIZES.map((x) => (
+                    <option key={x} value={x}>
+                      {x === "UNKNOWN" ? "אוטומטי / לא ידוע" : t.bookSize[x]}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+            <Field label="ברקוד חיצוני (אופציונלי)" hint="רק אם על המארז כבר מודבק ברקוד אחר. ברירת מחדל: מספר המלאי." className="sm:col-span-3">
+              {(p) => <Input {...p} dir="ltr" maxLength={64} className={cn("font-mono", dirty.current.barcode !== undefined && "ring-1 ring-warn/40")} readOnly={!editable} value={values.barcode ?? ""} onChange={(e) => change("barcode", e.target.value as ReviewValues["barcode"])} onBlur={() => void flush()} />}
+            </Field>
+            <Field label="הערות פנימיות" className="sm:col-span-6">
+              {(p) => <Textarea {...p} rows={2} maxLength={5000} readOnly={!editable} value={values.internalNotes ?? ""} onChange={(e) => change("internalNotes", e.target.value as ReviewValues["internalNotes"])} onBlur={() => void flush()} className={cn(dirty.current.internalNotes !== undefined && "ring-1 ring-warn/40")} />}
+            </Field>
+          </FieldGroup>
+
+        {latest?.result && (latest.result.identification.summary || findings.length > 0 || latest.result.catalogHighlight?.status === "found" || latest.images.some((i) => i.status === "skipped")) && (
+          <section className="space-y-2.5 border-t border-rule pt-4 text-[13px]">
+            <h3 className="text-[12px] font-semibold text-muted">מה זוהה בתמונות</h3>
+            {latest.result.identification.summary && <p className="text-ink-2">{latest.result.identification.summary}</p>}
+            {latest.result.catalogHighlight?.status === "found" && latest.result.catalogHighlight.mainFeature && (
+              <div className="rounded-md border border-info/30 bg-info-soft px-3 py-2">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <Sparkles className="size-3.5 self-center text-info" aria-hidden />
+                  <span className="text-[12px] text-muted">המאפיין המרכזי:</span>
+                  <span className="font-medium text-ink">{latest.result.catalogHighlight.mainFeature}</span>
+                  <span className={cn("text-[12px]", latest.result.catalogHighlight.verified ? "text-muted" : "text-warn")}>
+                    {latest.result.catalogHighlight.verified ? "מאומת" : "לא מאומת"}
+                    {latest.result.catalogHighlight.confidence ? ` · ביטחון ${CONFIDENCE[latest.result.catalogHighlight.confidence]?.replace("ביטחון ", "")}` : ""}
+                  </span>
+                </div>
+                {latest.result.catalogHighlight.reason && <div className="text-[12.5px] text-ink-2">{latest.result.catalogHighlight.reason}</div>}
+              </div>
+            )}
+            {latest.result.manuscriptAnalysis?.isManuscript && latest.result.manuscriptAnalysis.unreadable.length > 0 && (
+              <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">חלקים בכתב היד שלא נקראו היטב: {latest.result.manuscriptAnalysis.unreadable.join("; ")}</div>
+            )}
+            {findings.length > 0 && (
+              <ul className="space-y-1.5">
+                {findings.map((f, i) => (
+                  <li key={i} className="rounded-md bg-stone-2 px-3 py-2">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="font-medium text-ink">{FINDING[f.kind] ?? f.kind}</span>
+                      <span className={cn("text-[12px]", f.reading === "certain" ? "text-muted" : "text-warn")}>{READING[f.reading]}</span>
+                    </div>
+                    {f.transcription && <div className="mt-0.5 whitespace-pre-line text-ink">&quot;{f.transcription}&quot;</div>}
+                    {f.attribution && (
+                      <div className="mt-0.5 text-[12px] text-ink-2">
+                        ייחוס: {f.attribution}
+                        {f.attributionBasis && <> - {f.attributionBasis}</>}
+                      </div>
+                    )}
+                    {f.significance && <div className="text-[12px] text-ink-2">{f.significance}</div>}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {latest.images.some((i) => i.status === "skipped") && (
+              <p className="text-[12px] text-warn">
+                תמונות שלא נשלחו לניתוח: {latest.images.filter((i) => i.status === "skipped").map((i) => `${t.categoryShort[i.category as keyof typeof t.categoryShort] ?? i.category} (${i.reason})`).join(" · ")}
+              </p>
+            )}
+          </section>
+        )}
+
+        </div>
+      </Dialog>
+    </>
   );
 }

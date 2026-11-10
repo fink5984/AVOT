@@ -12,6 +12,7 @@ import { ItemFormDialog, type ItemFormValue } from "@/components/inventory/item-
 import { LocationDialog } from "@/components/warehouse/location-dialog";
 import { DeleteDialog } from "@/components/deletion/delete-dialog";
 import { api, errorMessage } from "@/lib/api";
+import { OPEN_DETAILS_EVENT } from "@/lib/item-events";
 import { usePrintLabels } from "@/lib/print";
 import { AiAnalyzeButton, type AiButtonState } from "@/components/ai/ai-button";
 
@@ -100,6 +101,11 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
 
   /** the book page passes the details; a table row loads them on demand */
   async function openEdit() {
+    // on the book page the pencil opens the page's one details window (the same one as "פרטי הספר המלאים")
+    if (context === "page") {
+      window.dispatchEvent(new Event(OPEN_DETAILS_EVENT));
+      return;
+    }
     if (subject.edit) return setEdit(subject.edit);
     if (loadingEdit) return;
     setLoadingEdit(true);

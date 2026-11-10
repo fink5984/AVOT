@@ -2,14 +2,14 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Camera, MapPin } from "lucide-react";
 import { requirePageUser } from "@/server/auth/principal";
-import { can } from "@/server/auth/permissions";
+import { can, canUser } from "@/server/auth/permissions";
 import { db } from "@/server/db";
 import { getItemDetail, itemProgress } from "@/server/services/inventory";
 import { listAssets } from "@/server/services/assets";
 import { toAssetDto } from "@/server/services/asset-dto";
 import { actionLabel, describeData } from "@/server/services/activity";
 import { ButtonLink } from "@/components/ui/button";
-import { CommercialStatusBadge, PhotoStatusBadge, PhysicalStatusBadge } from "@/components/ui/badge";
+import { CommercialStatusBadge, PhotoStatusBadge, PhysicalStatusBadge, ReviewStatusBadge } from "@/components/ui/badge";
 import { PageHeader, Panel } from "@/components/ui/misc";
 import { HouseMark } from "@/components/house-mark";
 import { fmt, t } from "@/i18n";
@@ -82,6 +82,24 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
   }
   timeline.sort((x, y) => y.at.getTime() - x.at.getTime());
 
+  // who did what to the details, for the reviewer (the rows are newest first)
+  const startEvent = item.reviewStatus === "IN_REVIEW" ? events.find((e) => e.dimension === "REVIEW" && e.toStatus === "IN_REVIEW") : undefined;
+  const lastEdit = audit.find((a) => a.action === "inventory.updated");
+  const aiEdit = audit.find((a) => a.action === "inventory.updated" && (a.data as { via?: string } | null)?.via === "ai");
+  const invalidated = item.reviewStatus !== "APPROVED" ? audit.find((a) => a.action === "item_review.invalidated") : undefined;
+  const prev = (invalidated?.data ?? {}) as { previousApprovedById?: string | null; previousApprovedAt?: string | null };
+  const prevName = prev.previousApprovedById ? ((await db.user.findUnique({ where: { id: prev.previousApprovedById }, select: { name: true } }))?.name ?? null) : null;
+  const reviewSummary = {
+    startedBy: startEvent?.userName ?? null,
+    startedAt: startEvent?.createdAt.toISOString() ?? null,
+    lastEditBy: lastEdit?.user?.name ?? null,
+    lastEditAt: lastEdit?.createdAt.toISOString() ?? null,
+    aiAdditionBy: aiEdit?.user?.name ?? null,
+    aiAdditionAt: aiEdit?.createdAt.toISOString() ?? null,
+    previousApprovedBy: prevName,
+    previousApprovedAt: prev.previousApprovedAt ?? null,
+  };
+
   const perms = {
     capture: can(user.role, "photo.capture"),
     edit: can(user.role, "inventory.edit"),
@@ -103,6 +121,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
             <PhotoStatusBadge status={item.photoStatus} />
             <PhysicalStatusBadge status={item.physicalStatus} />
             <CommercialStatusBadge status={item.commercialStatus} />
+            <ReviewStatusBadge status={item.reviewStatus} />
           </span>
         }
         title={item.title}
@@ -141,25 +160,6 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
                 captureHref: `/capture/${item.id}${category ? `?category=${category}` : ""}`,
                 ai: { aiStatus: item.aiStatus, hasAiResult: item.aiCompletedAt !== null, aiError: item.aiError },
                 approverEmail: can(user.role, "ai.reanalyze.approve") ? user.email : undefined,
-                edit: {
-                  id: item.id,
-                  inventoryNumber: item.inventoryNumber,
-                  title: item.title,
-                  subtitle: item.subtitle,
-                  author: item.author,
-                  printPlace: item.printPlace,
-                  printYear: item.printYear,
-                  publisher: item.publisher,
-                  bibliographicNotes: item.bibliographicNotes,
-                  internalNotes: item.internalNotes,
-                  conditionNotes: item.conditionNotes,
-                  heightMm: item.heightMm,
-                  widthMm: item.widthMm,
-                  depthMm: item.depthMm,
-                  sizeCategory: item.sizeCategory,
-                  consignor: item.consignor ? { id: item.consignor.id, name: item.consignor.name } : null,
-                  barcode: item.barcode,
-                },
               }}
               perms={{ ...perms, relocate: perms.move, fulfil: can(user.role, "pick.fulfil"), delete: can(user.role, "inventory.delete"), ai: can(user.role, "ai.analyze") }}
             />
@@ -202,11 +202,22 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
             catalogHeadline: item.catalogHeadline,
             catalogDescription: item.catalogDescription,
             textFormat: serializeItemFormat(item.textFormat),
+            internalNotes: item.internalNotes,
+            heightMm: item.heightMm === null ? null : String(item.heightMm),
+            widthMm: item.widthMm === null ? null : String(item.widthMm),
+            depthMm: item.depthMm === null ? null : String(item.depthMm),
+            sizeCategory: item.sizeCategory,
+            barcode: item.barcode !== item.inventoryNumber ? item.barcode : null,
+            consignorId: item.consignor?.id ?? null,
           }}
+          inventoryNumber={item.inventoryNumber}
+          consignor={item.consignor ? { id: item.consignor.id, name: item.consignor.name } : null}
+          summary={reviewSummary}
           detailsVersion={item.detailsVersion}
           ai={ai}
           canEdit={perms.edit}
-          canReview={can(user.role, "item.review")}
+          canReview={canUser(user, "item.review")}
+          canApprove={canUser(user, "item.review.approve")}
           canRestore={can(user.role, "ai.restore")}
           canRewrite={perms.edit && can(user.role, "ai.analyze") && ai.available}
           canApply={can(user.role, "ai.apply")}
@@ -273,24 +284,6 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
                   <dd className="num">{dims}</dd>
                 </>
               )}
-              {item.publisher && (
-                <>
-                  <dt className="text-muted">מדפיס / הוצאה</dt>
-                  <dd>{item.publisher}</dd>
-                </>
-              )}
-              {item.bibliographicNotes && (
-                <>
-                  <dt className="text-muted">ביבליוגרפיה</dt>
-                  <dd className="whitespace-pre-line">{item.bibliographicNotes}</dd>
-                </>
-              )}
-              {item.conditionNotes && (
-                <>
-                  <dt className="text-muted">מצב העותק</dt>
-                  <dd className="whitespace-pre-line">{item.conditionNotes}</dd>
-                </>
-              )}
               {item.internalNotes && (
                 <>
                   <dt className="text-muted">הערות פנימיות</dt>
@@ -333,6 +326,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
             </Panel>
           )}
 
+          <div id="item-history" className="scroll-mt-20">
           <Panel title="היסטוריה">
             <ol className="max-h-[560px] divide-y divide-rule overflow-y-auto text-[13px]">
               {timeline.map((e, i) => (
@@ -350,6 +344,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
               ))}
             </ol>
           </Panel>
+          </div>
         </div>
       </div>
     </>

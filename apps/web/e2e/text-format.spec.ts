@@ -33,7 +33,7 @@ async function selectChars(page: Page, label: string, from: number, to: number) 
 }
 
 test.describe("text formatting in inventory", () => {
-  test("the book's edit dialog in inventory has no formatting tools (only the catalog description does)", async ({ page }) => {
+  test("the book's details window (pencil) holds every field, and the formatting tools are the rich editors' own", async ({ page }) => {
     await login(page);
     const origin = new URL(page.url()).origin;
     const consignor = await apiConsignor(page, "מפקיד E2E-עיצוב");
@@ -45,7 +45,6 @@ test.describe("text formatting in inventory", () => {
     await page.getByRole("button", { name: /עריכת פרטי הספר/ }).first().click();
     const dialog = page.getByRole("dialog");
     await expect(dialog.getByRole("textbox", { name: "פרטים ביבליוגרפיים" })).toBeVisible();
-    await expect(dialog.getByRole("toolbar", { name: "עיצוב טקסט" })).toHaveCount(0);
   });
 
   test("the review panel formats the catalog description and autosaves it", async ({ page }) => {
@@ -56,10 +55,10 @@ test.describe("text formatting in inventory", () => {
     const item = (await r.json()).item as { id: string };
     await page.goto(`/inventory/${item.id}`);
 
-    const editor = page.getByRole("textbox", { name: "תיאור קטלוגי (טיוטה)" });
+    const editor = page.getByRole("textbox", { name: "תיאור קטלוגי" });
     await editor.click();
     await page.keyboard.type("תיאור קטלוגי לדוגמה");
-    await selectChars(page, "תיאור קטלוגי (טיוטה)", 0, 5);
+    await selectChars(page, "תיאור קטלוגי", 0, 5);
     await page.getByRole("button", { name: "הדגשה" }).last().click();
     await expect(editor.locator("span[style*='700']")).toHaveText("תיאור");
     await expect(page.getByText("נשמר", { exact: true })).toBeVisible({ timeout: 15_000 });
@@ -67,7 +66,7 @@ test.describe("text formatting in inventory", () => {
     const stored = await (await page.request.get(`/api/inventory/${item.id}`)).json();
     expect(stored.item.catalogDescription).toBe("תיאור קטלוגי לדוגמה");
     await page.reload();
-    await expect(page.getByRole("textbox", { name: "תיאור קטלוגי (טיוטה)" }).locator("span[style*='700']")).toHaveText("תיאור");
+    await expect(page.getByRole("textbox", { name: "תיאור קטלוגי" }).locator("span[style*='700']")).toHaveText("תיאור");
   });
 
   test("a lot's description in a catalog: format in the edit dialog, shown on the lot page", async ({ page }) => {

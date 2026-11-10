@@ -101,6 +101,29 @@ export function actionLabel(action: string): string {
   return ACTION_LABEL[action] ?? action;
 }
 
+const EDIT_FIELD: Record<string, string> = {
+  title: "שם הספר",
+  subtitle: "כותרת משנה",
+  author: "מחבר",
+  printPlace: "מקום דפוס",
+  printYear: "שנת דפוס",
+  publisher: "מדפיס / הוצאה",
+  itemType: "סוג הפריט",
+  edition: "מהדורה",
+  extent: "היקף",
+  bibliographicNotes: "פרטים ביבליוגרפיים",
+  conditionNotes: "מצב העותק",
+  internalNotes: "הערות פנימיות",
+  catalogHeadline: "כותרת קטלוגית",
+  catalogDescription: "תיאור קטלוגי",
+  heightMm: "מידות",
+  widthMm: "מידות",
+  depthMm: "מידות",
+  sizeCategory: "קטגוריית גודל",
+  barcode: "ברקוד",
+  textFormat: "עיצוב הטקסט",
+};
+
 export function describeData(action: string, data: unknown): string | null {
   const d = (data ?? {}) as Record<string, unknown>;
   if (action === "photo.captured" && typeof d.category === "string") return he.category[d.category as keyof typeof he.category] ?? null;
@@ -118,6 +141,11 @@ export function describeData(action: string, data: unknown): string | null {
   if (action === "ai.failed" && typeof d.error === "string") return d.error;
   if (action === "ai.reanalysis_denied" && typeof d.approverEmail === "string") return d.approverEmail;
   if ((action === "ai.restored" || action === "item_review.invalidated") && Array.isArray(d.fields)) return `${d.fields.length} שדות`;
+  if (action === "inventory.updated") {
+    const names = Object.keys(d).filter((k) => k !== "via").map((k) => EDIT_FIELD[k] ?? null).filter((x): x is string => !!x);
+    const list = names.length ? `שונו: ${[...new Set(names)].join(", ")}` : null;
+    return [list, d.via === "ai" ? "הוספת מידע ב-AI" : null].filter(Boolean).join(" · ") || null;
+  }
   if (action === "lot.commercial_status" && typeof d.to === "string") return he.commercialStatus[d.to as keyof typeof he.commercialStatus] ?? null;
   return null;
 }

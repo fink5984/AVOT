@@ -202,7 +202,7 @@ function nextItemTextFormat(
   return Object.keys(out).length ? asJson(out) : Prisma.DbNull;
 }
 
-export async function updateItem(user: UserPrincipal, id: string, input: z.infer<typeof itemPatchSchema>, opts: { expectedVersion?: number } = {}) {
+export async function updateItem(user: UserPrincipal, id: string, input: z.infer<typeof itemPatchSchema>, opts: { expectedVersion?: number; /** how the values came: typed by a person, or an AI addition the person applied */ source?: "manual" | "ai" } = {}) {
   const item = await getItemOrThrow(user.organizationId, id);
   if (opts.expectedVersion !== undefined && opts.expectedVersion !== item.detailsVersion) {
     throw new AppError("CONFLICT", "פרטי הפריט עודכנו בינתיים (ניתוח AI או משתמש אחר). השינויים שלך לא נשמרו כדי לא לדרוס אותם.", { detailsVersion: item.detailsVersion, code: "STALE_DETAILS" });
@@ -272,7 +272,7 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
   const { consignorId: _consignorId, textFormat: _format, ...textFields } = input;
   // the formatting segments are not logged (they repeat the text); only the fact that formatting was saved
   const otherFields = { ...textFields, ...(givenFormat !== undefined ? { textFormat: givenFormat === null ? null : true } : {}) };
-  if (Object.keys(otherFields).length) await audit(user, { action: "inventory.updated", entityType: "inventory", entityId: id, inventoryItemId: id, data: otherFields as object });
+  if (Object.keys(otherFields).length) await audit(user, { action: "inventory.updated", entityType: "inventory", entityId: id, inventoryItemId: id, data: { ...otherFields, via: opts.source ?? "manual" } as object });
   if (consignorChange) {
     await audit(user, { action: "inventory.consignor_changed", entityType: "inventory", entityId: id, inventoryItemId: id, data: { consignorId: input.consignorId!, ...consignorChange } });
   }

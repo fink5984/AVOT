@@ -21,15 +21,15 @@ export const GET = route<Ctx>(async (req, { params }) => {
 export const PATCH = route<Ctx>(async (req, { params }) => {
   const user = await authenticateUser(req);
   const { id } = await params;
-  const input = await parseJson(req, itemPatchSchema.extend({ photoStatus: photoStatusSchema.optional(), expectedVersion: z.number().int().min(0).optional() }));
-  const { photoStatus, expectedVersion, ...fields } = input;
+  const input = await parseJson(req, itemPatchSchema.extend({ photoStatus: photoStatusSchema.optional(), expectedVersion: z.number().int().min(0).optional(), editSource: z.enum(["manual", "ai"]).optional() }));
+  const { photoStatus, expectedVersion, editSource, ...fields } = input;
   if (photoStatus) {
     if (!can(user.role, "lot.status")) throw forbidden();
     await setItemPhotoStatus(user, id, photoStatus);
   }
   if (Object.keys(fields).length) {
     if (!can(user.role, "inventory.edit")) throw forbidden();
-    const u = await updateItem(user, id, fields, { expectedVersion });
+    const u = await updateItem(user, id, fields, { expectedVersion, source: editSource });
     return json({ ok: true, detailsVersion: u.detailsVersion, reviewStatus: u.reviewStatus });
   }
   return json({ ok: true });
