@@ -375,18 +375,6 @@ export function LotsTable({
                   </td>
                   <td className="relative z-10 pe-4 ps-2 py-2">
                     <div className="flex items-center justify-end gap-1">
-                      {perms.capture && (
-                        <ButtonLink
-                          href={`/capture/${l.id}`}
-                          size="sm"
-                          variant="secondary"
-                          icon={<Camera className="text-accent" />}
-                          aria-label={`צילום פריט ${l.lotNumber}`}
-                          className="opacity-80 group-hover:opacity-100"
-                        >
-                          צילום
-                        </ButtonLink>
-                      )}
                       {perms.ai && l.bookCount < 2 && l.books[0] && (
                         <AiAnalyzeButton itemId={l.books[0].itemId} inventoryNumber={l.books[0].inventoryNumber} initial={l.books[0].ai} size="sm" />
                       )}
