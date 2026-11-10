@@ -144,7 +144,7 @@ export function LabelCalibration({ printerId, labelSize, dotsPerMm }: { printerI
       <div className="space-y-4 px-5 py-4">
         <p className="text-[13px] text-muted">מגדירים פעם אחת. כל התוויות — מטבלת המלאי, מדף ספר, ממסך המחסן — יוצאות באותו עיצוב. העובדים רק לוחצים על אייקון המדפסת.</p>
         <div className="flex flex-wrap items-center gap-2">
-          <div role="tablist" aria-label="סוג תווית" className="flex gap-0.5 rounded-lg bg-stone p-0.5">
+          <div role="tablist" aria-label="סוג תווית" className="scrollbar-none flex max-w-full gap-0.5 overflow-x-auto rounded-lg bg-stone p-0.5">
             {LABEL_TYPES.map((t) => (
               <button key={t} role="tab" aria-selected={t === type} onClick={() => setType(t)} className={cn("h-8 rounded-md px-3 text-[13.5px] font-medium", t === type ? "bg-paper shadow-card ring-1 ring-rule" : "text-ink-2 hover:text-ink")}>
                 {LABEL_TYPE_NAMES[t]}

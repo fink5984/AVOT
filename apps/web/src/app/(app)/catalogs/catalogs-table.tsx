@@ -46,6 +46,7 @@ export function CatalogsTable({ rows, canEdit, canDelete, emptyText }: { rows: C
             {emptyText}
           </EmptyState>
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full text-[13.5px]">
             <thead>
               <tr className="border-b border-rule text-start text-[12.5px] text-muted">
@@ -54,14 +55,14 @@ export function CatalogsTable({ rows, canEdit, canDelete, emptyText }: { rows: C
                     <input type="checkbox" aria-label="בחירת כל הקטלוגים" checked={all} onChange={() => setSelected(all ? new Set() : new Set(rows.map((r) => r.id)))} className="size-4 accent-[var(--color-ink)]" />
                   </th>
                 )}
-                <th className="w-20 px-4 py-3 text-start font-medium">מספר</th>
+                <th className="w-16 px-2 py-3 text-start font-medium sm:w-20 sm:px-4">מספר</th>
                 <th className="px-3 py-3 text-start font-medium">שם הקטלוג</th>
-                <th className="w-28 px-3 py-3 text-start font-medium">סטטוס</th>
+                <th className="w-24 px-2 py-3 text-start font-medium sm:w-28 sm:px-3">סטטוס</th>
                 <th className="hidden w-52 px-3 py-3 text-start font-medium md:table-cell">התקדמות</th>
                 <th className="hidden w-24 px-3 py-3 text-start font-medium lg:table-cell">תמונות</th>
                 <th className="hidden w-28 px-3 py-3 text-start font-medium lg:table-cell">מכירה</th>
                 <th className="hidden w-28 px-3 py-3 text-start font-medium xl:table-cell">עודכן</th>
-                <th className="w-14 px-3 py-3" aria-label="פעולות" />
+                <th className="w-12 px-2 py-3 sm:w-14 sm:px-3" aria-label="פעולות" />
               </tr>
             </thead>
             <tbody className="divide-y divide-rule">
@@ -72,7 +73,7 @@ export function CatalogsTable({ rows, canEdit, canDelete, emptyText }: { rows: C
                       <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} aria-label={`בחירת קטלוג ${c.number}`} className="size-4 accent-[var(--color-ink)]" />
                     </td>
                   )}
-                  <td className="px-4 py-3">
+                  <td className="px-2 py-3 sm:px-4">
                     <span className="num inline-flex h-7 min-w-9 items-center justify-center rounded-md bg-stone px-2 text-[13px] font-semibold">{c.number}</span>
                   </td>
                   <td className="max-w-0 px-3 py-3">
@@ -81,7 +82,7 @@ export function CatalogsTable({ rows, canEdit, canDelete, emptyText }: { rows: C
                     </Link>
                     {c.description && <div className="truncate text-[12.5px] text-muted">{c.description}</div>}
                   </td>
-                  <td className="px-3 py-3">
+                  <td className="px-2 py-3 sm:px-3">
                     <CatalogStatusBadge status={c.status} />
                   </td>
                   <td className="hidden px-3 py-3 md:table-cell">
@@ -97,7 +98,7 @@ export function CatalogsTable({ rows, canEdit, canDelete, emptyText }: { rows: C
                   <td className="hidden px-3 py-3 text-muted xl:table-cell" title={fmt.dateTime(c.updatedAt)}>
                     {fmt.relative(c.updatedAt)}
                   </td>
-                  <td className="relative z-10 px-3 py-3">
+                  <td className="relative z-10 px-2 py-3 sm:px-3">
                     {canEdit && (
                       <CatalogActions
                         catalog={{ id: c.id, number: c.number, name: c.name, description: c.description, saleDate: c.saleDate, status: c.status, photoCount: c.photoCount }}
@@ -109,6 +110,7 @@ export function CatalogsTable({ rows, canEdit, canDelete, emptyText }: { rows: C
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
 

@@ -50,7 +50,7 @@ export function ScanLog({ events, filter, canResolve }: { events: Ev[]; filter: 
   }
   return (
     <>
-      <nav className="mb-3 inline-flex gap-0.5 rounded-lg bg-stone p-0.5" aria-label="סינון">
+      <nav className="scrollbar-none mb-3 inline-flex max-w-full gap-0.5 overflow-x-auto rounded-lg bg-stone p-0.5" aria-label="סינון">
         {FILTERS.map((f) => (
           <Link key={f.key} href={f.href} aria-current={filter === f.key ? "page" : undefined} className={cn("rounded-md px-3 py-1.5 text-[13px] font-medium", filter === f.key ? "bg-paper shadow-card ring-1 ring-rule" : "text-ink-2")}>
             {f.label}

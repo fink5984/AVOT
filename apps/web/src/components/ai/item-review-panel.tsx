@@ -490,7 +490,7 @@ export function ItemReviewPanel({
     const x = r.fields[f];
     return { confidence: x.confidence, source: x.source, imageIds: x.imageIds, note: x.note, status: x.status };
   };
-  const editable = canEdit && status !== "saving";
+  const editable = canEdit;
   const latestCompleted = ai.runs.find((r) => r.status === "COMPLETED" && !r.restoredAt && r.applied);
 
   // one line per distinct remark (runs saved before the server-side dedupe can repeat a remark per field)

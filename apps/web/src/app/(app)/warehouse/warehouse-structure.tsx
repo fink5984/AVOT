@@ -94,10 +94,10 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
   }
 
   return (
-    <section className="space-y-4">
+    <section className="min-w-0 max-w-full space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         {warehouses.length > 1 && (
-          <div role="tablist" aria-label="מחסן" className="flex gap-0.5 rounded-lg bg-stone p-0.5">
+          <div role="tablist" aria-label="מחסן" className="scrollbar-none flex max-w-full gap-0.5 overflow-x-auto rounded-lg bg-stone p-0.5">
             {warehouses.map((w) => (
               <button key={w.id} role="tab" aria-selected={w.id === wh?.id} onClick={() => setActiveId(w.id)} className={cn("h-8 rounded-md px-3 text-[13.5px] font-medium", w.id === wh?.id ? "bg-paper shadow-card ring-1 ring-rule" : "text-ink-2 hover:text-ink")}>
                 {w.name}
