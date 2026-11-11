@@ -9,6 +9,7 @@ import { finalizeProcessedAsset, markFinalFailed } from "../services/book-proces
 import { purgeExpiredTrash } from "../services/assets";
 import { resumeStalledDeletions, runDeleteCatalogsJob, runDeleteItemsJob } from "../services/deletion";
 import { recoverOrphanRuns, runAiAnalysisJob } from "../services/ai-analysis";
+import { runAiRewriteJob } from "../services/ai-rewrite";
 
 const POLL_MS = 2000;
 const STALE_LOCK_MS = 15 * 60 * 1000;
@@ -40,6 +41,7 @@ async function runJob(job: Job) {
     else if (job.type === "DELETE_ITEMS") await runDeleteItemsJob(job);
     else if (job.type === "DELETE_CATALOGS") await runDeleteCatalogsJob(job);
     else if (job.type === "AI_ANALYZE") await runAiAnalysisJob(job);
+    else if (job.type === "AI_REWRITE") await runAiRewriteJob(job);
     else if (job.type === "PURGE_TRASH") {
       const org = await db.organization.findUnique({ where: { id: job.organizationId } });
       if (org) await purgeExpiredTrash(org.id, org.trashRetentionDays);

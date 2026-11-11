@@ -11,6 +11,7 @@ import { aiConfig, type AiConfig, type ProviderName } from "./config";
 import { DEFAULT_ANALYSIS_PROMPT, DEFAULT_FULL_REWRITE_PROMPT, DEFAULT_MANUSCRIPT_PROMPT, DEFAULT_REWRITE_PATCH_PROMPT, composeInstructions, type InstructionParts } from "./catalog-prompt";
 import { loadStyleLibrary, type StyleLibrary } from "./style-examples";
 import { normalizeDashes } from "./text";
+import { RESEARCH_BOUNDS, RESEARCH_DEFAULTS, type ResearchSettings } from "./research-core";
 
 /*
  * The "הגדרות AI" tab: the ONE active provider + model for the whole organization, the reasoning level, the prompts
@@ -49,9 +50,33 @@ export interface AiSettingsValues {
   fullRewritePrompt: string | null;
   /** style examples JSON ({version, examples[]}); null = the file in the code */
   examples: unknown | null;
+  /** external research (web search); null = the default (see RESEARCH_DEFAULTS) */
+  researchEnabled: boolean | null;
+  researchMaxSources: number | null;
+  researchTimeoutSeconds: number | null;
+  researchMaxSearches: number | null;
+  researchMaxCostUsd: number | null;
+  researchProvider: "auto" | "openai" | "gemini" | null;
 }
 
-const EMPTY: AiSettingsValues = { provider: null, model: null, reasoning: null, analysisPrompt: null, manuscriptPrompt: null, rewritePrompt: null, fullRewritePrompt: null, examples: null };
+const RESEARCH_KEYS = ["researchEnabled", "researchMaxSources", "researchTimeoutSeconds", "researchMaxSearches", "researchMaxCostUsd", "researchProvider"] as const;
+const EMPTY: AiSettingsValues = { provider: null, model: null, reasoning: null, analysisPrompt: null, manuscriptPrompt: null, rewritePrompt: null, fullRewritePrompt: null, examples: null, researchEnabled: null, researchMaxSources: null, researchTimeoutSeconds: null, researchMaxSearches: null, researchMaxCostUsd: null, researchProvider: null };
+
+const rInt = (key: keyof typeof RESEARCH_BOUNDS, label: string) => {
+  const [lo, hi] = RESEARCH_BOUNDS[key];
+  return z
+    .union([z.number(), z.string(), z.null()])
+    .optional()
+    .transform((v, ctx) => {
+      if (v === null || v === undefined || v === "") return null;
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < lo || n > hi) {
+        ctx.addIssue({ code: "custom", message: `${label}: מספר שלם בין ${lo} ל-${hi}` });
+        return z.NEVER;
+      }
+      return n;
+    });
+};
 
 const prompt = z
   .string()
@@ -78,6 +103,23 @@ export const aiSettingsSchema = z.object({
   rewritePrompt: prompt,
   fullRewritePrompt: prompt,
   examples: z.unknown().nullish().transform((v) => v ?? null),
+  researchEnabled: z.boolean().nullish().transform((v) => v ?? null),
+  researchMaxSources: rInt("maxSources", "מספר מקורות מרבי"),
+  researchTimeoutSeconds: rInt("timeoutSeconds", "מגבלת זמן למחקר (שניות)"),
+  researchMaxSearches: rInt("maxSearches", "מספר חיפושים מרבי"),
+  researchMaxCostUsd: z
+    .union([z.number(), z.string(), z.null()])
+    .optional()
+    .transform((v, ctx) => {
+      if (v === null || v === undefined || v === "") return null;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0.001 || n > 5) {
+        ctx.addIssue({ code: "custom", message: "מגבלת עלות למחקר: בין 0.001 ל-5 דולר" });
+        return z.NEVER;
+      }
+      return Math.round(n * 10000) / 10000;
+    }),
+  researchProvider: z.enum(["auto", "openai", "gemini"]).nullish().transform((v) => v ?? null),
   note: z.string().trim().max(300).nullish().transform((v) => v || null),
 });
 
@@ -121,6 +163,8 @@ export interface ResolvedAiSettings {
   instructionHash: string;
   lib: StyleLibrary;
   stored: AiSettingsValues;
+  /** the external research limits in force (defaults filled in) */
+  research: ResearchSettings;
 }
 
 export const defaultTexts = () => ({
@@ -156,11 +200,52 @@ export function resolveSettings(stored: AiSettingsValues, version: number | null
     instructionHash: createHash("sha256").update(composeInstructions(parts)).digest("hex").slice(0, 12),
     lib: loadStyleLibrary(stored.examples ?? undefined),
     stored,
+    research: {
+      enabled: stored.researchEnabled ?? RESEARCH_DEFAULTS.enabled,
+      maxSources: stored.researchMaxSources ?? RESEARCH_DEFAULTS.maxSources,
+      timeoutSeconds: stored.researchTimeoutSeconds ?? RESEARCH_DEFAULTS.timeoutSeconds,
+      maxSearches: stored.researchMaxSearches ?? RESEARCH_DEFAULTS.maxSearches,
+      maxCostUsd: stored.researchMaxCostUsd ?? RESEARCH_DEFAULTS.maxCostUsd,
+      provider: stored.researchProvider ?? RESEARCH_DEFAULTS.provider,
+    },
   };
 }
 
-type Row = { provider: string | null; model: string | null; reasoning: string | null; analysisPrompt: string | null; manuscriptPrompt: string | null; rewritePrompt: string | null; fullRewritePrompt: string | null; examples: Prisma.JsonValue | null };
-const fromRow = (r: Row | null): AiSettingsValues => (r ? { provider: (r.provider as ProviderName | null) ?? null, model: r.model, reasoning: r.reasoning, analysisPrompt: r.analysisPrompt, manuscriptPrompt: r.manuscriptPrompt, rewritePrompt: r.rewritePrompt, fullRewritePrompt: r.fullRewritePrompt, examples: r.examples ?? null } : { ...EMPTY });
+type Row = {
+  provider: string | null;
+  model: string | null;
+  reasoning: string | null;
+  analysisPrompt: string | null;
+  manuscriptPrompt: string | null;
+  rewritePrompt: string | null;
+  fullRewritePrompt: string | null;
+  examples: Prisma.JsonValue | null;
+  researchEnabled: boolean | null;
+  researchMaxSources: number | null;
+  researchTimeoutSeconds: number | null;
+  researchMaxSearches: number | null;
+  researchMaxCostUsd: Prisma.Decimal | null;
+  researchProvider: string | null;
+};
+const fromRow = (r: Row | null): AiSettingsValues =>
+  r
+    ? {
+        provider: (r.provider as ProviderName | null) ?? null,
+        model: r.model,
+        reasoning: r.reasoning,
+        analysisPrompt: r.analysisPrompt,
+        manuscriptPrompt: r.manuscriptPrompt,
+        rewritePrompt: r.rewritePrompt,
+        fullRewritePrompt: r.fullRewritePrompt,
+        examples: r.examples ?? null,
+        researchEnabled: r.researchEnabled,
+        researchMaxSources: r.researchMaxSources,
+        researchTimeoutSeconds: r.researchTimeoutSeconds,
+        researchMaxSearches: r.researchMaxSearches,
+        researchMaxCostUsd: r.researchMaxCostUsd === null ? null : Number(r.researchMaxCostUsd),
+        researchProvider: (r.researchProvider as AiSettingsValues["researchProvider"]) ?? null,
+      }
+    : { ...EMPTY };
 
 /** The organization's current settings, or the exact version a run started with. */
 export async function getAiSettings(organizationId: string, version?: number | null): Promise<ResolvedAiSettings> {
@@ -180,12 +265,27 @@ export async function currentSettingsVersion(organizationId: string): Promise<nu
   return row && row.version > 0 ? row.version : null;
 }
 
-const KEYS = ["provider", "model", "reasoning", "analysisPrompt", "manuscriptPrompt", "rewritePrompt", "fullRewritePrompt", "examples"] as const;
+const KEYS = ["provider", "model", "reasoning", "analysisPrompt", "manuscriptPrompt", "rewritePrompt", "fullRewritePrompt", "examples", ...RESEARCH_KEYS] as const;
 
 /** Saves a new version (the current row is replaced, the history keeps every version). Admin only (checked by the route). */
 export async function saveAiSettings(user: UserPrincipal, raw: unknown, opts: { note?: string | null } = {}) {
   const input = aiSettingsSchema.parse(raw);
-  const values: AiSettingsValues = { provider: input.provider, model: input.model, reasoning: input.reasoning, analysisPrompt: input.analysisPrompt, manuscriptPrompt: input.manuscriptPrompt, rewritePrompt: input.rewritePrompt, fullRewritePrompt: input.fullRewritePrompt, examples: input.examples };
+  const values: AiSettingsValues = {
+    provider: input.provider,
+    model: input.model,
+    reasoning: input.reasoning,
+    analysisPrompt: input.analysisPrompt,
+    manuscriptPrompt: input.manuscriptPrompt,
+    rewritePrompt: input.rewritePrompt,
+    fullRewritePrompt: input.fullRewritePrompt,
+    examples: input.examples,
+    researchEnabled: input.researchEnabled,
+    researchMaxSources: input.researchMaxSources,
+    researchTimeoutSeconds: input.researchTimeoutSeconds,
+    researchMaxSearches: input.researchMaxSearches,
+    researchMaxCostUsd: input.researchMaxCostUsd,
+    researchProvider: input.researchProvider,
+  };
   validateSettings(values);
   return db.$transaction(async (tx) => {
     const prev = await tx.aiSettings.findUnique({ where: { organizationId: user.organizationId } });
@@ -202,10 +302,16 @@ export async function saveAiSettings(user: UserPrincipal, raw: unknown, opts: { 
       rewritePrompt: values.rewritePrompt,
       fullRewritePrompt: values.fullRewritePrompt,
       examples: values.examples === null ? Prisma.DbNull : asJson(values.examples),
+      researchEnabled: values.researchEnabled,
+      researchMaxSources: values.researchMaxSources,
+      researchTimeoutSeconds: values.researchTimeoutSeconds,
+      researchMaxSearches: values.researchMaxSearches,
+      researchMaxCostUsd: values.researchMaxCostUsd,
+      researchProvider: values.researchProvider,
     };
     await tx.aiSettings.upsert({ where: { organizationId: user.organizationId }, create: { organizationId: user.organizationId, version, updatedById: user.userId, ...data }, update: { version, updatedById: user.userId, ...data } });
     await tx.aiSettingsVersion.create({ data: { organizationId: user.organizationId, version, note: opts.note ?? input.note ?? null, createdById: user.userId, ...data } });
-    await audit(user, { action: "ai.settings_changed", entityType: "settings", entityId: user.organizationId, data: asJson({ version, changed, provider: values.provider, model: values.model, reasoning: values.reasoning }) }, tx);
+    await audit(user, { action: "ai.settings_changed", entityType: "settings", entityId: user.organizationId, data: asJson({ version, changed, provider: values.provider, model: values.model, reasoning: values.reasoning, research: { enabled: values.researchEnabled, maxSources: values.researchMaxSources, timeoutSeconds: values.researchTimeoutSeconds, maxSearches: values.researchMaxSearches, maxCostUsd: values.researchMaxCostUsd, provider: values.researchProvider } }) }, tx);
     return { version, changed };
   });
 }
@@ -229,7 +335,7 @@ export async function listAiSettingsVersions(organizationId: string, take = 30) 
     provider: r.provider,
     model: r.model,
     reasoning: r.reasoning,
-    customized: [r.analysisPrompt && "פרומפט ניתוח", r.manuscriptPrompt && "כתבי יד", r.rewritePrompt && "תיקון ממוקד", r.fullRewritePrompt && "שכתוב מלא", r.examples && "דוגמאות"].filter(Boolean) as string[],
+    customized: [r.analysisPrompt && "פרומפט ניתוח", r.manuscriptPrompt && "כתבי יד", r.rewritePrompt && "תיקון ממוקד", r.fullRewritePrompt && "שכתוב מלא", r.examples && "דוגמאות", (r.researchEnabled !== null || r.researchMaxSources !== null || r.researchTimeoutSeconds !== null || r.researchMaxSearches !== null || r.researchMaxCostUsd !== null || r.researchProvider !== null) && "מחקר חיצוני"].filter(Boolean) as string[],
   }));
 }
 
@@ -242,7 +348,9 @@ export async function getSettingsScreen(organizationId: string) {
   return {
     version: resolved.version,
     stored,
-    effective: { provider: resolved.provider, model: resolved.model, reasoning: resolved.reasoning, examplesVersion: resolved.lib.version, examplesCount: resolved.lib.examples.length, instructionHash: resolved.instructionHash },
+    effective: { provider: resolved.provider, model: resolved.model, reasoning: resolved.reasoning, examplesVersion: resolved.lib.version, examplesCount: resolved.lib.examples.length, instructionHash: resolved.instructionHash, research: resolved.research },
+    researchDefaults: RESEARCH_DEFAULTS,
+    researchBounds: RESEARCH_BOUNDS,
     defaults: defaultTexts(),
     defaultExamples: loadStyleLibrary().version,
     keys: { openai: !!env.OPENAI_API_KEY, gemini: !!env.GEMINI_API_KEY },

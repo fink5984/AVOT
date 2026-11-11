@@ -23,12 +23,15 @@ import { applyOps, type FieldValues, type PatchOutcome } from "../ai/patch";
 import { baselineStatus, ensureBaseline, type OriginalBaseline } from "../ai/baseline";
 import { currentSettingsVersion, getAiSettings, type ResolvedAiSettings } from "../ai/settings";
 import { buildAnalysisText, buildInstructions, buildObservationText, cacheKeyFor, HEBREW_AGAIN, HEBREW_ONLY, redactPersonal, type ItemContext } from "../ai/prompt-builder";
-import { ANALYSIS_JSON_SCHEMA, analysisResultZ, englishExplanations, InvalidAnswerError, isEnglishProse, REWRITE_FIELDS, REWRITE_JSON_SCHEMA, REWRITE_PATCH_JSON_SCHEMA, rewritePatchZ, rewriteResultZ, AI_FIELD_NAMES, type RewriteField, OBSERVATION_JSON_SCHEMA, observationResultZ, parseAnswer, type AnalysisResult, type ObservationResult } from "../ai/schema";
+import { ANALYSIS_JSON_SCHEMA, analysisResultZ, englishExplanations, InvalidAnswerError, isEnglishProse, AI_FIELD_NAMES, OBSERVATION_JSON_SCHEMA, observationResultZ, parseAnswer, type AnalysisResult, type ObservationResult } from "../ai/schema";
 import { estimateTokens, loadStyleLibrary } from "../ai/style-examples";
 import { computeCost, type UsageTotals } from "../ai/pricing";
 import { providerForRun, type AiProvider } from "../ai/providers";
 import { ProviderError, type ProviderRequest, type ProviderResponse } from "../ai/providers/types";
 import { cleanAiText, sameText } from "../ai/text";
+import { identificationFrom, runResearch } from "../ai/research";
+import { RESEARCH_WRITE_JSON_SCHEMA, RESEARCH_WRITE_RULES, researchBlock, researchWriteZ, vetClaims, type ResearchRecord } from "../ai/research-core";
+import { boldSegments, ITEM_FORMAT_FIELDS, plainText, readTextFormat, type Segment } from "@/lib/rich-text";
 
 /*
  * AI analysis of one inventory item ("catalog_ai" runs in InventoryAnalysis).
@@ -46,6 +49,8 @@ import { cleanAiText, sameText } from "../ai/text";
  */
 
 export const AI_KIND = "catalog_ai";
+/** "הוספת מידע ותיקון ממוקד": a background run of its own (see services/ai-rewrite.ts) */
+export const REWRITE_KIND = "catalog_rewrite";
 /** a RUNNING run not touched for this long is considered abandoned (worker crash) and may be taken over */
 const RUN_STALE_MS = 10 * 60 * 1000;
 const APPROVAL_WINDOW_MS = 15 * 60 * 1000;
@@ -117,6 +122,8 @@ export interface AiRunSummary {
   applied: boolean;
   /** a completed re-analysis not applied (yet): kept for comparison, the item's fields are untouched */
   pendingApply: boolean;
+  /** external research of the run: not done / what happened, how many sources, what it cost (USD, an estimate) */
+  research: { status: ResearchRecord["status"]; sources: number; costUsd: number | null } | null;
 }
 
 function runSummary(r: InventoryAnalysis, names: Map<string, string>): AiRunSummary {
@@ -146,6 +153,7 @@ function runSummary(r: InventoryAnalysis, names: Map<string, string>): AiRunSumm
     settingsVersion: r.settingsVersion,
     applied: r.applied !== null,
     pendingApply: r.status === "COMPLETED" && r.applied === null && r.restoredAt === null,
+    research: r.research ? { status: (r.research as unknown as ResearchRecord).status, sources: (r.research as unknown as ResearchRecord).sources?.length ?? 0, costUsd: (r.research as unknown as ResearchRecord).costUsd ?? null } : null,
   };
 }
 
@@ -165,7 +173,47 @@ export async function getAiState(user: UserPrincipal, itemId: string) {
   } catch {
     available = false;
   }
+  const rewriteRuns = await db.inventoryAnalysis.findMany({ where: { inventoryItemId: itemId, kind: REWRITE_KIND }, orderBy: { createdAt: "desc" }, take: 10 });
+  const activeRun = item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING" ? (item.aiRunId ? await db.inventoryAnalysis.findUnique({ where: { id: item.aiRunId } }) : null) : null;
+  const rewriterIds = [...new Set([...rewriteRuns.map((r) => r.createdById), activeRun?.createdById].filter((x): x is string => !!x))].filter((x) => !names.has(x));
+  if (rewriterIds.length) for (const u of await db.user.findMany({ where: { id: { in: rewriterIds }, organizationId: user.organizationId }, select: { id: true, name: true } })) names.set(u.id, u.name);
   return {
+    /** what is running on the item now (same for every user): who started it and what it is */
+    activity: activeRun
+      ? {
+          runId: activeRun.id,
+          kind: (activeRun.kind === REWRITE_KIND ? "rewrite" : activeRun.isReanalysis ? "reanalysis" : "analysis") as "rewrite" | "reanalysis" | "analysis",
+          status: activeRun.status,
+          requestedBy: activeRun.createdById ? (names.get(activeRun.createdById) ?? null) : null,
+          requestedById: activeRun.createdById,
+          since: (activeRun.startedAt ?? activeRun.createdAt).toISOString(),
+          instruction: activeRun.kind === REWRITE_KIND ? (((activeRun.input as { additions?: string } | null)?.additions ?? "").slice(0, 200) || null) : null,
+        }
+      : null,
+    /** the last targeted additions ("הוספת מידע"): outcome, a proposal left by an edit conflict, what can be undone */
+    rewrites: rewriteRuns.map((r) => {
+      const res = (r.result ?? null) as { outcome?: string; fields?: Record<string, string>; skipped?: { field: string; reason: string }[]; titleProposal?: string | null; conflict?: { baseVersion: number; currentVersion: number } } | null;
+      return {
+        id: r.id,
+        status: r.status,
+        createdAt: r.createdAt.toISOString(),
+        finishedAt: r.finishedAt?.toISOString() ?? null,
+        requestedBy: r.createdById ? (names.get(r.createdById) ?? null) : null,
+        additions: ((r.input as { additions?: string } | null)?.additions ?? "").slice(0, 400),
+        outcome: (res?.outcome ?? null) as "applied" | "conflict" | "no_change" | null,
+        fields: Object.keys(res?.fields ?? {}),
+        skipped: res?.skipped ?? [],
+        titleProposal: res?.titleProposal ?? null,
+        error: r.error,
+        model: r.model,
+        costUsd: r.costUsd === null ? null : Number(r.costUsd),
+        undone: r.restoredAt !== null,
+        /** an applied rewrite whose values can still be put back */
+        undoable: res?.outcome === "applied" && r.restoredAt === null && r.status === "COMPLETED",
+        /** a result held back because the details changed meanwhile: a person may still apply it */
+        proposalPending: res?.outcome === "conflict" && r.applied === null && r.restoredAt === null && r.status === "COMPLETED",
+      };
+    }),
     /** the ONE model every AI action uses now (the "הגדרות AI" tab); shown, never chosen, next to the button */
     activeModel: { provider: settings.provider, model: settings.model, reasoning: settings.reasoning, settingsVersion: settings.version },
     /** the original data a clean re-analysis is built from (or a warning that it could not be fully reconstructed) */
@@ -192,6 +240,8 @@ export async function getAiState(user: UserPrincipal, itemId: string) {
           /** values when the run started: "ביטול ההחלה" of a proposal puts the field back to this */
           base: (latest.baseValues ?? null) as AiValues | null,
           images: ((latest.input as { images?: unknown } | null)?.images ?? []) as ImageManifestEntry[],
+          /** the external research of that run (sources, links, what was learned, limits, cost), or null for a run made before research existed */
+          research: (latest.research ?? null) as unknown as ResearchRecord | null,
         }
       : null,
   };
@@ -341,12 +391,17 @@ export interface AppliedReport {
   warnings: string[];
   lot: { lotId: string; fields: string[]; descriptionVersion: number | null; skippedReason?: string } | null;
   imagesChanged: boolean;
+  /** automatic bold of the description: the phrases that were found in the saved text (and how many could not be placed) */
+  bold?: { phrases: string[]; skipped: number };
   /** a result applied from a saved comparison (not at the end of its own run): who, when, which fields were asked for */
   appliedFrom?: { byUserId: string; at: string; requested: string[] };
 }
 
-class RunContext {
+export class RunContext {
   calls: CallRecord[] = [];
+  /** external research of the run (stage C) and what its web searches + tokens cost */
+  research: ResearchRecord | null = null;
+  researchCostUsd = 0;
   totals: UsageTotals = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, extraReasoningTokens: 0 };
   reasoningTokens = 0;
   usageReported = true;
@@ -378,14 +433,16 @@ class RunContext {
 
   usageColumns() {
     const cost = computeCost(this.provider.model, this.calls.some((c) => c.ok) ? this.totals : null, { usageReported: this.usageReported });
+    const total = cost.costUsd === null ? (this.researchCostUsd > 0 ? this.researchCostUsd : null) : cost.costUsd + this.researchCostUsd;
     return {
       requestCount: this.calls.length,
       inputTokens: this.totals.inputTokens,
       cachedInputTokens: this.totals.cachedInputTokens,
       outputTokens: this.totals.outputTokens + this.totals.extraReasoningTokens,
       reasoningTokens: this.reasoningTokens,
-      costUsd: cost.costUsd === null ? null : new Prisma.Decimal(cost.costUsd),
-      costEstimated: cost.estimated,
+      costUsd: total === null ? null : new Prisma.Decimal(Number(total.toFixed(6))),
+      // web-search prices are list-price estimates
+      costEstimated: cost.estimated || this.researchCostUsd > 0,
       price: cost.price,
     };
   }
@@ -473,7 +530,7 @@ export async function runAnalysis(analysisId: string, job: Job | null = null) {
   }
 }
 
-async function markFailed(run: InventoryAnalysis, message: string, startedAt: Date, ctx: RunContext | null) {
+export async function markFailed(run: InventoryAnalysis, message: string, startedAt: Date, ctx: RunContext | null) {
   const usage = ctx?.usageColumns();
   await db.$transaction(async (tx) => {
     await tx.inventoryAnalysis.update({
@@ -484,10 +541,17 @@ async function markFailed(run: InventoryAnalysis, message: string, startedAt: Da
         finishedAt: new Date(),
         durationMs: Date.now() - startedAt.getTime(),
         ...(usage ? { ...omitPrice(usage), usage: asJson({ calls: ctx!.calls, price: usage.price }) } : {}),
+        ...(ctx?.research ? { research: asJson(ctx.research) } : {}),
       },
     });
-    // only the item's CURRENT run decides its state; its details are never touched on failure
-    await tx.inventoryItem.updateMany({ where: { id: run.inventoryItemId, aiRunId: run.id }, data: { aiStatus: "FAILED", aiError: message.slice(0, 500) } });
+    // only the item's CURRENT run decides its state; its details are never touched on failure.
+    // A failed targeted addition goes back to the item's resting state (the analysis button is not turned red by it).
+    if (run.kind === REWRITE_KIND) {
+      const rest = await tx.inventoryItem.findUnique({ where: { id: run.inventoryItemId }, select: { aiCompletedAt: true } });
+      await tx.inventoryItem.updateMany({ where: { id: run.inventoryItemId, aiRunId: run.id }, data: { aiStatus: rest?.aiCompletedAt ? "COMPLETED" : "NOT_RUN", aiError: message.slice(0, 500) } });
+    } else {
+      await tx.inventoryItem.updateMany({ where: { id: run.inventoryItemId, aiRunId: run.id }, data: { aiStatus: "FAILED", aiError: message.slice(0, 500) } });
+    }
     await tx.auditLog.create({
       data: { organizationId: run.organizationId, userId: run.createdById, action: "ai.failed", entityType: "inventory", entityId: run.inventoryItemId, inventoryItemId: run.inventoryItemId, data: { runId: run.id, error: message.slice(0, 300), by: "system" } },
     });
@@ -497,7 +561,7 @@ async function markFailed(run: InventoryAnalysis, message: string, startedAt: Da
 /** The AI result is written by the system, not by a person: status events carry no user (the requester is on the run). */
 const systemPrincipal = (organizationId: string): DevicePrincipal => ({ kind: "device", deviceId: "ai", organizationId, deviceName: "AI" });
 
-const omitPrice = <T extends { price: unknown }>(u: T): Omit<T, "price"> => {
+export const omitPrice = <T extends { price: unknown }>(u: T): Omit<T, "price"> => {
   const { price: _price, ...rest } = u;
   return rest;
 };
@@ -606,7 +670,11 @@ async function analyse(ctx: RunContext, startedAt: Date, settings: ResolvedAiSet
       out.result.warnings.push("סבב הקריאה המוגדלת של כתב היד נכשל. התוצאה מבוססת על הסבב הראשון, וייתכן שחלקים בכתב היד לא נקראו.");
     }
   }
-  const { prepared, result, observations, inputRecord } = out;
+  const { prepared, observations, inputRecord } = out;
+  // stages B-D: focused queries, external research (when enabled and available), then the writing step that uses it.
+  // A research problem never stops the analysis: it is recorded and the photo-based result stands.
+  const result = await researchStage(ctx, settings, { context, instructions, common, result: out.result });
+  (inputRecord as Record<string, unknown>).research = { enabled: settings.research.enabled, status: ctx.research?.status ?? null, settings: settings.research };
 
   const extra = { base, inputRecord, imagesFingerprint: prepared.fingerprint, imageIds: new Set(prepared.images.map((i) => i.id)), startedAt, observations };
   if (run.isReanalysis && compareOnly) {
@@ -614,6 +682,83 @@ async function analyse(ctx: RunContext, startedAt: Date, settings: ResolvedAiSet
     return null;
   }
   return applyResult(ctx, item.id, result, extra);
+}
+
+/** The user text of the writing step after a research: the photo-based identification, the draft and the (untrusted) sources. */
+function researchWriteText(context: ItemContext, result: AnalysisResult, record: ResearchRecord): string {
+  const found = Object.fromEntries(Object.entries(result.fields).filter(([, v]) => v.status === "found" && v.value).map(([k, v]) => [k, v.value]));
+  const lines = [
+    "# נתוני הפריט המקוריים",
+    "```json",
+    JSON.stringify(context, null, 2),
+    "```",
+    "",
+    "# מה זוהה בתמונות (ראיה ראשונית)",
+    "```json",
+    JSON.stringify({ itemType: result.itemType.value, summary: result.identification.summary, fields: found, mainFeature: result.catalogHighlight?.status === "found" ? result.catalogHighlight.mainFeature : null, findings: result.findings.map((f) => ({ kind: f.kind, transcription: f.transcription, reading: f.reading, attribution: f.attribution })), manuscript: result.manuscriptAnalysis?.isManuscript ? { kind: result.manuscriptAnalysis.kind, attributionLevel: result.manuscriptAnalysis.attributionLevel } : null }, null, 2),
+    "```",
+    "",
+    "# הטיוטה הנוכחית (לשיפור לאור המחקר)",
+    `כותרת: ${result.catalog.headline ?? ""}`,
+    "תיאור:",
+    result.catalog.description ?? "",
+    "",
+    researchBlock(record),
+    "",
+    HEBREW_ONLY,
+  ];
+  return lines.join("\n");
+}
+
+async function researchStage(ctx: RunContext, settings: ResolvedAiSettings, a: { context: ItemContext; instructions: string; common: { cacheKey: string; maxOutputTokens: number; timeoutMs: number }; result: AnalysisResult }): Promise<AnalysisResult> {
+  const { result } = a;
+  await ctx.heartbeat();
+  const run = await runResearch({ cfg: settings.cfg, settings: settings.research, identification: identificationFrom(result) });
+  const record = run.record;
+  ctx.research = record;
+  ctx.researchCostUsd += record.costUsd ?? 0;
+  if (record.searches > 0 || record.status === "failed") ctx.calls.push({ stage: "research", images: [], attempt: 1, ok: record.status !== "failed", ms: record.durationMs, error: record.status === "failed" ? (record.reason ?? undefined) : undefined, model: record.model ?? undefined, usage: run.usage ?? undefined });
+  if (record.sources.length) {
+    try {
+      const req = {
+        instructions: `${a.instructions}\n\n${RESEARCH_WRITE_RULES}`,
+        cacheKey: `${a.common.cacheKey}-research`,
+        userText: researchWriteText(a.context, result, record),
+        images: [],
+        schemaName: "catalog_after_research",
+        schema: RESEARCH_WRITE_JSON_SCHEMA as unknown as Record<string, unknown>,
+        maxOutputTokens: a.common.maxOutputTokens,
+        timeoutMs: a.common.timeoutMs,
+      };
+      let w = await ctx.call("write-after-research", req, researchWriteZ);
+      if (isEnglishProse(w.description)) w = await ctx.call("write-after-research-hebrew", { ...req, userText: req.userText + HEBREW_AGAIN }, researchWriteZ);
+      if (w.description?.trim() && w.headline?.trim()) {
+        result.catalog = { ...result.catalog, headline: w.headline, description: w.description, boldPhrases: w.boldPhrases };
+        record.usedInWriting = true;
+      }
+      record.claims = vetClaims(w.claims, record.sources);
+      for (const c of w.contradictions) if (c.trim() && !record.contradictions.includes(c.trim())) record.contradictions.push(c.trim().slice(0, 500));
+      result.requiresReview.push(...w.requiresReview.slice(0, 6));
+    } catch (err) {
+      if (!(err instanceof ProviderError || err instanceof InvalidAnswerError || err instanceof AppError)) throw err;
+      log.warn("ai writing after research failed, keeping the photo-based text", { runId: ctx.run.id, err });
+      record.status = "partial";
+      record.reason = `כתיבת התיאור לאחר המחקר נכשלה (${err.message.slice(0, 160)}). נשמר התיאור שנכתב מהתמונות.`;
+    }
+  }
+  // what a person must look at: contradictions with the photos and details the research could not settle
+  for (const c of record.contradictions) result.requiresReview.push({ field: "research", reason: `מחקר חיצוני סותר או מסייג את הזיהוי: ${c}` });
+  for (const v of record.requiresVerification.slice(0, 4)) result.requiresReview.push({ field: "research", reason: `מחקר חיצוני - נדרש אימות אנושי: ${v}` });
+  if (record.status === "failed" || (record.status === "skipped" && settings.research.enabled)) result.warnings.push(`המחקר החיצוני לא בוצע: ${record.reason ?? "סיבה לא ידועה"}`);
+  return result;
+}
+
+/** The textFormat column after the AI wrote a new description: the bold of THIS text, or none (stale formatting is removed). */
+function descriptionFormat(existing: unknown, segs: Segment[] | null): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  const out = readTextFormat(existing, ITEM_FORMAT_FIELDS);
+  if (segs) out.catalogDescription = segs;
+  else delete out.catalogDescription;
+  return Object.keys(out).length ? asJson(out) : Prisma.DbNull;
 }
 
 /**
@@ -639,6 +784,7 @@ async function completeWithoutApplying(
         model: ctx.model ?? run.model,
         result: asJson(result),
         input: asJson(extra.inputRecord),
+        ...(ctx.research ? { research: asJson(ctx.research) } : {}),
         ...omitPrice(usage),
         usage: asJson({ calls: ctx.calls, price: usage.price, observations: extra.observations.length ? extra.observations : undefined }),
         finishedAt,
@@ -686,13 +832,16 @@ async function applyResult(
       const mapped = mapResult({ result, current, base: extra.base, previousAi, imageIds: extra.imageIds, catalogIsManual, overwrite: run.isReanalysis });
       if (imagesChanged) mapped.review.push({ field: "images", reason: "תמונות הפריט השתנו בזמן הניתוח (נוספו, נמחקו או עובדו מחדש). כדאי לבדוק את הפרטים מול התמונות העדכניות." });
 
-      const snapshot: Record<string, unknown> = { values: current, catalogDescriptionSource: item.catalogDescriptionSource, detailsVersion: item.detailsVersion };
+      const snapshot: Record<string, unknown> = { values: current, catalogDescriptionSource: item.catalogDescriptionSource, detailsVersion: item.detailsVersion, textFormat: item.textFormat ?? null };
       const written = Object.fromEntries(Object.entries(mapped.patch).map(([k, v]) => [k, v])) as Partial<Record<AiWritable, string>>;
       const catalogWritten = mapped.patch.catalogHeadline !== undefined || mapped.patch.catalogDescription !== undefined;
+      // the bold phrases are located in the EXACT text that is saved (never by offsets from the model); the text itself is never altered
+      const bold = typeof mapped.patch.catalogDescription === "string" ? boldSegments(mapped.patch.catalogDescription, result.catalog.boldPhrases ?? []) : null;
       await tx.inventoryItem.update({
         where: { id: itemId },
         data: {
           ...(mapped.patch as Prisma.InventoryItemUpdateInput),
+          ...(mapped.patch.catalogDescription !== undefined ? { textFormat: descriptionFormat(item.textFormat, bold?.segments ?? null) } : {}),
           ...(catalogWritten ? { catalogDescriptionSource: "AI" as const } : {}),
           detailsVersion: { increment: 1 },
           aiStatus: "COMPLETED",
@@ -702,14 +851,14 @@ async function applyResult(
         },
       });
 
-      const lot = await applyToLot(tx, itemId, current, mapped.patch, run.createdById, snapshot);
+      const lot = await applyToLot(tx, itemId, current, mapped.patch, run.createdById, snapshot, bold?.segments ?? null);
       await changeStatus(tx, systemPrincipal(run.organizationId), itemId, "REVIEW", "PENDING_REVIEW", {
         reason: run.isReanalysis ? "ניתוח AI חוזר הושלם" : "ניתוח AI הושלם",
         refType: "ai",
         refId: run.id,
       });
 
-      const applied: AppliedReport = { written, decisions: mapped.decisions, review: mapped.review, warnings: [...mapped.warnings, ...result.warnings], lot, imagesChanged };
+      const applied: AppliedReport = { written, decisions: mapped.decisions, review: mapped.review, warnings: [...mapped.warnings, ...result.warnings], lot, imagesChanged, ...(bold ? { bold: { phrases: bold.applied, skipped: bold.skipped.length } } : {}) };
       const finishedAt = new Date();
       await tx.inventoryAnalysis.update({
         where: { id: run.id },
@@ -720,6 +869,7 @@ async function applyResult(
           applied: asJson(applied),
           snapshot: asJson(snapshot),
           input: asJson(extra.inputRecord),
+          ...(ctx.research ? { research: asJson(ctx.research) } : {}),
           ...omitPrice(usage),
           usage: asJson({ calls: ctx.calls, price: usage.price, observations: extra.observations.length ? extra.observations : undefined }),
           finishedAt,
@@ -757,7 +907,7 @@ function lotIsOpenForAi(lot: { assignmentStatus: string; commercialStatus: strin
  * catalog-specific edit is never overwritten - and description changes create a LotDescriptionVersion with source AI
  * (the version history keeps every earlier text). Nothing is sent to any external system.
  */
-async function applyToLot(tx: Tx, itemId: string, before: AiValues, patch: Partial<AiValues>, userId: string | null, snapshot: Record<string, unknown>): Promise<AppliedReport["lot"]> {
+async function applyToLot(tx: Tx, itemId: string, before: AiValues, patch: Partial<AiValues>, userId: string | null, snapshot: Record<string, unknown>, descriptionSegs: Segment[] | null = null): Promise<AppliedReport["lot"]> {
   const member = await tx.lotMember.findFirst({ where: { inventoryItemId: itemId, isActive: true, removedAt: null }, include: { lot: { include: { catalog: { select: { status: true, number: true } } } } } });
   const lot = member?.lot;
   if (!lot) return null;
@@ -766,7 +916,7 @@ async function applyToLot(tx: Tx, itemId: string, before: AiValues, patch: Parti
     return { lotId: lot.id, fields: [], descriptionVersion: null, skippedReason: `הספר נמצא בלוט משולב (פריט ${lot.lotNumber}); התיאור המשותף של הלוט לא שונה` };
   }
   if (!lotIsOpenForAi(lot)) return { lotId: lot.id, fields: [], descriptionVersion: null, skippedReason: `הפריט בקטלוג ${lot.catalog.number} כבר הוצע / נמכר או שהקטלוג בארכיון; התיאור שבקטלוג לא שונה` };
-  snapshot.lot = { id: lot.id, title: lot.title, subtitle: lot.subtitle, author: lot.author, printYear: lot.printYear, printPlace: lot.printPlace, shortDescription: lot.shortDescription, description: lot.description };
+  snapshot.lot = { id: lot.id, title: lot.title, subtitle: lot.subtitle, author: lot.author, printYear: lot.printYear, printPlace: lot.printPlace, shortDescription: lot.shortDescription, description: lot.description, textFormat: lot.textFormat ?? null };
   const data: Record<string, string | null> = {};
   for (const f of LOT_COPY_FIELDS) {
     if (patch[f] !== undefined && sameText(lot[f], before[f])) data[f] = patch[f] as string;
@@ -774,7 +924,9 @@ async function applyToLot(tx: Tx, itemId: string, before: AiValues, patch: Parti
   if (patch.catalogHeadline !== undefined && (!lot.shortDescription?.trim() || sameText(lot.shortDescription, before.catalogHeadline))) data.shortDescription = cleanAiText(patch.catalogHeadline, 2000);
   if (patch.catalogDescription !== undefined && (!lot.description?.trim() || sameText(lot.description, before.catalogDescription))) data.description = cleanAiText(patch.catalogDescription, AI_MAX_LENGTH.catalogDescription);
   if (!Object.keys(data).length) return { lotId: lot.id, fields: [], descriptionVersion: null };
-  const u = await tx.lot.update({ where: { id: lot.id }, data });
+  // the lot's description carries the same bold as the book's, only while the formatting spells exactly the text saved on the lot
+  const lotFormat = "description" in data ? (descriptionSegs && plainText(descriptionSegs) === data.description ? { description: descriptionSegs } : null) : undefined;
+  const u = await tx.lot.update({ where: { id: lot.id }, data: { ...data, ...(lotFormat !== undefined ? { textFormat: lotFormat ? asJson(lotFormat) : Prisma.DbNull } : {}) } });
   let version: number | null = null;
   if (["title", "shortDescription", "description"].some((k) => k in data)) {
     const last = await tx.lotDescriptionVersion.aggregate({ where: { lotId: lot.id }, _max: { version: true } });
@@ -800,7 +952,7 @@ export async function restoreRun(user: UserPrincipal, runId: string) {
     await tx.$queryRaw`SELECT id FROM "InventoryItem" WHERE id = ${run.inventoryItemId}::uuid FOR UPDATE`;
     const item = await tx.inventoryItem.findUniqueOrThrow({ where: { id: run.inventoryItemId } });
     if (item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI פעיל על הפריט. אפשר לשחזר אחרי שיסתיים.");
-    const snap = run.snapshot as { values: AiValues; catalogDescriptionSource: InventoryItem["catalogDescriptionSource"]; lot?: Record<string, string | null> & { id: string } };
+    const snap = run.snapshot as { values: AiValues; catalogDescriptionSource: InventoryItem["catalogDescriptionSource"]; textFormat?: Prisma.JsonValue | null; lot?: Record<string, string | null> & { id: string; textFormat?: Prisma.JsonValue | null } };
     const written = (run.applied as unknown as AppliedReport).written;
     const fields = Object.keys(written) as AiWritable[];
     const now = aiValuesOf(item);
@@ -808,6 +960,8 @@ export async function restoreRun(user: UserPrincipal, runId: string) {
     for (const f of fields) data[f] = f === "title" ? (snap.values.title ?? item.title) : snap.values[f];
     const before = Object.fromEntries(fields.map((f) => [f, now[f]]));
     if (fields.some((f) => f === "catalogHeadline" || f === "catalogDescription")) data.catalogDescriptionSource = snap.catalogDescriptionSource;
+    // the formatting that belonged to the restored text comes back with it (runs made before formatting was saved have no key: left as is)
+    if (fields.includes("catalogDescription") && "textFormat" in snap) data.textFormat = snap.textFormat ?? Prisma.DbNull;
     await tx.inventoryItem.update({ where: { id: item.id }, data: { ...(data as Prisma.InventoryItemUpdateInput), detailsVersion: { increment: 1 } } });
     await tx.inventoryAnalysis.update({ where: { id: run.id }, data: { restoredAt: new Date(), restoredById: user.userId } });
 
@@ -823,7 +977,7 @@ export async function restoreRun(user: UserPrincipal, runId: string) {
           if (sameText((lot as unknown as Record<string, string | null>)[f], aiValue ?? null)) lotData[f] = f === "title" ? (snap.lot[f] ?? lot.title) : snap.lot[f] ?? null;
         }
         if (Object.keys(lotData).length) {
-          const u = await tx.lot.update({ where: { id: lot.id }, data: lotData });
+          const u = await tx.lot.update({ where: { id: lot.id }, data: { ...lotData, ...("description" in lotData && "textFormat" in snap.lot ? { textFormat: snap.lot.textFormat ?? Prisma.DbNull } : {}) } });
           if (["title", "shortDescription", "description"].some((k) => k in lotData)) {
             const last = await tx.lotDescriptionVersion.aggregate({ where: { lotId: lot.id }, _max: { version: true } });
             lotVersion = (last._max.version ?? 0) + 1;
@@ -843,11 +997,11 @@ export async function restoreRun(user: UserPrincipal, runId: string) {
 
 /** Runs whose job is gone or finished without them (deleted job, worker bug) are marked FAILED so the button never spins forever. */
 export async function recoverOrphanRuns() {
-  const open = await db.inventoryAnalysis.findMany({ where: { kind: AI_KIND, status: { in: ["QUEUED", "RUNNING"] }, updatedAt: { lt: new Date(Date.now() - RUN_STALE_MS) } }, take: 50 });
+  const open = await db.inventoryAnalysis.findMany({ where: { kind: { in: [AI_KIND, REWRITE_KIND] }, status: { in: ["QUEUED", "RUNNING"] }, updatedAt: { lt: new Date(Date.now() - RUN_STALE_MS) } }, take: 50 });
   for (const r of open) {
     const job = r.jobId ? await db.job.findUnique({ where: { id: r.jobId }, select: { status: true } }) : null;
     if (job && (job.status === "QUEUED" || job.status === "RUNNING")) continue;
-    await markFailed(r, "הניתוח לא הסתיים (המשימה ברקע אבדה). אפשר לנסות שוב.", r.startedAt ?? r.createdAt, null);
+    await markFailed(r, r.kind === REWRITE_KIND ? "הוספת המידע לא הסתיימה (המשימה ברקע אבדה). אפשר לנסות שוב." : "הניתוח לא הסתיים (המשימה ברקע אבדה). אפשר לנסות שוב.", r.startedAt ?? r.createdAt, null);
   }
 }
 
@@ -957,10 +1111,11 @@ export async function applyRun(user: UserPrincipal, runId: string, input: z.infe
     const written = Object.keys(patch) as AiWritable[];
     if (!written.length) throw new AppError("CONFLICT", "אין מה להחיל: הערכים בתוצאה זהים לערכים הנוכחיים של הפריט");
 
-    const snapshot: Record<string, unknown> = { values: current, catalogDescriptionSource: item.catalogDescriptionSource, detailsVersion: item.detailsVersion };
+    const snapshot: Record<string, unknown> = { values: current, catalogDescriptionSource: item.catalogDescriptionSource, detailsVersion: item.detailsVersion, textFormat: item.textFormat ?? null };
     const catalogWritten = patch.catalogHeadline !== undefined || patch.catalogDescription !== undefined;
-    await tx.inventoryItem.update({ where: { id: item.id }, data: { ...(patch as Prisma.InventoryItemUpdateInput), ...(catalogWritten ? { catalogDescriptionSource: "AI" as const } : {}), detailsVersion: { increment: 1 } } });
-    const lot = await applyToLot(tx, item.id, current, patch, user.userId, snapshot);
+    const bold = typeof patch.catalogDescription === "string" ? boldSegments(patch.catalogDescription, result.catalog.boldPhrases ?? []) : null;
+    await tx.inventoryItem.update({ where: { id: item.id }, data: { ...(patch as Prisma.InventoryItemUpdateInput), ...(patch.catalogDescription !== undefined ? { textFormat: descriptionFormat(item.textFormat, bold?.segments ?? null) } : {}), ...(catalogWritten ? { catalogDescriptionSource: "AI" as const } : {}), detailsVersion: { increment: 1 } } });
+    const lot = await applyToLot(tx, item.id, current, patch, user.userId, snapshot, bold?.segments ?? null);
     await changeStatus(tx, user, item.id, "REVIEW", "PENDING_REVIEW", { reason: "תוצאת ניתוח AI הוחלה על ידי בודק", refType: "ai", refId: run.id });
     const applied: AppliedReport = {
       written: patch as Partial<Record<AiWritable, string>>,
@@ -1113,123 +1268,28 @@ export async function compareRuns(user: UserPrincipal, itemId: string, aId: stri
   };
 }
 
-/* ───────────────────────── rewrite ("הוספת מידע ושכתוב") ───────────────────────── */
-
-export const REWRITE_KIND = "catalog_rewrite";
-/** a rewrite takes seconds; one still RUNNING after this was interrupted */
-const REWRITE_STALE_MS = 3 * 60 * 1000;
-
-export const rewriteSchema = z.object({
-  /** facts the reviewer adds or a correction (a signature they identified, a changed year, a defect) */
-  additions: z.string().trim().max(4000).default(""),
-  /** patch (default): a minimal change, only what was asked. full: an explicit, separate full rewrite. */
-  mode: z.enum(["patch"]).default("patch"),
-});
-
 /**
- * Two modes, two different requests:
- *  - patch (default): the model gets the saved fields and the reviewer's instruction and returns OPERATIONS (add /
- *    replace / delete); the server applies them to the saved text. Anything not named is returned byte-identical -
- *    in fact not returned at all. An operation that cannot be verified against the current text is skipped and listed.
- *  - full: an explicit rewrite of every text field from the details and additions.
- * Neither writes anything to the item: the answer is returned and the panel applies it (with undo). Each rewrite is a
- * run of its own (cost, model, versions) and is logged. If the details change while the model works, the answer is
- * refused (409): it was built on text that no longer exists.
+ * The small state every open copy of an item page polls (a few cheap queries): is an AI action running, who started
+ * it, and has the item's text changed (detailsVersion). When the numbers change the page reloads the full state.
  */
-export async function rewriteCatalog(user: UserPrincipal, itemId: string, input: z.infer<typeof rewriteSchema>) {
-  const item = await db.inventoryItem.findFirst({ where: { id: itemId, organizationId: user.organizationId } });
-  if (!item) throw notFound("הספר");
-  if (input.mode === "patch" && !input.additions) throw new AppError("VALIDATION", "יש לכתוב את המידע להוספה או את התיקון המבוקש");
-  const settings = await getAiSettings(user.organizationId);
-  const provider = activeProvider(settings.cfg);
-  if (item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI פעיל על הפריט. נסו לשכתב בסיומו.");
-  const cfg = settings.cfg;
-  const lib = settings.lib;
-  const startedAt = new Date();
-  // a rewrite left RUNNING (server restarted mid-request) would block the item: it is abandoned after a few minutes
-  await db.inventoryAnalysis.updateMany({
-    where: { inventoryItemId: itemId, kind: REWRITE_KIND, status: "RUNNING", updatedAt: { lt: new Date(Date.now() - REWRITE_STALE_MS) } },
-    data: { status: "FAILED", error: "השכתוב הופסק (הפעלה מחדש של השרת)", finishedAt: new Date() },
+export async function getAiLite(user: UserPrincipal, itemId: string) {
+  const item = await db.inventoryItem.findFirst({
+    where: { id: itemId, organizationId: user.organizationId },
+    select: { aiStatus: true, aiRunId: true, aiError: true, aiCompletedAt: true, detailsVersion: true, reviewStatus: true },
   });
-  const rewritePrompt = input.mode === "patch" ? settings.rewritePrompt : settings.fullRewritePrompt;
-  const defaultPrompt = input.mode === "patch" ? settings.stored.rewritePrompt === null : settings.stored.fullRewritePrompt === null;
-  const promptHash = createHash("sha256").update(rewritePrompt).digest("hex").slice(0, 12);
-  let run: InventoryAnalysis;
-  try {
-    run = await db.inventoryAnalysis.create({
-      data: {
-        organizationId: user.organizationId,
-        inventoryItemId: itemId,
-        kind: REWRITE_KIND,
-        status: "RUNNING",
-        provider: provider.provider,
-        model: provider.model,
-        settingsVersion: settings.version,
-        promptVersion: defaultPrompt ? `${REWRITE_PROMPT_VERSION}-${input.mode}` : `custom-${promptHash}`,
-        examplesVersion: lib.version,
-        examplesHash: lib.hash,
-        examplesCount: lib.examples.length,
-        requestKey: randomUUID(),
-        createdById: user.userId,
-        startedAt,
-        input: asJson({ mode: input.mode, additions: input.additions, detailsVersion: item.detailsVersion }),
-      },
-    });
-  } catch (err) {
-    // one active run per item (an analysis or another rewrite)
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") throw new AppError("CONFLICT", "פעולת AI אחרת פעילה על הפריט. נסו שוב בעוד רגע.");
-    throw err;
-  }
-
-  const ctx = new RunContext(run, null, cfg, providerForRun(cfg));
-  const v = aiValuesOf(item);
-  const current = Object.fromEntries(REWRITE_FIELDS.map((f) => [f, (v[f] as string | null) ?? null])) as FieldValues;
-  const details: Record<string, string | null> = { itemType: v.itemType === "UNKNOWN" ? null : he.itemType[v.itemType], ...current };
-  const userText = [
-    "# שדות הפריט כרגע (נבדקו בידי אדם; null = ריק)",
-    "```json",
-    JSON.stringify(details, null, 2),
-    "```",
-    "",
-    input.mode === "patch" ? "# ההוראה של הבודק (מידע להוספה או תיקון)" : "# פרטים שהבודק הוסיף",
-    input.additions ? `"""\n${redactPersonal(input.additions)}\n"""` : "(אין - שפר את הניסוח בלבד)",
-    "",
-    HEBREW_ONLY,
-  ].join("\n");
-  const instructions = [rewritePrompt.trim(), CODE_RULES].join("\n\n");
-  const req: ProviderRequest = {
-    instructions: lib.block ? `${instructions}\n\n${lib.block}` : instructions,
-    cacheKey: `avot-${promptHash}-${lib.hash}`,
-    userText,
-    images: [],
-    schemaName: input.mode === "patch" ? "catalog_patch" : "catalog_rewrite",
-    schema: (input.mode === "patch" ? REWRITE_PATCH_JSON_SCHEMA : REWRITE_JSON_SCHEMA) as unknown as Record<string, unknown>,
-    maxOutputTokens: 8000,
-    timeoutMs: cfg.BOOK_AI_TIMEOUT_SECONDS * 1000,
+  if (!item) throw notFound("הספר");
+  const active = item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING";
+  const run = active && item.aiRunId ? await db.inventoryAnalysis.findUnique({ where: { id: item.aiRunId }, select: { id: true, kind: true, status: true, isReanalysis: true, createdById: true, createdAt: true, startedAt: true } }) : null;
+  const by = run?.createdById ? await db.user.findFirst({ where: { id: run.createdById, organizationId: user.organizationId }, select: { name: true } }) : null;
+  return {
+    aiStatus: item.aiStatus,
+    aiError: item.aiError,
+    hasSuccessfulAnalysis: item.aiCompletedAt !== null,
+    detailsVersion: item.detailsVersion,
+    reviewStatus: item.reviewStatus,
+    activity: run
+      ? { runId: run.id, kind: (run.kind === REWRITE_KIND ? "rewrite" : run.isReanalysis ? "reanalysis" : "analysis") as "rewrite" | "reanalysis" | "analysis", status: run.status, requestedBy: by?.name ?? null, requestedById: run.createdById, since: (run.startedAt ?? run.createdAt).toISOString() }
+      : null,
   };
-  try {
-    let r = await ctx.call("patch", req, rewritePatchZ);
-    if (r.ops.some((o) => isEnglishProse(o.content))) r = await ctx.call("patch-hebrew", { ...req, userText: userText + HEBREW_AGAIN }, rewritePatchZ);
-    const outcome = applyOps(current, r.ops);
-    // the answer was built on the saved text: if a person (or another action) changed the details meanwhile, it is void
-    const now = await db.inventoryItem.findUniqueOrThrow({ where: { id: itemId }, select: { detailsVersion: true } });
-    if (now.detailsVersion !== item.detailsVersion) throw new AppError("CONFLICT", "פרטי הפריט עודכנו בזמן השכתוב, ולכן התוצאה בוטלה. נסו שוב.");
-    const usage = ctx.usageColumns();
-    const costUsd = usage.costUsd === null ? null : Number(usage.costUsd);
-    await db.inventoryAnalysis.update({
-      where: { id: run.id },
-      data: { status: "COMPLETED", result: asJson({ mode: input.mode, ...outcome }), finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime(), ...omitPrice(usage), usage: asJson({ calls: ctx.calls, price: usage.price }) },
-    });
-    await audit(user, { action: "ai.rewrite", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: run.id, mode: input.mode, provider: provider.provider, model: provider.model, costUsd, additions: input.additions.length > 0, fields: Object.keys(outcome.fields) } });
-    return { runId: run.id, mode: input.mode, fields: outcome.fields, applied: outcome.applied ?? [], skipped: outcome.skipped ?? [], detailsVersion: item.detailsVersion, costUsd };
-  } catch (err) {
-    const message = err instanceof AppError || err instanceof ProviderError || err instanceof InvalidAnswerError ? err.message : "שגיאה פנימית בשכתוב";
-    log.warn("ai rewrite failed", { runId: run.id, itemId, err });
-    const usage = ctx.usageColumns();
-    await db.inventoryAnalysis.update({
-      where: { id: run.id },
-      data: { status: "FAILED", error: message.slice(0, 1000), finishedAt: new Date(), durationMs: Date.now() - startedAt.getTime(), ...omitPrice(usage), usage: asJson({ calls: ctx.calls, price: usage.price }) },
-    });
-    throw new AppError("CONFLICT", `השכתוב נכשל: ${message}`);
-  }
 }
+export type AiLite = Awaited<ReturnType<typeof getAiLite>>;

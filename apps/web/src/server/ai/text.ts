@@ -43,3 +43,17 @@ export function sameText(a: string | null | undefined, b: string | null | undefi
   const n = (v: string | null | undefined) => normalizeDashes(v ?? "").replace(/\s+/g, " ").trim();
   return n(a) === n(b);
 }
+
+/** Target of a catalog headline: 5-12 words, about 80 characters. Beyond these limits a person should shorten it. */
+export const HEADLINE_TARGET = { words: 12, chars: 80, hardWords: 15, hardChars: 110, maxSeparators: 2 } as const;
+
+/** Why a headline is not short and strong enough (null = fine). Pure: the text is never changed, only flagged. */
+export function headlineIssue(headline: string | null | undefined): string | null {
+  const h = (headline ?? "").replace(/\s+/g, " ").trim();
+  if (!h) return null;
+  const words = h.split(" ").filter((w) => /[\p{L}\p{N}]/u.test(w)).length;
+  const separators = (h.match(/ - /g) ?? []).length;
+  if (words > HEADLINE_TARGET.hardWords || h.length > HEADLINE_TARGET.hardChars) return `הכותרת הקטלוגית ארוכה (${words} מילים, ${h.length} תווים; היעד עד ${HEADLINE_TARGET.words} מילים וכ-${HEADLINE_TARGET.chars} תווים). כדאי לקצר אותה כך שהמאפיין החשוב ביותר יופיע בתחילתה.`;
+  if (separators > HEADLINE_TARGET.maxSeparators) return "הכותרת הקטלוגית היא רשימת פרטים מופרדת במקפים. כדאי להשאיר בה את המאפיין החשוב ביותר ולהעביר את פרטי הדפוס לתיאור.";
+  return null;
+}

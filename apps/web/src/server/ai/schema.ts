@@ -135,10 +135,11 @@ export const ANALYSIS_JSON_SCHEMA = {
     catalog: {
       type: "object",
       additionalProperties: false,
-      required: ["headline", "description", "confidence"],
+      required: ["headline", "description", "boldPhrases", "confidence"],
       properties: {
-        headline: nullable("string", { description: "catalog heading: exact title plus the significant distinctive detail" }),
-        description: nullable("string", { description: "the full professional catalog description in Hebrew" }),
+        headline: nullable("string", { description: "short catalog heading (5-12 words, about 80 characters): the most important feature first" }),
+        description: nullable("string", { description: "the full professional catalog description in Hebrew; the first sentence says what the item is, its most significant feature and why it matters" }),
+        boldPhrases: { type: "array", items: { type: "string" }, description: "up to 6 short phrases copied EXACTLY from the description, to be shown in bold" },
         confidence: strEnum(CONFIDENCES),
       },
     },
@@ -246,7 +247,7 @@ export const analysisResultZ = z.object({
   fields: z.object(Object.fromEntries(AI_FIELD_NAMES.map((f) => [f, fieldZ])) as Record<AiFieldName, typeof fieldZ>),
   manuscriptAnalysis: manuscriptZ.nullish(),
   catalogHighlight: highlightZ.nullish(),
-  catalog: z.object({ headline: z.string().nullable(), description: z.string().nullable(), confidence: z.enum(CONFIDENCES) }),
+  catalog: z.object({ headline: z.string().nullable(), description: z.string().nullable(), boldPhrases: z.array(z.string()).optional(), confidence: z.enum(CONFIDENCES) }),
   findings: z.array(findingZ),
   imagesReviewed: z.array(z.object({ imageId: z.string(), shows: z.string(), usable: z.boolean() })),
   requiresReview: z.array(z.object({ field: z.string(), reason: z.string() })),
@@ -332,13 +333,14 @@ export const REWRITE_PATCH_JSON_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["field", "op", "target", "anchor", "content", "reason"],
+        required: ["field", "op", "target", "anchor", "content", "boldPhrases", "reason"],
         properties: {
           field: strEnum(REWRITE_FIELDS),
           op: strEnum(REWRITE_OPS),
           target: nullable("string", { description: "replace / delete: the exact current text to change (verbatim); null replaces a short field entirely" }),
           anchor: nullable("string", { description: "add (description): an exact passage of the current text after which the addition goes; null = before the last (condition) paragraph" }),
           content: nullable("string", { description: "the new text (add / replace); null for delete" }),
+          boldPhrases: { type: "array", items: { type: "string" }, description: "up to 2 short phrases copied exactly from content, to be shown in bold (only for an important new fact); otherwise empty" },
           reason: nullable("string"),
         },
       },
@@ -346,6 +348,6 @@ export const REWRITE_PATCH_JSON_SCHEMA = {
   },
 } as const;
 export const rewritePatchZ = z.object({
-  ops: z.array(z.object({ field: z.enum(REWRITE_FIELDS), op: z.enum(REWRITE_OPS), target: z.string().nullable(), anchor: z.string().nullable(), content: z.string().nullable(), reason: z.string().nullable() })),
+  ops: z.array(z.object({ field: z.enum(REWRITE_FIELDS), op: z.enum(REWRITE_OPS), target: z.string().nullable(), anchor: z.string().nullable(), content: z.string().nullable(), boldPhrases: z.array(z.string()).optional(), reason: z.string().nullable() })),
 });
 export type RewritePatch = z.infer<typeof rewritePatchZ>;

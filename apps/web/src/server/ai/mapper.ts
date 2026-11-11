@@ -1,6 +1,6 @@
 import type { ItemType } from "@avot/shared";
 import { AI_FIELD_NAMES, type AiFieldName, type AnalysisResult } from "./schema";
-import { cleanAiText, sameText } from "./text";
+import { cleanAiText, headlineIssue, sameText } from "./text";
 
 /*
  * AI result → item fields. Pure (no database): every rule is unit tested.
@@ -258,6 +258,8 @@ export function extraReviewNotes(result: AnalysisResult): { field: string; reaso
   if (h && h.status === "found" && h.mainFeature && (!h.verified || h.confidence === "low")) {
     notes.push({ field: "catalogHighlight", reason: `המאפיין המרכזי ("${h.mainFeature}") אינו מאומת${h.evidence ? ` - ${h.evidence}` : ""}. יש לאמת אותו מול התמונות לפני פרסום.` });
   }
+  const longHeadline = headlineIssue(result.catalog.headline);
+  if (longHeadline) notes.push({ field: "catalogHeadline", reason: longHeadline });
   const m = result.manuscriptAnalysis;
   if (m?.isManuscript) {
     const text = `${result.catalog.headline ?? ""} ${result.catalog.description ?? ""}`;

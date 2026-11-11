@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { Prisma } from "@prisma/client";
+import { Prisma, type InventoryItem } from "@prisma/client";
 import { BOOK_SIZES, DEFAULT_REQUIREMENTS, ITEM_REVIEW_STATUSES, ITEM_TYPES, PHOTO_CATEGORIES, classifyCode, formatInventoryNumber, type CategoryRequirements, type PhotoCategory } from "@avot/shared";
 import { db, type Tx } from "../db";
 import { asJson } from "../json";
@@ -202,7 +202,13 @@ function nextItemTextFormat(
   return Object.keys(out).length ? asJson(out) : Prisma.DbNull;
 }
 
-export async function updateItem(user: UserPrincipal, id: string, input: z.infer<typeof itemPatchSchema>, opts: { expectedVersion?: number; /** how the values came: typed by a person, or an AI addition the person applied */ source?: "manual" | "ai" } = {}) {
+export async function updateItem(user: UserPrincipal, id: string, input: z.infer<typeof itemPatchSchema>, opts: {
+  expectedVersion?: number;
+  /** how the values came: typed by a person, or an AI addition the person applied */
+  source?: "manual" | "ai";
+  /** runs inside the same transaction as the update, after it (a background job closes its run there: all or nothing) */
+  inTx?: (tx: Tx, updated: InventoryItem) => Promise<void>;
+} = {}) {
   const item = await getItemOrThrow(user.organizationId, id);
   if (opts.expectedVersion !== undefined && opts.expectedVersion !== item.detailsVersion) {
     throw new AppError("CONFLICT", "פרטי הפריט עודכנו בינתיים (ניתוח AI או משתמש אחר). השינויים שלך לא נשמרו כדי לא לדרוס אותם.", { detailsVersion: item.detailsVersion, code: "STALE_DETAILS" });
@@ -250,6 +256,7 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
         ...(catalogEdited ? { catalogDescriptionSource: "MANUAL" as const } : {}),
       },
     });
+    if (opts.inTx) await opts.inTx(tx, u);
     const review = await reviewAfterHumanEdit(tx, user, item, material);
     if (review) Object.assign(u, await tx.inventoryItem.findUniqueOrThrow({ where: { id }, select: { reviewStatus: true, reviewChangedAt: true, reviewChangedById: true, approvedAt: true, approvedById: true } }));
     // the lot the book is a member of (ordinary or combined)

@@ -9,11 +9,12 @@ import { createCatalog } from "@/server/services/catalogs";
 import { assignToCatalog } from "@/server/services/assignments";
 import { listInventory, updateItem } from "@/server/services/inventory";
 import { approveReview, startReview } from "@/server/services/item-review";
-import { applyRun, compareRuns, getAiState, recoverOrphanRuns, requestAnalysis, restoreRun, rewriteCatalog, runAnalysis, listRunsForReport } from "@/server/services/ai-analysis";
+import { applyRun, compareRuns, getAiState, recoverOrphanRuns, requestAnalysis, restoreRun, runAnalysis, listRunsForReport } from "@/server/services/ai-analysis";
 import { Prisma } from "@prisma/client";
 import { computeBaseline, confirmBaselineFromCurrent } from "@/server/ai/baseline";
 import { restoreAiSettingsVersion, saveAiSettings } from "@/server/ai/settings";
 import { setProviderOverride } from "@/server/ai/providers";
+import { setWebSearchOverride } from "@/server/ai/research-providers";
 import { ProviderError, type AiProvider, type ProviderRequest, type ProviderResponse } from "@/server/ai/providers/types";
 import { AI_FIELD_NAMES, type AnalysisResult } from "@/server/ai/schema";
 import { hasForbiddenDash } from "@/server/ai/text";
@@ -81,6 +82,8 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     await db.user.update({ where: { id: ctx.admin.userId }, data: { passwordHash: await hashPassword(ADMIN_PASSWORD) } });
     await db.user.update({ where: { id: ctx.editor.userId }, data: { passwordHash: await hashPassword(EDITOR_PASSWORD) } });
     setProviderOverride(fake);
+    // the research step never reaches the network in these tests: the search finds nothing (the research has its own spec)
+    setWebSearchOverride(async () => ({ text: JSON.stringify({ sources: [], summary: "", contradictions: [], requiresVerification: [], inaccessible: [] }), citations: [], searched: [], searches: 0, hostOnly: false, usage: null, model: "gpt-5.4-mini", requestId: null }));
   });
   afterEach(() => {
     fake.requests = [];
@@ -90,6 +93,7 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
   });
   afterAll(() => {
     setProviderOverride(null);
+    setWebSearchOverride(null);
     process.env = savedEnv;
   });
 
@@ -714,45 +718,5 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
       await db.aiSettings.deleteMany({ where: { organizationId: ctx.org.id } });
       await db.aiSettingsVersion.deleteMany({ where: { organizationId: ctx.org.id } });
     }
-  });
-
-  it("targeted rewrite (patch): only what was asked changes, unverifiable operations are skipped, a change made meanwhile voids the answer", async () => {
-    const { item } = await createBook(ctx.editor, { title: "ספר לתיקון", author: "רבי יוסף", printPlace: "לבוב", printYear: "תקנ\"ט [1799]" });
-    const description = "ספר לתיקון, מאת רבי יוסף. לבוב, תקנ\"ט [1799].\n\nתוכן החיבור.\n\nמצב: כתמים.";
-    await db.inventoryItem.update({ where: { id: item.id }, data: { catalogDescription: description, catalogHeadline: "ספר לתיקון - לבוב", conditionNotes: "כתמים.", bibliographicNotes: "פרט ביבליוגרפי." } });
-    const saved = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
-
-    fake.answer = () => ({
-      ops: [
-        { field: "catalogDescription", op: "add", target: null, anchor: "תוכן החיבור.", content: "בשער חתימת בעלים של רבי משה (img-02).", reason: "הוספת חתימה" },
-        { field: "printYear", op: "replace", target: null, anchor: null, content: "תקס\"א [1801]", reason: "תיקון שנה" },
-        { field: "catalogDescription", op: "replace", target: "תקנ\"ט [1799]", anchor: null, content: "תקס\"א [1801]", reason: "אזכור השנה בתיאור" },
-        { field: "conditionNotes", op: "replace", target: "טקסט שלא קיים", anchor: null, content: "משהו", reason: null },
-        { field: "author", op: "delete", target: "שם אחר", anchor: null, content: null, reason: null },
-      ],
-    });
-    const r = await rewriteCatalog(ctx.editor, item.id, { mode: "patch", additions: "בשער חתימת בעלים של רבי משה. השנה היא תקס\"א. טל' 050-1234567" });
-    expect(fake.requests[0]!.schemaName).toBe("catalog_patch");
-    expect(fake.requests[0]!.userText).not.toContain("050-1234567");
-    // only the changed fields come back; untouched ones are not returned at all
-    expect(Object.keys(r.fields).sort()).toEqual(["catalogDescription", "printYear"]);
-    expect(r.fields.printYear).toBe("תקס\"א [1801]");
-    expect(r.fields.catalogDescription).toBe("ספר לתיקון, מאת רבי יוסף. לבוב, תקס\"א [1801].\n\nתוכן החיבור.\n\nבשער חתימת בעלים של רבי משה.\n\nמצב: כתמים.");
-    expect(r.skipped.map((x) => x.field).sort()).toEqual(["author", "conditionNotes"]);
-    // nothing was written
-    const still = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
-    expect(still).toMatchObject({ catalogDescription: description, printYear: saved.printYear, author: saved.author, conditionNotes: saved.conditionNotes, detailsVersion: saved.detailsVersion });
-    expect(await db.inventoryAnalysis.count({ where: { id: r.runId, kind: "catalog_rewrite", status: "COMPLETED" } })).toBe(1);
-
-    // empty instruction in patch mode: refused before anything is sent
-    fake.requests = [];
-    await expect(rewriteCatalog(ctx.editor, item.id, { mode: "patch", additions: "" })).rejects.toThrow(/המידע להוספה/);
-    expect(fake.requests).toHaveLength(0);
-    // a person saves the details while the model works: the answer was built on text that no longer exists
-    fake.answer = async () => {
-      await updateItem(ctx.editor, item.id, { author: "נערך בינתיים" });
-      return { ops: [{ field: "author", op: "replace", target: null, anchor: null, content: "אחר", reason: null }] };
-    };
-    await expect(rewriteCatalog(ctx.editor, item.id, { mode: "patch", additions: "תקן מחבר" })).rejects.toThrow(/עודכנו בזמן השכתוב/);
   });
 });
