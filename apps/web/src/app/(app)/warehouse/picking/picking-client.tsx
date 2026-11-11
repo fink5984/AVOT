@@ -35,6 +35,25 @@ export function PickTable({ tasks, showAll, perms }: { tasks: Task[]; showAll: b
       toast.error(errorMessage(err));
     }
   }
+  const actions = (p: Task) => (
+    <>
+      {perms.fulfil && p.status === "PICKED" && (
+        <Button size="sm" onClick={() => act(p.id, "packed")}>
+          נארז
+        </Button>
+      )}
+      {perms.fulfil && p.status === "PACKED" && (
+        <Button size="sm" variant="accent" onClick={() => act(p.id, "shipped")}>
+          נשלח
+        </Button>
+      )}
+      {perms.manage && ["OPEN", "PICKED", "PACKED"].includes(p.status) && (
+        <Button size="sm" variant="ghost" onClick={() => act(p.id, "cancel")}>
+          ביטול
+        </Button>
+      )}
+    </>
+  );
   return (
     <>
       <div className="mb-3 flex justify-end">
@@ -46,7 +65,28 @@ export function PickTable({ tasks, showAll, perms }: { tasks: Task[]; showAll: b
         {tasks.length === 0 ? (
           <EmptyState title="אין משימות ליקוט">משימת ליקוט נוצרת אוטומטית כשספר מסומן כנמכר.</EmptyState>
         ) : (
-          <table className="w-full min-w-[900px] text-[13.5px]">
+          <>
+          <ul className="divide-y divide-rule md:hidden" aria-label="משימות ליקוט">
+            {tasks.map((p) => (
+              <li key={p.id} className="space-y-2 px-4 py-4 text-[13.5px]">
+                <div className="flex items-start justify-between gap-3">
+                  <span className="num rounded bg-stone-2 px-2 py-1 font-mono text-[15px] font-semibold">{p.location?.code ?? "—"}</span>
+                  <Badge tone={TONE[p.status]}>{t.pickStatus[p.status]}</Badge>
+                </div>
+                <Link href={`/inventory/${p.item.id}`} className="block font-medium hover:underline">
+                  <span className="num font-mono text-[12.5px] text-muted">{p.item.inventoryNumber}</span> {p.item.title}
+                </Link>
+                {p.lot && (
+                  <div className="text-[12px] text-muted">
+                    {p.lot.house} · קטלוג {p.lot.catalogNumber} · פריט {p.lot.lotNumber}
+                  </div>
+                )}
+                <div className="text-[12px] text-muted">{p.reason}</div>
+                <div className="flex flex-wrap gap-2 pt-1">{actions(p)}</div>
+              </li>
+            ))}
+          </ul>
+          <table className="hidden w-full min-w-[900px] text-[13.5px] md:table">
             <thead>
               <tr className="border-b border-rule text-[12.5px] text-muted">
                 <th className="w-8 px-4 py-3 text-start font-medium">#</th>
@@ -82,28 +122,13 @@ export function PickTable({ tasks, showAll, perms }: { tasks: Task[]; showAll: b
                     <Badge tone={TONE[p.status]}>{t.pickStatus[p.status]}</Badge>
                   </td>
                   <td className="px-3 py-2.5">
-                    <div className="flex justify-end gap-1.5">
-                      {perms.fulfil && p.status === "PICKED" && (
-                        <Button size="sm" onClick={() => act(p.id, "packed")}>
-                          נארז
-                        </Button>
-                      )}
-                      {perms.fulfil && p.status === "PACKED" && (
-                        <Button size="sm" variant="accent" onClick={() => act(p.id, "shipped")}>
-                          נשלח
-                        </Button>
-                      )}
-                      {perms.manage && ["OPEN", "PICKED", "PACKED"].includes(p.status) && (
-                        <Button size="sm" variant="ghost" onClick={() => act(p.id, "cancel")}>
-                          ביטול
-                        </Button>
-                      )}
-                    </div>
+                    <div className="flex justify-end gap-1.5">{actions(p)}</div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </>
         )}
       </div>
     </>

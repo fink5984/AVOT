@@ -88,6 +88,67 @@ export function UsersAdmin({
     }
   }
 
+  const roleSelect = (u: UserRow) => (
+    <Select value={u.role} onChange={(e) => update(u.id, { role: e.target.value as Role })} disabled={u.id === currentUserId} className="h-8" aria-label={`תפקיד ${u.name}`} title={ROLE_HELP[u.role]}>
+      {ROLES.map((r) => (
+        <option key={r} value={r}>
+          {t.role[r]}
+        </option>
+      ))}
+    </Select>
+  );
+  const houseSelect = (u: UserRow) =>
+    u.role === "ADMIN" ? (
+      <span className="text-[12.5px] text-muted">כולם</span>
+    ) : (
+      <Select
+        value={u.houseIds.length === 1 ? u.houseIds[0] : ""}
+        onChange={(e) => update(u.id, { houseIds: e.target.value ? [e.target.value] : [] })}
+        className="h-8"
+        aria-label={`בתי מכירות של ${u.name}`}
+        title="הגבלה לבית מכירות מסוים חלה על קטלוגים ונתונים מסחריים. המלאי המרכזי משותף."
+      >
+        <option value="">כל בתי המכירות</option>
+        {houses.map((h) => (
+          <option key={h.id} value={h.id}>
+            {h.name} בלבד
+          </option>
+        ))}
+      </Select>
+    );
+  const approveCell = (u: UserRow) =>
+    u.role === "ADMIN" ? (
+      <span className="text-[12.5px] text-muted">לפי התפקיד</span>
+    ) : (
+      <label className="inline-flex min-h-8 cursor-pointer items-center gap-2 text-[12.5px]">
+        <input
+          type="checkbox"
+          className="size-4 cursor-pointer accent-[var(--color-ink)]"
+          checked={u.canApprove}
+          onChange={(e) => update(u.id, { extraPermissions: e.target.checked ? ["item.review.approve"] : [] })}
+          aria-label={`אישור סופי של פרטי ספרים: ${u.name}`}
+        />
+        {u.canApprove ? "מורשה" : "ללא"}
+      </label>
+    );
+  const rowActions = (u: UserRow) => (
+    <>
+      <Button size="sm" variant="ghost" icon={<KeyRound />} onClick={() => reset(u)}>
+        איפוס סיסמה
+      </Button>
+      {u.id !== currentUserId &&
+        (u.status === "ACTIVE" ? (
+          <Button size="sm" variant="danger" onClick={() => update(u.id, { status: "DISABLED" })}>
+            השבתה
+          </Button>
+        ) : (
+          <Button size="sm" onClick={() => update(u.id, { status: "ACTIVE" })}>
+            הפעלה
+          </Button>
+        ))}
+    </>
+  );
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-3">
@@ -99,7 +160,46 @@ export function UsersAdmin({
         </Button>
       </div>
       <Panel>
-        <div className="overflow-x-auto">
+        <ul className="divide-y divide-rule md:hidden" aria-label="משתמשים">
+          {users.map((u) => (
+            <li key={u.id} className="space-y-3 px-4 py-4 text-[13.5px]">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-medium">
+                    {u.name}
+                    {u.id === currentUserId && <span className="ms-1.5 text-[11.5px] font-normal text-muted">(את/ה)</span>}
+                  </div>
+                  <div className="truncate text-[12.5px] text-muted" dir="ltr">
+                    <span className="block text-end">{u.email}</span>
+                  </div>
+                </div>
+                {u.status === "ACTIVE" ? <Badge tone="green">פעיל</Badge> : <Badge tone="neutral">מושבת</Badge>}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="min-w-0">
+                  <div className="mb-1 text-[11.5px] text-muted">תפקיד</div>
+                  {roleSelect(u)}
+                </div>
+                <div className="min-w-0">
+                  <div className="mb-1 text-[11.5px] text-muted">בתי מכירות</div>
+                  {houseSelect(u)}
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="mb-0.5 text-[11.5px] text-muted">אישור סופי</div>
+                  {approveCell(u)}
+                </div>
+                <div className="text-end text-[12px] text-muted">
+                  פעילות אחרונה
+                  <div>{fmt.relative(u.lastActiveAt)}</div>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">{rowActions(u)}</div>
+            </li>
+          ))}
+        </ul>
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full min-w-[860px] text-[13.5px]">
             <thead>
               <tr className="border-b border-rule text-[12.5px] text-muted">
@@ -123,69 +223,13 @@ export function UsersAdmin({
                   <td className="px-3 py-2 text-muted" dir="ltr">
                     <span className="block text-end">{u.email}</span>
                   </td>
-                  <td className="px-3 py-2">
-                    <Select value={u.role} onChange={(e) => update(u.id, { role: e.target.value as Role })} disabled={u.id === currentUserId} className="h-8" aria-label={`תפקיד ${u.name}`} title={ROLE_HELP[u.role]}>
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {t.role[r]}
-                        </option>
-                      ))}
-                    </Select>
-                  </td>
-                  <td className="px-3 py-2">
-                    {u.role === "ADMIN" ? (
-                      <span className="text-[12.5px] text-muted">כולם</span>
-                    ) : (
-                      <Select
-                        value={u.houseIds.length === 1 ? u.houseIds[0] : ""}
-                        onChange={(e) => update(u.id, { houseIds: e.target.value ? [e.target.value] : [] })}
-                        className="h-8"
-                        aria-label={`בתי מכירות של ${u.name}`}
-                        title="הגבלה לבית מכירות מסוים חלה על קטלוגים ונתונים מסחריים. המלאי המרכזי משותף."
-                      >
-                        <option value="">כל בתי המכירות</option>
-                        {houses.map((h) => (
-                          <option key={h.id} value={h.id}>
-                            {h.name} בלבד
-                          </option>
-                        ))}
-                      </Select>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    {u.role === "ADMIN" ? (
-                      <span className="text-[12.5px] text-muted">לפי התפקיד</span>
-                    ) : (
-                      <label className="inline-flex min-h-8 cursor-pointer items-center gap-2 text-[12.5px]">
-                        <input
-                          type="checkbox"
-                          className="size-4 cursor-pointer accent-[var(--color-ink)]"
-                          checked={u.canApprove}
-                          onChange={(e) => update(u.id, { extraPermissions: e.target.checked ? ["item.review.approve"] : [] })}
-                          aria-label={`אישור סופי של פרטי ספרים: ${u.name}`}
-                        />
-                        {u.canApprove ? "מורשה" : "ללא"}
-                      </label>
-                    )}
-                  </td>
+                  <td className="px-3 py-2">{roleSelect(u)}</td>
+                  <td className="px-3 py-2">{houseSelect(u)}</td>
+                  <td className="px-3 py-2">{approveCell(u)}</td>
                   <td className="px-3 py-2">{u.status === "ACTIVE" ? <Badge tone="green">פעיל</Badge> : <Badge tone="neutral">מושבת</Badge>}</td>
                   <td className="px-3 py-2 text-muted">{fmt.relative(u.lastActiveAt)}</td>
                   <td className="px-3 py-2">
-                    <div className="flex justify-end gap-1.5">
-                      <Button size="sm" variant="ghost" icon={<KeyRound />} onClick={() => reset(u)}>
-                        איפוס סיסמה
-                      </Button>
-                      {u.id !== currentUserId &&
-                        (u.status === "ACTIVE" ? (
-                          <Button size="sm" variant="danger" onClick={() => update(u.id, { status: "DISABLED" })}>
-                            השבתה
-                          </Button>
-                        ) : (
-                          <Button size="sm" onClick={() => update(u.id, { status: "ACTIVE" })}>
-                            הפעלה
-                          </Button>
-                        ))}
-                    </div>
+                    <div className="flex justify-end gap-1.5">{rowActions(u)}</div>
                   </td>
                 </tr>
               ))}
@@ -198,7 +242,7 @@ export function UsersAdmin({
         <Panel title="הזמנות ממתינות">
           <ul className="divide-y divide-rule text-[13px]">
             {invites.map((i) => (
-              <li key={i.id} className="flex items-center gap-3 px-5 py-3">
+              <li key={i.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-3">
                 <span className="font-medium">{i.name}</span>
                 <span className="text-muted" dir="ltr">
                   {i.email}
