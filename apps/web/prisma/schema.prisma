@@ -227,6 +227,8 @@ enum JobType {
   DELETE_CATALOGS
   /// AI analysis of one item's photos and details (see services/ai-analysis.ts)
   AI_ANALYZE
+  /// "הוספת מידע ותיקון ממוקד ב-AI": a targeted rewrite of the catalog text, applied on the server (see services/ai-analysis.ts)
+  AI_REWRITE
 }
 
 enum PrintJobKind {
@@ -582,6 +584,10 @@ model InventoryAnalysis {
   restoredById      String?          @db.Uuid
   /// AiSettingsVersion.version the run was started with (null = the built-in defaults)
   settingsVersion   Int?
+  /// external research of the run: queries, the sources found (url, kind, relevance, what was learned), limits, cost
+  research          Json?
+  /// the item's detailsVersion when the run was requested (a rewrite is applied only if it is still current)
+  baseDetailsVersion Int?
   createdById       String?          @db.Uuid
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @default(now()) @updatedAt
@@ -1573,6 +1579,15 @@ model AiSettings {
   fullRewritePrompt String?
   /// style examples (same JSON as catalog-style-examples.json); null = the file in the code
   examples          Json?
+  /// external research (web search) of the analysis; null = the built-in defaults (on, 6 sources, 150 s, 4 searches)
+  researchEnabled        Boolean?
+  researchMaxSources     Int?
+  researchTimeoutSeconds Int?
+  researchMaxSearches    Int?
+  /// stop researching once the research of one analysis cost this much (USD); null = no cap beyond the searches limit
+  researchMaxCostUsd     Decimal? @db.Decimal(8, 4)
+  /// auto = the analysis provider's own web search; openai | gemini = that provider's
+  researchProvider       String?
   updatedById       String?  @db.Uuid
   updatedAt         DateTime @default(now()) @updatedAt
 }
@@ -1589,6 +1604,15 @@ model AiSettingsVersion {
   rewritePrompt     String?
   fullRewritePrompt String?
   examples          Json?
+  /// external research (web search) of the analysis; null = the built-in defaults (on, 6 sources, 150 s, 4 searches)
+  researchEnabled        Boolean?
+  researchMaxSources     Int?
+  researchTimeoutSeconds Int?
+  researchMaxSearches    Int?
+  /// stop researching once the research of one analysis cost this much (USD); null = no cap beyond the searches limit
+  researchMaxCostUsd     Decimal? @db.Decimal(8, 4)
+  /// auto = the analysis provider's own web search; openai | gemini = that provider's
+  researchProvider       String?
   note              String?
   createdById       String?  @db.Uuid
   createdAt         DateTime @default(now())

@@ -231,3 +231,204 @@ export function formatToStore(segs: Segment[] | null | undefined, storedText: st
   const trimmed = trimSegments(segs);
   return plainText(trimmed) === storedText ? trimmed : undefined;
 }
+
+/* ───────────── automatic bold (AI) and carrying formatting across a text edit ───────────── */
+
+/** Typographic variants that look the same to a reader: folded 1:1 (same length) so positions stay valid. */
+const FOLD: Record<string, string> = { "״": '"', "”": '"', "“": '"', "„": '"', "׳": "'", "’": "'", "‘": "'", "–": "-", "—": "-", "־": "-", " ": " " };
+const fold = (s: string) => s.replace(/[״”“„׳’‘–—־ ]/g, (c) => FOLD[c] ?? c);
+/** Hebrew points / cantillation and combining marks: they belong to the letter before them */
+const COMBINING = /[֑-ׇֽֿׁׂׅׄ̀-ͯ]/;
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+
+export const BOLD_LIMITS = { maxPhrases: 8, minChars: 3, maxPhraseChars: 200, maxShare: 0.4 } as const;
+
+export interface BoldOutcome {
+  /** null = nothing was bolded (the text then stays plain) */
+  segments: Segment[] | null;
+  applied: string[];
+  skipped: { phrase: string; reason: string }[];
+}
+
+/**
+ * Turns the exact phrases the model asked to emphasise into bold segments of `text`. The text itself is never
+ * touched: a phrase is located by exact comparison (typographic quotes / dashes folded), never by character offsets
+ * given by the model, and a phrase that cannot be found exactly is skipped and reported. The result always spells
+ * `text`. Few, short, whole-word phrases only: never a whole paragraph and never more than BOLD_LIMITS.maxShare of the text.
+ */
+export function boldSegments(text: string, phrases: readonly string[], opts: { ignoreShare?: boolean } = {}): BoldOutcome {
+  const out: BoldOutcome = { segments: null, applied: [], skipped: [] };
+  if (!text) return out;
+  const hay = fold(text);
+  const paragraphs: [number, number][] = [];
+  for (let at = 0; at <= text.length; ) {
+    const end = text.indexOf("\n\n", at);
+    paragraphs.push([at, end < 0 ? text.length : end]);
+    if (end < 0) break;
+    at = end + 2;
+  }
+  const ranges: [number, number][] = [];
+  const seen = new Set<string>();
+  for (const raw of phrases.slice(0, 40)) {
+    const phrase = raw.trim();
+    const skip = (reason: string) => out.skipped.push({ phrase: phrase.slice(0, 80), reason });
+    if (seen.has(phrase)) continue;
+    seen.add(phrase);
+    if (out.applied.length >= BOLD_LIMITS.maxPhrases) {
+      skip("יותר מדי הדגשות");
+      continue;
+    }
+    if (phrase.length < BOLD_LIMITS.minChars) {
+      skip("קצר מדי");
+      continue;
+    }
+    if (phrase.length > BOLD_LIMITS.maxPhraseChars) {
+      skip("ארוך מדי");
+      continue;
+    }
+    const needle = fold(phrase);
+    let found = -1;
+    for (let from = 0; ; ) {
+      const i = hay.indexOf(needle, from);
+      if (i < 0) break;
+      const before = i > 0 ? text[i - 1]! : "";
+      const after = i + needle.length < text.length ? text[i + needle.length]! : "";
+      const startsOk = !before || !WORD_CHAR.test(before) || !WORD_CHAR.test(needle[0]!);
+      const endsOk = !after || !WORD_CHAR.test(after) || !WORD_CHAR.test(needle[needle.length - 1]!);
+      if (startsOk && endsOk) {
+        found = i;
+        break;
+      }
+      from = i + 1;
+    }
+    if (found < 0) {
+      skip("הביטוי לא נמצא בטקסט במדויק");
+      continue;
+    }
+    let start = found;
+    let end = found + needle.length;
+    while (start > 0 && COMBINING.test(text[start]!)) start--;
+    while (end < text.length && COMBINING.test(text[end]!)) end++;
+    const para = paragraphs.find(([a, b]) => start >= a && start <= b);
+    if (para && para[1] - para[0] > 80 && end - start >= (para[1] - para[0]) * 0.9) {
+      skip("פסקה שלמה");
+      continue;
+    }
+    if (end - start >= text.length * 0.85) {
+      skip("כל הטקסט");
+      continue;
+    }
+    if (ranges.some(([a, b]) => start < b && end > a)) {
+      skip("חופף להדגשה אחרת");
+      continue;
+    }
+    ranges.push([start, end]);
+    out.applied.push(text.slice(start, end));
+  }
+  // the whole emphasis stays small: the longest phrases go first when the limit is exceeded
+  let total = ranges.reduce((n, [a, b]) => n + (b - a), 0);
+  while (!opts.ignoreShare && total > text.length * BOLD_LIMITS.maxShare && ranges.length) {
+    let longest = 0;
+    ranges.forEach(([a, b], i) => {
+      if (b - a > ranges[longest]![1] - ranges[longest]![0]) longest = i;
+    });
+    const [a, b] = ranges.splice(longest, 1)[0]!;
+    const dropped = text.slice(a, b);
+    out.applied = out.applied.filter((p) => p !== dropped);
+    out.skipped.push({ phrase: dropped.slice(0, 80), reason: "יותר מדי טקסט מודגש" });
+    total -= b - a;
+  }
+  if (!ranges.length) return out;
+  ranges.sort((x, y) => x[0] - y[0]);
+  const segs: Segment[] = [];
+  let pos = 0;
+  for (const [a, b] of ranges) {
+    if (a > pos) segs.push({ t: text.slice(pos, a) });
+    segs.push({ t: text.slice(a, b), b: true });
+    pos = b;
+  }
+  if (pos < text.length) segs.push({ t: text.slice(pos) });
+  const merged = mergeSegments(segs);
+  // the safety net: formatting must spell exactly the text
+  if (plainText(merged) !== text) return { segments: null, applied: [], skipped: [...out.skipped, { phrase: "", reason: "ההדגשות לא תאמו את הטקסט ובוטלו" }] };
+  out.segments = merged;
+  return out;
+}
+
+const TOKEN = /\s+|[\p{L}\p{M}\p{N}]+|[^\s\p{L}\p{M}\p{N}]/gu;
+const MAX_DIFF_TOKENS = 4000;
+
+type CharStyle = Omit<Segment, "t">;
+
+/**
+ * The formatting of `oldText` carried over to `newText` after an edit (an AI addition or correction): characters the
+ * edit left untouched keep their bold / underline / color exactly, inserted or replaced text is plain. The result
+ * always spells `newText`. When the old segments do not describe `oldText` there is no formatting to carry.
+ */
+export function carryFormat(oldText: string, oldSegs: Segment[] | null | undefined, newText: string): Segment[] {
+  if (!newText) return [];
+  if (!oldSegs || !hasFormatting(oldSegs) || plainText(oldSegs) !== oldText) return [{ t: newText }];
+  const styles: CharStyle[] = [];
+  for (const s of oldSegs) for (let i = 0; i < s.t.length; i++) styles.push({ b: s.b, u: s.u, c: s.c });
+  const a = oldText.match(TOKEN) ?? [];
+  const b = newText.match(TOKEN) ?? [];
+  const next: (CharStyle | null)[] = new Array(newText.length).fill(null);
+  const offsets = (toks: string[]) => {
+    const o: number[] = [];
+    let p = 0;
+    for (const t of toks) {
+      o.push(p);
+      p += t.length;
+    }
+    return o;
+  };
+  const aOff = offsets(a);
+  const bOff = offsets(b);
+  const copy = (ai: number, bi: number) => {
+    for (let k = 0; k < a[ai]!.length; k++) next[bOff[bi]! + k] = styles[aOff[ai]! + k]!;
+  };
+  // common head and tail first (an edit is usually local), then a token diff of the middle
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  for (let i = 0; i < head; i++) copy(i, i);
+  for (let i = 0; i < tail; i++) copy(a.length - 1 - i, b.length - 1 - i);
+  const am = a.slice(head, a.length - tail);
+  const bm = b.slice(head, b.length - tail);
+  if (am.length && bm.length && am.length <= MAX_DIFF_TOKENS && bm.length <= MAX_DIFF_TOKENS) {
+    const w = bm.length + 1;
+    const L = new Uint16Array((am.length + 1) * w);
+    for (let i = am.length - 1; i >= 0; i--) for (let j = bm.length - 1; j >= 0; j--) L[i * w + j] = am[i] === bm[j] ? L[(i + 1) * w + j + 1]! + 1 : Math.max(L[(i + 1) * w + j]!, L[i * w + j + 1]!);
+    let i = 0;
+    let j = 0;
+    while (i < am.length && j < bm.length) {
+      if (am[i] === bm[j]) {
+        copy(head + i, head + j);
+        i++;
+        j++;
+      } else if (L[(i + 1) * w + j]! >= L[i * w + j + 1]!) i++;
+      else j++;
+    }
+  }
+  const segs: Segment[] = [];
+  for (let i = 0; i < newText.length; i++) segs.push(styled(newText[i]!, next[i] ?? {}));
+  const merged = mergeSegments(segs);
+  return plainText(merged) === newText ? merged : [{ t: newText }];
+}
+
+/** Bold added on top of existing segments inside `within` of `text` (an inserted passage); existing styles stay. */
+export function addBoldPhrases(text: string, segs: Segment[], phrases: readonly string[], within: [number, number] | null = null): Segment[] {
+  if (!phrases.length) return segs;
+  const region = within ? text.slice(within[0], within[1]) : text;
+  const r = boldSegments(region, phrases, { ignoreShare: true });
+  if (!r.segments) return segs;
+  let pos = within ? within[0] : 0;
+  let out = segs.length ? segs : [{ t: text }];
+  if (plainText(out) !== text) return segs;
+  for (const s of r.segments) {
+    if (s.b) out = applyStyle(out, pos, pos + s.t.length, { b: true });
+    pos += s.t.length;
+  }
+  return plainText(out) === text ? out : segs;
+}
