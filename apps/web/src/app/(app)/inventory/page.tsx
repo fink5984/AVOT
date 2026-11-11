@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FilterToggle } from "./filter-toggle";
 import { z } from "zod";
 import { requirePageUser } from "@/server/auth/principal";
 import { can } from "@/server/auth/permissions";
@@ -98,8 +99,10 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
               defaultValue={sp.q ?? ""}
               placeholder="חיפוש: שם, מחבר, מפקיד, מספר ספר, ברקוד"
               aria-label="חיפוש במלאי"
-              className="h-9 min-w-0 flex-1 rounded-md border border-rule-strong bg-paper px-3 text-[13.5px] shadow-card focus:border-ink/40 focus:outline-none focus:ring-[3px] focus:ring-ink/6 sm:w-64"
+              className="h-9 min-w-0 flex-1 basis-40 rounded-md border border-rule-strong bg-paper px-3 text-[13.5px] shadow-card focus:border-ink/40 focus:outline-none focus:ring-[3px] focus:ring-ink/6 sm:w-64"
             />
+            <button className="h-9 shrink-0 rounded-md bg-ink sm:order-last px-3.5 text-[13px] font-medium text-paper">סינון</button>
+            <FilterToggle activeCount={[sp.house, review, sort !== "updated" ? sort : ""].filter(Boolean).length}>
             {houses.length > 0 && (
               <select name="house" defaultValue={sp.house ?? ""} aria-label="בית מכירות" className="h-9 rounded-md border border-rule-strong bg-paper px-2 text-[13px] shadow-card">
                 <option value="">כל בתי המכירות</option>
@@ -123,7 +126,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
               <option value="number">לפי מספר מלאי</option>
               <option value="title">לפי שם</option>
             </select>
-            <button className="h-9 rounded-md bg-ink px-3.5 text-[13px] font-medium text-paper">סינון</button>
+            </FilterToggle>
           </form>
         </div>
 

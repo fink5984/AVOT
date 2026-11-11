@@ -243,6 +243,23 @@ export function InventoryTable({
   const checkout = (kind: "TEMP" | "FINAL", rs: InventoryRowDto[]) => itemCheckout(kind, rs.map((x) => x.id), () => setSelected(new Set()));
   const canAssign = (r: InventoryRowDto) => perms.assign && r.physicalStatus !== "SHIPPED" && r.commercialStatus !== "SOLD";
 
+  const actionsOf = (r: InventoryRowDto) => (
+    <InventoryItemActions
+      context="table"
+      subject={{
+        id: r.id,
+        inventoryNumber: r.inventoryNumber,
+        title: r.title,
+        physicalStatus: r.physicalStatus,
+        commercialStatus: r.commercialStatus,
+        hasLocation: !!r.location,
+        assignment: r.assignment === null ? null : "hidden" in r.assignment ? "hidden" : "active",
+        ai: { aiStatus: r.aiStatus, hasAiResult: r.hasAiResult, aiError: r.aiError },
+      }}
+      perms={perms}
+    />
+  );
+
   return (
     <>
       <div className="mt-4">
@@ -253,7 +270,44 @@ export function InventoryTable({
               {perms.create ? "הקלידו שם ספר בשורה שלמעלה ולחצו Enter. הספר נקלט עם מספר מלאי וברקוד קבועים." : "אין ספרים להצגה."}
             </EmptyState>
           ) : (
-            <table className="w-full text-[13.5px]">
+            <>
+            <ul className="divide-y divide-rule md:hidden" aria-label="ספרים במלאי">
+              {all.map((r) => (
+                <li key={r.id} className={cn("relative px-3 py-3", selected.has(r.id) && "bg-accent-soft/50")}>
+                  <div className="flex gap-3">
+                  <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} aria-label={`בחירת ${r.inventoryNumber}`} className="relative z-10 mt-1 size-5 shrink-0 accent-[var(--color-ink)]" />
+                  <span className="block size-14 shrink-0 overflow-hidden rounded-md bg-stone ring-1 ring-rule">
+                    {r.thumbAssetId && <img src={`/api/assets/${r.thumbAssetId}/thumb`} alt="" loading="lazy" decoding="async" className="size-full object-cover" />}
+                  </span>
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <Link href={`/inventory/${r.id}`} className="block text-[14.5px] font-medium leading-snug text-ink after:absolute after:inset-0">
+                      {r.title}
+                    </Link>
+                    <div className="flex flex-wrap items-center gap-x-2 text-[12px] text-muted">
+                      <span className="num font-mono">{r.inventoryNumber}</span>
+                      {r.author && <span className="truncate">{r.author}</span>}
+                    </div>
+                    <div className="text-[12px] text-ink-2">{r.consignor ? `מפקיד: ${r.consignor.name}` : <span className="text-faint">ללא מפקיד</span>}</div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <PhotoStatusBadge status={r.photoStatus} />
+                      <ReviewStatusBadge status={r.reviewStatus} />
+                      {r.physicalStatus !== "IN_STORAGE" && r.physicalStatus !== "AWAITING_STORAGE" && <PhysicalStatusBadge status={r.physicalStatus} />}
+                    </div>
+                    <div className="text-[12px] text-muted">
+                      {r.location ? r.location.label : "ללא מיקום"}
+                      {r.assignment && !("hidden" in r.assignment) && (
+                        <>
+                          {" · "}קטלוג <span className="num">{r.assignment.catalog.number}</span> · פריט <span className="num">{r.assignment.lotNumber}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  </div>
+                  <div className="relative z-10 mt-2 flex flex-wrap justify-end border-t border-rule/60 pt-1.5">{actionsOf(r)}</div>
+                </li>
+              ))}
+            </ul>
+            <table className="hidden w-full text-[13.5px] md:table">
               <thead>
                 <tr className="border-b border-rule text-[12.5px] text-muted">
                   <th className="w-10 ps-4 pe-1 py-2.5">
@@ -338,32 +392,20 @@ export function InventoryTable({
                     </td>
                     <td className="relative z-10 pe-3 ps-2 py-1">
                       <div className="flex items-center justify-end">
-                        <InventoryItemActions
-                          context="table"
-                          subject={{
-                            id: r.id,
-                            inventoryNumber: r.inventoryNumber,
-                            title: r.title,
-                            physicalStatus: r.physicalStatus,
-                            commercialStatus: r.commercialStatus,
-                            hasLocation: !!r.location,
-                            assignment: r.assignment === null ? null : "hidden" in r.assignment ? "hidden" : "active",
-                            ai: { aiStatus: r.aiStatus, hasAiResult: r.hasAiResult, aiError: r.aiError },
-                          }}
-                          perms={perms}
-                        />
+                        {actionsOf(r)}
                       </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            </>
           )}
         </div>
       </div>
 
       {selected.size > 0 && (
-        <div className="animate-pop fixed inset-x-0 bottom-6 z-30 mx-auto flex w-fit max-w-[calc(100vw-2rem)] flex-wrap items-center gap-2 rounded-xl bg-ink py-2 pe-2 ps-4 text-[13.5px] text-paper shadow-pop ring-1 ring-white/10">
+        <div className="animate-pop fixed inset-x-0 bottom-4 z-30 mx-auto flex w-fit max-h-[40dvh] max-w-[calc(100vw-1.5rem)] overflow-y-auto flex-wrap items-center gap-2 rounded-xl bg-ink py-2 pe-2 ps-4 text-[13.5px] text-paper shadow-pop ring-1 ring-white/10">
           <span>
             נבחרו <span className="num font-semibold">{selected.size}</span> ספרים
           </span>
