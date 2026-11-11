@@ -24,21 +24,21 @@ test.describe("combined lots", () => {
     const d = await add("ספר ד של בועז", boaz.id);
 
     await page.goto(`/catalogs/${catalogId}`);
-    const rowOf = (n: number) => page.getByRole("row").filter({ has: page.getByLabel(`בחירת פריט ${n}`) });
+    const rowOf = (n: number) => page.getByRole("row").filter({ has: page.getByRole("checkbox", { name: `בחירת פריט ${n}` }) });
 
     // different consignors: the dialog says so and the confirm button is disabled
-    await page.getByLabel(`בחירת פריט ${a.lotNumber}`).check();
-    await page.getByLabel(`בחירת פריט ${d.lotNumber}`).check();
+    await page.getByRole("checkbox", { name: `בחירת פריט ${a.lotNumber}` }).check();
+    await page.getByRole("checkbox", { name: `בחירת פריט ${d.lotNumber}` }).check();
     await page.getByRole("button", { name: "איחוד ללוט" }).click();
     const dialog = page.getByRole("dialog", { name: "איחוד ללוט" });
     await expect(dialog.getByText("לא ניתן לאחד ספרים ממפקידים שונים. כל הספרים בלוט משולב חייבים להשתייך לאותו מפקיד.")).toBeVisible();
     await expect(dialog.getByRole("button", { name: /^איחוד 2 ספרים/ })).toBeDisabled();
     await dialog.getByRole("button", { name: "ביטול" }).click();
-    await page.getByLabel(`בחירת פריט ${d.lotNumber}`).uncheck();
+    await page.getByRole("checkbox", { name: `בחירת פריט ${d.lotNumber}` }).uncheck();
 
     // merge a + b + c, keep the middle lot number
-    await page.getByLabel(`בחירת פריט ${b.lotNumber}`).check();
-    await page.getByLabel(`בחירת פריט ${c.lotNumber}`).check();
+    await page.getByRole("checkbox", { name: `בחירת פריט ${b.lotNumber}` }).check();
+    await page.getByRole("checkbox", { name: `בחירת פריט ${c.lotNumber}` }).check();
     await page.getByRole("button", { name: "איחוד ללוט" }).click();
     await expect(dialog).toBeVisible();
     await dialog.getByRole("radio").nth(1).check();
@@ -48,9 +48,9 @@ test.describe("combined lots", () => {
 
     // the catalog shows ONE row for the combined lot; the absorbed lots are gone from the table, other lots keep their numbers
     // the numbers close up: the combined lot is 1 and the other lot is 2 (no gaps)
-    await expect(rowOf(1).getByText("3 ספרים")).toBeVisible();
+    await expect(rowOf(1).getByText("3 ספרים").first()).toBeVisible();
     await expect(rowOf(2).getByText("ספר ד של בועז")).toBeVisible();
-    await expect(page.getByLabel("בחירת פריט 3")).toHaveCount(0);
+    await expect(page.getByRole("checkbox", { name: "בחירת פריט 3" })).toHaveCount(0);
 
     // the lot page
     await rowOf(1).getByRole("link", { name: "שלושה ספרים של אנה" }).click();
@@ -93,6 +93,6 @@ test.describe("combined lots", () => {
     await expect(page.getByText("הלוט פורק: כל ספר חזר להיות פריט נפרד")).toBeVisible();
 
     await page.goto(`/catalogs/${catalogId}`);
-    for (const n of [1, 2, 3, 4]) await expect(page.getByLabel(`בחירת פריט ${n}`)).toBeVisible();
+    for (const n of [1, 2, 3, 4]) await expect(page.getByRole("checkbox", { name: `בחירת פריט ${n}` })).toBeVisible();
   });
 });
