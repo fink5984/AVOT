@@ -92,6 +92,8 @@ export const reprocessSchema = z.object({
   edits: manualEditsSchema.optional(),
   /** back to the untouched original: processed file removed, plain derivatives rebuilt */
   restore: z.boolean().optional(),
+  /** restore only: the person confirmed that their manual corrections (brush strokes, manual crop) are discarded with it */
+  discardEdits: z.boolean().optional(),
 });
 export type ReprocessInput = z.infer<typeof reprocessSchema>;
 
@@ -103,6 +105,12 @@ export async function reprocessAsset(user: UserPrincipal, assetId: string, input
   const store = storage();
 
   if (input.restore) {
+    // a person's manual corrections are never thrown away by a reprocess; restoring the original removes them, so it must be said and confirmed
+    const edits = parseProcessing(asset.processing)?.edits;
+    const manual = (edits?.strokes?.length ?? 0) + (edits?.crop ? 1 : 0);
+    if (manual > 0 && !input.discardEdits) {
+      throw new AppError("CONFLICT", "לתמונה יש תיקונים ידניים (מברשת או חיתוך ידני). שחזור המקור ימחק אותם. אשרו כדי להמשיך.", { code: "EDITS_WOULD_BE_LOST", strokes: edits?.strokes?.length ?? 0, crop: !!edits?.crop });
+    }
     if (asset.processedKey) await store.delete(asset.processedKey).catch(() => undefined);
     await db.photoAsset.update({
       where: { id: assetId },
@@ -117,7 +125,7 @@ export async function reprocessAsset(user: UserPrincipal, assetId: string, input
       },
     });
     await processAssetDerivatives(assetId);
-    await audit(user, { action: "photo.processing_restored", entityType: "asset", entityId: assetId, lotId: asset.lotId, inventoryItemId: asset.inventoryItemId });
+    await audit(user, { action: "photo.processing_restored", entityType: "asset", entityId: assetId, lotId: asset.lotId, inventoryItemId: asset.inventoryItemId, data: { discardedManualEdits: manual } });
     return db.photoAsset.findUniqueOrThrow({ where: { id: assetId }, select: assetSelect });
   }
 

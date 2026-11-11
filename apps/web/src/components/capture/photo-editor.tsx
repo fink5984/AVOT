@@ -220,9 +220,13 @@ export function PhotoEditorDialog({ asset, onClose, onSaved }: { asset: AssetDto
 
   const restore = async () => {
     if (!asset) return;
+    // manual corrections are kept by every reprocess; only restoring the original removes them, and only after a confirmation
+    const saved = asset.processed?.edits;
+    const manual = (saved?.strokes?.length ?? 0) + (saved?.crop ? 1 : 0);
+    if (manual > 0 && !window.confirm("לתמונה יש תיקונים ידניים (מברשת או חיתוך ידני). שחזור המקור ימחק אותם. להמשיך?")) return;
     setBusy(true);
     try {
-      const r = await api<{ asset: AssetDto }>(`/api/assets/${asset.id}/process`, { method: "POST", json: { restore: true } });
+      const r = await api<{ asset: AssetDto }>(`/api/assets/${asset.id}/process`, { method: "POST", json: { restore: true, discardEdits: manual > 0 } });
       toast.success("הוחזרה תמונת המקור");
       onSaved(r.asset);
       onClose();
@@ -244,9 +248,13 @@ export function PhotoEditorDialog({ asset, onClose, onSaved }: { asset: AssetDto
     <Dialog open={!!asset} onClose={onClose} title={asset ? `עריכת צילום ${asset.sequence}` : "עריכה"} width="xl">
       {asset && (
         <div className="space-y-3 text-[13.5px]">
-          {asset.processed?.state === "NEEDS_REVIEW" && (
+          {asset.processed?.state === "NEEDS_REVIEW" && (warnings.length > 0 && warnings.every((w) => QC_CODES.includes(w)) ? (
+            <p className="rounded-md bg-warn-soft px-3 py-2 text-warn" data-testid="qc-flag">
+              העיבוד הושלם, אבל זוהו מקומות שכדאי לבדוק מול המקור ({warnings.map(warningLabel).join(", ")}). שום דבר לא נמחק על ספק: אפשר להשוות למקור ולתקן במברשת.
+            </p>
+          ) : (
             <p className="rounded-md bg-warn-soft px-3 py-2 text-warn">הזיהוי האוטומטי לא היה בטוח{warnings.length ? ` (${warnings.map(warningLabel).join(", ")})` : ""} — לא בוצע חיתוך או הסרת רקע. סמנו, בדקו ושמרו.</p>
-          )}
+          ))}
           <div className="flex flex-wrap items-center gap-1.5">
             {tools.map((t) => (
               <Button key={t.id} size="sm" variant={tool === t.id ? "primary" : "secondary"} icon={t.icon} onClick={() => setTool(t.id)} aria-pressed={tool === t.id}>
@@ -354,8 +362,14 @@ function thin(pts: [number, number][]): [number, number][] {
   return pts.filter((_, i) => i % step === 0 || i === pts.length - 1);
 }
 
+/** quality-control findings about a result that WAS processed (the rest of the warnings mean it was not cut at all) */
+const QC_CODES = ["UNCERTAIN_HOLE", "GREEN_EDGE", "MASK_ERASED_PART"];
+
 export function warningLabel(code: string): string {
   const map: Record<string, string> = {
+    UNCERTAIN_HOLE: "אזור ירוק בתוך הפריט, לא ברור אם הוא חור",
+    GREEN_EDGE: "פס ירוק לאורך הקצה",
+    MASK_ERASED_PART: "ייתכן שחלק מהפריט נחתך",
     BG_NOT_FOUND: "לא זוהה רקע ירוק",
     TOO_SMALL: "הספר לא זוהה / קטן מדי",
     NO_BACKGROUND: "אין רקע גלוי",

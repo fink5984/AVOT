@@ -142,6 +142,27 @@ export interface ComposeInput extends PlaneInput {
   crop: { x: number; y: number; w: number; h: number };
 }
 
+/**
+ * The item's own relation between green and the other channels (g - max(r, b)), taken from its INTERIOR (solid, far from any
+ * boundary). Aged paper is yellowish: this is zero or negative. A green reflection from the backdrop raises it near an
+ * edge or a hole - that excess, and only that, is what the local despill removes. null = not enough interior to know.
+ */
+export function paperGreenExcess(rgb: Pixels, w: number, h: number, ch: number, alpha: Uint8Array, edge: Uint8Array): number | null {
+  const samples: number[] = [];
+  const step = Math.max(1, Math.round(Math.sqrt((w * h) / 20000)));
+  for (let y = 0; y < h; y += step) {
+    for (let x = 0; x < w; x += step) {
+      const i = y * w + x;
+      if (alpha[i] !== 255 || edge[i]! > 12) continue;
+      const o = i * ch;
+      samples.push(rgb[o + 1]! - Math.max(rgb[o]!, rgb[o + 2]!));
+    }
+  }
+  if (samples.length < 40) return null;
+  samples.sort((a, b) => a - b);
+  return samples[samples.length >> 1]!;
+}
+
 /** Removes the green cast near the boundary and composes the final pixels. */
 export function composeOutput(input: ComposeInput): { data: Uint8Array; width: number; height: number; channels: 3 | 4 } {
   return runSync(composeOutputSteps(input));
@@ -153,6 +174,7 @@ export function* composeOutputSteps(input: ComposeInput): Generator<void, { data
   const out = new Uint8Array(crop.w * crop.h * oc);
   const [br, bg, bb] = model.rgb;
   const spillStrength = EDGE_PRESETS[input.quality ?? "natural"].spill;
+  const paperE = paperGreenExcess(rgb, w, input.height, ch, alpha, edge);
   for (let cy = 0; cy < crop.h; cy++) {
     if (cy % ROWS_PER_STEP === 0) yield;
     for (let cx = 0; cx < crop.w; cx++) {
@@ -188,6 +210,13 @@ export function* composeOutputSteps(input: ComposeInput): Generator<void, { data
         if (wgt > 0) {
           const limit = (r + b) / 2;
           if (g > limit) g -= (g - limit) * wgt;
+        }
+        // Light paper that took a green reflection near an edge or a hole is yellow-green, not the backdrop's hue, so the rule
+        // above misses it. Only the excess over the paper's own green relation is taken out (a local, gentle correction): the
+        // interior, the ink and the colour of the paper itself are not touched, and old paper is not whitened.
+        if (paperE !== null && ss >= 0.1 && hh >= 55 && hh <= model.h + model.hueTol * 1.8) {
+          const e = g - Math.max(r, b);
+          if (e > paperE + 5) g -= (e - paperE - 2) * Math.min(1, prox * 3) * spillStrength;
         }
       }
       if (background) {

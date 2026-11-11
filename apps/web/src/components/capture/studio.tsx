@@ -93,7 +93,7 @@ const PROCESSED_STATE: Record<string, string> = {
   QUEUED: "בתור לעיבוד",
   PREVIEW_READY: "תצוגה מהירה — הגרסה המלאה בדרך",
   DONE: "מעובדת",
-  NEEDS_REVIEW: "דורשת בדיקה — לא נחתכה אוטומטית",
+  NEEDS_REVIEW: "דורשת בדיקה אנושית",
   FAILED: "העיבוד נכשל — המקור שמור",
 };
 

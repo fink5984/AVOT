@@ -91,8 +91,14 @@ export interface SceneOptions {
   vignette?: number;
   /** soft shadow around the book: offset, blur radius px and darkness 0..1 */
   shadow?: { dx: number; dy: number; blur: number; strength: number };
-  /** areas inside the outline painted exactly in the background colour (green illustration) */
+  /** areas inside the outline painted in a green close to the backdrop (a printed green illustration) */
   greenInside?: Poly[];
+  /** colour of the printed green (HSV); default: the backdrop's own hue, 80% of its saturation, 95% of its brightness */
+  greenInsideHsv?: [number, number, number];
+  /** REAL holes / tears / missing pieces: the backdrop shows through (shaded and noisy like the rest of the backdrop); not part of the truth */
+  realHoles?: Poly[];
+  /** green reflected from the backdrop onto the paper near its edges and holes: 0..1 (strength of the tint at the edge) */
+  spill?: number;
   seed?: number;
 }
 
@@ -118,7 +124,9 @@ export function renderScene(o: SceneOptions): Scene {
   for (let y = Math.max(0, Math.floor(bbox.y0) - 1); y < Math.min(h, Math.ceil(bbox.y1) + 1); y++) {
     for (let x = Math.max(0, Math.floor(bbox.x0) - 1); x < Math.min(w, Math.ceil(bbox.x1) + 1); x++) {
       let c = 0;
-      for (const [ox, oy] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]] as const) if (inside(o.outline, x + ox, y + oy)) c++;
+      for (const [ox, oy] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]] as const) {
+        if (inside(o.outline, x + ox, y + oy) && !o.realHoles?.some((hp) => inside(hp, x + ox, y + oy))) c++;
+      }
       coverage[y * w + x] = c / 4;
       truth[y * w + x] = c >= 2 ? 1 : 0;
     }
@@ -137,6 +145,8 @@ export function renderScene(o: SceneOptions): Scene {
     shade = blur(sh, w, h, o.shadow.blur);
   }
 
+  // distance-like measure to the nearest edge or hole: the blurred coverage is 1 deep inside the paper and falls towards 0.5 at an edge
+  const paperBlur = o.spill ? blur(coverage, w, h, 14) : null;
   const rgb = new Uint8Array(w * h * 3);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -146,7 +156,17 @@ export function renderScene(o: SceneOptions): Scene {
       if (shade) v *= 1 - o.shadow!.strength * shade[i]!;
       const bg = hsvToRgb(bgHsv[0], bgHsv[1], Math.max(0.05, v));
       let [r, g, b] = o.fill(x, y);
-      if (o.greenInside?.some((p) => inside(p, x + 0.5, y + 0.5)) && coverage[i] === 1) [r, g, b] = hsvToRgb(bgHsv[0], bgHsv[1], bgHsv[2] * 0.95);
+      if (o.greenInside?.some((p) => inside(p, x + 0.5, y + 0.5)) && coverage[i] === 1) {
+        const gi = o.greenInsideHsv ?? [bgHsv[0], bgHsv[1] * 0.8, bgHsv[2] * 0.95];
+        [r, g, b] = hsvToRgb(gi[0], gi[1], gi[2]);
+      }
+      if (paperBlur && coverage[i]! > 0) {
+        const pb = paperBlur[i]!;
+        const t = Math.max(0, Math.min(1, (0.97 - pb) / 0.45)) * o.spill!;
+        r = r * (1 - t) + bg[0] * t;
+        g = g * (1 - t) + bg[1] * t;
+        b = b * (1 - t) + bg[2] * t;
+      }
       const a = coverage[i]!;
       const nz = (o.noise ?? 0.012) * 255;
       const n1 = (rand() + rand() + rand() - 1.5) * nz * 1.6;

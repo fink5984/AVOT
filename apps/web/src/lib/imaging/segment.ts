@@ -23,7 +23,30 @@ export type WarningCode =
   | "TOUCHES_FRAME"
   | "AMBIGUOUS_EDGE"
   | "SPARSE_SHAPE"
-  | "MULTIPLE_OBJECTS";
+  | "MULTIPLE_OBJECTS"
+  /** a green area inside the item that may be a real hole or printed colour: kept as it is (not erased) and sent to a person */
+  | "UNCERTAIN_HOLE"
+  /** a stripe of backdrop green is left along the edge of the item */
+  | "GREEN_EDGE"
+  /** something that looks like part of the item (clear foreground colour) is outside the mask */
+  | "MASK_ERASED_PART";
+
+/** Warnings that are quality-control findings about the RESULT (the processed picture is kept, but a person must look at it). */
+export const QC_WARNINGS: readonly WarningCode[] = ["UNCERTAIN_HOLE", "GREEN_EDGE", "MASK_ERASED_PART"];
+
+/**
+ * What was decided about the enclosed areas inside the item:
+ *  - real:       backdrop shows through a hole in the paper: left transparent (white on the white version)
+ *  - uncertain:  looks like backdrop but cannot be told from printed colour (large, or not clearly backdrop): kept, flagged
+ *  - filled:     everything else (illustrations, ink, dark areas, specks): kept as part of the item
+ */
+export interface HoleReport {
+  real: number;
+  uncertain: number;
+  filled: number;
+  /** share of the item's area (before the real holes are removed) that is real hole */
+  realShare: number;
+}
 
 export interface BgModel {
   /** background colour (hue 0..360, saturation / value 0..1) */
@@ -74,7 +97,8 @@ export interface SegmentResult {
   confidence: number;
   warnings: WarningCode[];
   model: BgModel;
-  metrics: { areaFraction: number; borderCoverage: number; touchesFrame: number; bboxFill: number; ambiguity: number };
+  metrics: { areaFraction: number; borderCoverage: number; touchesFrame: number; bboxFill: number; ambiguity: number; greenEdge: number; erasedPart: number };
+  holes: HoleReport;
 }
 
 const clamp = (x: number, lo: number, hi: number) => (x < lo ? lo : x > hi ? hi : x);
@@ -443,6 +467,82 @@ function andNot(a: Uint8Array, b: Uint8Array): Uint8Array {
   return out;
 }
 
+/** A hole larger than this share of the item cannot be told from a printed area by colour alone: it is kept and flagged. */
+const MAX_REAL_HOLE_SHARE = 0.06;
+const REAL_HOLE_BG_SHARE = 0.85;
+const UNCERTAIN_HOLE_BG_SHARE = 0.55;
+
+/**
+ * Enclosed areas of the mask ("holes") - decided one by one instead of filling them all.
+ *
+ * Why: filling every enclosed area was right for a green illustration printed inside a cover, and wrong for the case that
+ * matters most on documents: a REAL hole or a missing piece of paper, through which the green surface shows. Those stayed
+ * green inside a cut-out item.
+ *
+ * A hole is real when (nearly) all of its pixels are clearly backdrop by the strict model (the backdrop's hue and
+ * saturation, brightness within what the lit / shadowed backdrop can be, no texture) and it is not suspiciously large. A
+ * hole that is only partly backdrop-like, or large, is KEPT (nothing is erased on a doubt) and reported as uncertain so a
+ * person looks at it. Small specks and everything that is not backdrop-coloured (ink, dark leather, a different green) are
+ * filled exactly as before. Pure function of the masks, unit tested.
+ */
+export function classifyHoles(mask: Uint8Array, backdropLike: Uint8Array, w: number, h: number, forced?: Uint8Array | null): { mask: Uint8Array; report: HoleReport; uncertainMask: Uint8Array } {
+  const n = w * h;
+  const filled = fillHoles(mask, w, h);
+  const holes = new Uint8Array(n);
+  for (let i = 0; i < n; i++) holes[i] = filled[i] && !mask[i] ? 1 : 0;
+  const comps = labelComponents(holes, w, h);
+  const itemArea = countSet(filled);
+  const out = filled.slice();
+  const uncertainMask = new Uint8Array(n);
+  const report: HoleReport = { real: 0, uncertain: 0, filled: 0, realShare: 0 };
+  if (comps.count === 0) return { mask: out, report, uncertainMask };
+  // per component: pixels, and how many of those that are not on the rim (4-neighbours all in the hole) are backdrop-like
+  const inner = new Int32Array(comps.count + 1);
+  const innerBg = new Int32Array(comps.count + 1);
+  const allBg = new Int32Array(comps.count + 1);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const c = comps.labels[i]!;
+      if (!c) continue;
+      if (backdropLike[i]) allBg[c]!++;
+      const interior = x > 0 && y > 0 && x < w - 1 && y < h - 1 && comps.labels[i - 1] === c && comps.labels[i + 1] === c && comps.labels[i - w] === c && comps.labels[i + w] === c;
+      if (interior) {
+        inner[c]!++;
+        if (backdropLike[i]) innerBg[c]!++;
+      }
+    }
+  }
+  const minArea = Math.max(10, Math.round(0.00004 * n));
+  const decision = new Uint8Array(comps.count + 1); // 0 filled, 1 real, 2 uncertain
+  for (let c = 1; c <= comps.count; c++) {
+    const area = comps.areas[c]!;
+    if (area < minArea) {
+      report.filled++;
+      continue;
+    }
+    // a hole too thin to have an interior is judged by all of its pixels
+    const share = inner[c]! >= 4 ? innerBg[c]! / inner[c]! : allBg[c]! / area;
+    if (share >= REAL_HOLE_BG_SHARE && area <= itemArea * MAX_REAL_HOLE_SHARE) decision[c] = 1;
+    else if (share >= UNCERTAIN_HOLE_BG_SHARE) decision[c] = 2;
+    if (decision[c] === 1) report.real++;
+    else if (decision[c] === 2) report.uncertain++;
+    else report.filled++;
+  }
+  let realArea = 0;
+  for (let i = 0; i < n; i++) {
+    const c = comps.labels[i]!;
+    if (!c) continue;
+    // a person's brush stroke ("keep this") always wins over the automatic decision
+    if (decision[c] === 1 && forced?.[i] !== 2) {
+      out[i] = 0;
+      realArea++;
+    } else if (decision[c] === 2) uncertainMask[i] = 1;
+  }
+  report.realShare = itemArea ? realArea / itemArea : 0;
+  return { mask: out, report, uncertainMask };
+}
+
 /** Runs the segmentation in steps; a caller may yield to its event loop between them (see runAsync). */
 export function* segmentSteps(img: RgbImage, opts: SegmentOptions): Generator<void, SegmentResult, void> {
   const { width: w, height: h } = img;
@@ -497,10 +597,23 @@ export function* segmentSteps(img: RgbImage, opts: SegmentOptions): Generator<vo
   let mask = hysteresis(score, w, h, 0.38, 0.62);
   yield;
 
+  // Closing bridges small gaps in the item - but never over clear backdrop: a narrow tear or a slit between two pieces of
+  // paper shows the green and must stay open (it is part of the real shape of the item).
   const closeR = Math.max(1, Math.round(0.004 * long));
-  mask = erode(dilate(mask, w, h, closeR), w, h, closeR);
+  const closed = erode(dilate(mask, w, h, closeR), w, h, closeR);
+  for (let i = 0; i < n; i++) if (closed[i] && !mask[i] && score[i]! < 0.2) closed[i] = 0;
+  mask = closed;
   yield;
-  mask = fillHoles(mask, w, h);
+  // enclosed areas: real holes stay open, everything else is filled (see classifyHoles)
+  const backdropLike = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const dh = circDist(planes.H[i]!, model.h);
+    // strict: the backdrop's own hue and saturation, a brightness the lit or shadowed backdrop can have, and no texture
+    backdropLike[i] = score[i]! < 0.2 && dh <= model.hueTol * 0.8 && planes.S[i]! >= model.satLow && planes.V[i]! >= 0.08 ? 1 : 0;
+  }
+  const holeResult = classifyHoles(mask, backdropLike, w, h, hasForced ? forced : null);
+  mask = holeResult.mask;
+  const holeReport = holeResult.report;
   if (long >= 160) mask = dilate(erode(mask, w, h, 1), w, h, 1);
   yield;
 
@@ -616,6 +729,34 @@ export function* segmentSteps(img: RgbImage, opts: SegmentOptions): Generator<vo
     if (ambiguity > 0.25) penalty(0.45, "AMBIGUOUS_EDGE");
     else if (ambiguity > 0.12) penalty(0.25, "AMBIGUOUS_EDGE");
   }
+  // ── quality control of the RESULT ──
+  // 1. a stripe of backdrop green along the edge of the item
+  let greenEdge = 0;
+  let erasedPart = 0;
+  if (area > 0) {
+    const rr = Math.max(2, Math.round(0.004 * long));
+    const rim = andNot(mask, erode(mask, w, h, rr));
+    let rimN = 0;
+    let rimGreen = 0;
+    for (let i = 0; i < n; i++) {
+      if (!rim[i] || forced[i]) continue;
+      rimN++;
+      if (backdropLike[i] && score[i]! < 0.12) rimGreen++;
+    }
+    greenEdge = rimN > 40 ? rimGreen / rimN : 0;
+    if (greenEdge > 0.2) penalty(0.15, "GREEN_EDGE");
+    // 2. clear item colour outside the mask that touches it: a piece of the item was left out
+    const lost = new Uint8Array(n);
+    const near = dilate(mask, w, h, Math.max(2, Math.round(0.006 * long)));
+    for (let i = 0; i < n; i++) if (!mask[i] && near[i] && forced[i] !== 1 && score[i]! >= 0.75 && !shadow[i]) lost[i] = 1;
+    const lostComps = labelComponents(lost, w, h);
+    let lostArea = 0;
+    for (let c = 1; c <= lostComps.count; c++) if (lostComps.areas[c]! >= Math.max(24, Math.round(0.0015 * n))) lostArea += lostComps.areas[c]!;
+    erasedPart = lostArea / Math.max(1, area);
+    if (erasedPart > 0.01) penalty(0.2, "MASK_ERASED_PART");
+  }
+  // 3. a green area that may be a hole or printed colour was kept: a person decides
+  if (holeReport.uncertain > 0) penalty(0.1, "UNCERTAIN_HOLE");
   if (!bbox) confidence = 0;
 
   return {
@@ -629,7 +770,8 @@ export function* segmentSteps(img: RgbImage, opts: SegmentOptions): Generator<vo
     confidence: clamp(confidence, 0, 1),
     warnings,
     model,
-    metrics: { areaFraction, borderCoverage: model.coverage, touchesFrame, bboxFill, ambiguity },
+    metrics: { areaFraction, borderCoverage: model.coverage, touchesFrame, bboxFill, ambiguity, greenEdge, erasedPart },
+    holes: holeReport,
   };
 }
 

@@ -10,7 +10,7 @@ import {
   type Rotation,
 } from "@/lib/imaging/settings";
 import { runAsync, type Pixels } from "@/lib/imaging/raster";
-import { segmentSteps, type Bbox, type SegmentResult, type WarningCode } from "@/lib/imaging/segment";
+import { QC_WARNINGS, segmentSteps, type Bbox, type SegmentResult, type WarningCode } from "@/lib/imaging/segment";
 import { alphaBounds, composeOutputSteps, refineAlphaSteps, withMargin } from "@/lib/imaging/compose";
 import { decideDeskew, deskewInfo, skipped, DESKEW_LIMITS, type DeskewDecision, type DeskewInfo } from "@/lib/imaging/deskew";
 
@@ -219,8 +219,11 @@ async function processBookNow(input: Buffer, processing: PhotoProcessing, stage:
   if (!trusted) return rotatedOnly(stage === "full" ? await load(null) : working, seg, "NEEDS_REVIEW");
 
   const bounds = norm(seg.bbox!, seg.width, seg.height);
+  // quality control of the result: the picture is processed and kept, but a finding (an uncertain green area, a green stripe on
+  // the edge, a piece possibly left out) sends it to a person. Never a silent "all good", never a destructive fix on a doubt.
+  const qcFindings = seg.warnings.filter((w) => QC_WARNINGS.includes(w));
   const result = (o: { data: Buffer; mime: BookResult["mime"]; ext: BookResult["ext"] }, w: number, h: number, hasAlpha: boolean, cropped: boolean): BookResult => ({
-    status: "DONE",
+    status: qcFindings.length ? "NEEDS_REVIEW" : "DONE",
     ...o,
     width: w,
     height: h,
