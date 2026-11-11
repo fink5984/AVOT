@@ -38,6 +38,13 @@ export function AiSettingsClient({ initial }: { initial: Screen }) {
   const [rewritePrompt, setRewritePrompt] = useState(s0.rewritePrompt ?? screen.defaults.rewritePrompt);
   const [examples, setExamples] = useState(s0.examples ? JSON.stringify(s0.examples, null, 2) : "");
   const [note, setNote] = useState("");
+  const r0 = screen.effective.research;
+  const [rEnabled, setREnabled] = useState(r0.enabled);
+  const [rSources, setRSources] = useState(String(r0.maxSources));
+  const [rTimeout, setRTimeout] = useState(String(r0.timeoutSeconds));
+  const [rSearches, setRSearches] = useState(String(r0.maxSearches));
+  const [rCost, setRCost] = useState(r0.maxCostUsd === null ? "" : String(r0.maxCostUsd));
+  const [rProvider, setRProvider] = useState<"auto" | "openai" | "gemini">(r0.provider);
 
   const presets = screen.presets[provider];
   const isPreset = presets.includes(model);
@@ -54,6 +61,13 @@ export function AiSettingsClient({ initial }: { initial: Screen }) {
     manuscriptPrompt: orNull(manuscriptPrompt, screen.defaults.manuscriptPrompt),
     rewritePrompt: orNull(rewritePrompt, screen.defaults.rewritePrompt),
     examples: examples.trim() ? JSON.parse(examples) : null,
+    // a value equal to the default is saved as "default" (null), so a later change of the default reaches it
+    researchEnabled: rEnabled === screen.researchDefaults.enabled ? null : rEnabled,
+    researchMaxSources: Number(rSources) === screen.researchDefaults.maxSources ? null : rSources,
+    researchTimeoutSeconds: Number(rTimeout) === screen.researchDefaults.timeoutSeconds ? null : rTimeout,
+    researchMaxSearches: Number(rSearches) === screen.researchDefaults.maxSearches ? null : rSearches,
+    researchMaxCostUsd: rCost.trim() ? rCost.trim() : null,
+    researchProvider: rProvider === screen.researchDefaults.provider ? null : rProvider,
     note: note || null,
   });
 
@@ -68,6 +82,13 @@ export function AiSettingsClient({ initial }: { initial: Screen }) {
     setRewritePrompt(s.rewritePrompt ?? sc.defaults.rewritePrompt);
     setExamples(s.examples ? JSON.stringify(s.examples, null, 2) : "");
     setNote("");
+    const r = sc.effective.research;
+    setREnabled(r.enabled);
+    setRSources(String(r.maxSources));
+    setRTimeout(String(r.timeoutSeconds));
+    setRSearches(String(r.maxSearches));
+    setRCost(r.maxCostUsd === null ? "" : String(r.maxCostUsd));
+    setRProvider(r.provider);
   }
 
   async function save() {
@@ -163,6 +184,44 @@ export function AiSettingsClient({ initial }: { initial: Screen }) {
               </Select>
             )}
           </Field>
+        </div>
+      </Panel>
+
+      <Panel title="מחקר חיצוני באינטרנט">
+        <div className="space-y-4 px-5 py-4">
+          <p className="text-[12.5px] text-ink-2">
+            בכל ניתוח ה-AI מחפש באינטרנט מידע על החיבור, המחבר והמהדורה (מכירות קודמות, בתי מכירות, הספרייה הלאומית, קטלוגים ביבליוגרפיים ומאמרים), ומשתמש בו לכתיבת התיאור. המחקר משתמש בחיפוש המובנה של ספק ה-AI הפעיל: אין שירות נוסף ואין מפתח נוסף, אבל כל חיפוש מחויב בנפרד מהטוקנים (בקירוב: OpenAI כ-$0.01 לחיפוש, Gemini כ-$0.035 לחיפוש; המחירים משתנים, יש לבדוק בעמוד התמחור של הספק). כתובות המקורות נשמרות רק אם כלי החיפוש עצמו החזיר אותן, והמערכת אינה פותחת אותן בשרת. אם החיפוש כבוי, לא מוגדר או נכשל - מתבצע ניתוח רגיל מהתמונות והדבר נרשם בניתוח.
+          </p>
+          <label className="flex min-h-10 cursor-pointer items-center gap-2 text-[13px] font-medium text-ink">
+            <input type="checkbox" className="size-4 accent-[var(--color-ink)]" checked={rEnabled} onChange={(e) => setREnabled(e.target.checked)} />
+            מחקר חיצוני אוטומטי בכל ניתוח
+          </label>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Field label="ספק החיפוש" hint={rProvider === "auto" ? `ספק ה-AI הפעיל (${PROVIDER_LABEL[provider]})` : screen.keys[rProvider] ? "המפתח מוגדר בשרת." : "חסר מפתח API לספק הזה בשרת: המחקר ידולג."}>
+              {(p) => (
+                <Select {...p} value={rProvider} disabled={!rEnabled} onChange={(e) => setRProvider(e.target.value as "auto" | "openai" | "gemini")}>
+                  <option value="auto">אוטומטי (ספק ה-AI הפעיל)</option>
+                  <option value="openai">OpenAI{screen.keys.openai ? "" : " (אין מפתח)"}</option>
+                  <option value="gemini">Gemini{screen.keys.gemini ? "" : " (אין מפתח)"}</option>
+                </Select>
+              )}
+            </Field>
+            <Field label="מספר מרבי של מקורות" hint={`בין ${screen.researchBounds.maxSources[0]} ל-${screen.researchBounds.maxSources[1]}`}>
+              {(p) => <Input {...p} type="number" inputMode="numeric" className="num" min={screen.researchBounds.maxSources[0]} max={screen.researchBounds.maxSources[1]} disabled={!rEnabled} value={rSources} onChange={(e) => setRSources(e.target.value)} />}
+            </Field>
+            <Field label="מספר חיפושים מרבי לניתוח" hint={`בין ${screen.researchBounds.maxSearches[0]} ל-${screen.researchBounds.maxSearches[1]}. מגבלת בקשות וגם מגבלת עלות.`}>
+              {(p) => <Input {...p} type="number" inputMode="numeric" className="num" min={screen.researchBounds.maxSearches[0]} max={screen.researchBounds.maxSearches[1]} disabled={!rEnabled} value={rSearches} onChange={(e) => setRSearches(e.target.value)} />}
+            </Field>
+            <Field label="מגבלת זמן למחקר (שניות)" hint={`בין ${screen.researchBounds.timeoutSeconds[0]} ל-${screen.researchBounds.timeoutSeconds[1]}. כשחורגים - הניתוח ממשיך בלי מחקר.`}>
+              {(p) => <Input {...p} type="number" inputMode="numeric" className="num" min={screen.researchBounds.timeoutSeconds[0]} max={screen.researchBounds.timeoutSeconds[1]} disabled={!rEnabled} value={rTimeout} onChange={(e) => setRTimeout(e.target.value)} />}
+            </Field>
+            <Field label="תקרת עלות חיפוש לניתוח ($, אופציונלי)" hint="ריק = רק מגבלת מספר החיפושים. תקרה נמוכה ממחיר חיפוש אחד מדלגת על המחקר.">
+              {(p) => <Input {...p} type="number" inputMode="decimal" step="0.005" className="num" min="0.001" max="5" disabled={!rEnabled} value={rCost} onChange={(e) => setRCost(e.target.value)} placeholder="ללא" />}
+            </Field>
+          </div>
+          <p className="rounded-md bg-stone-2 px-3 py-2 text-[12.5px] text-ink-2">
+            חוקי המחקר קבועים בקוד ואי אפשר לבטל אותם בטקסט: תוכן מהאינטרנט הוא נתון ולא הוראה, אין עקיפת חסימות או הרשמה, אין המצאת מקורות או קישורים, ומידע על עותק אחר אינו מיוחס לעותק שלנו.
+          </p>
         </div>
       </Panel>
 

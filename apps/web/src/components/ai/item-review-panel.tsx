@@ -95,20 +95,6 @@ const MAX: Record<ReviewField, number> = {
 };
 const CONFIDENCE: Record<string, string> = { high: "ביטחון גבוה", medium: "ביטחון בינוני", low: "ביטחון נמוך" };
 const SOURCE: Record<string, string> = { image: "מהתמונות", photographer_notes: "מהערות המצלם", existing_data: "מהנתונים הקיימים", inference: "הסקה", general_knowledge: "ידע כללי (לא מאומת)" };
-const FINDING: Record<string, string> = {
-  signature: "חתימה",
-  dedication: "הקדשה",
-  stamp: "חותמת",
-  handwritten_note: "רישום בכתב יד",
-  ownership_mark: "סימן בעלות",
-  bookplate: "תווית ספרייה (אקס ליבריס)",
-  censor_mark: "סימן צנזורה",
-  damage: "פגם",
-  special_feature: "פרט מיוחד",
-  other: "אחר",
-};
-const READING: Record<string, string> = { certain: "קריאה ודאית", probable: "קריאה סבירה", uncertain: "קריאה משוערת", illegible: "לא קריא" };
-
 type SaveStatus = "idle" | "dirty" | "saving" | "saved" | "conflict" | "error" | "offline";
 const STATUS_TEXT: Record<SaveStatus, string> = {
   idle: "",
@@ -201,14 +187,8 @@ export function ItemReviewPanel({
   const [showRuns, setShowRuns] = useState(false);
   const [showAllReview, setShowAllReview] = useState(false);
   const [additions, setAdditions] = useState("");
-  /** the values a rewrite replaced, for "ביטול השכתוב" */
-  const [beforeRewrite, setBeforeRewrite] = useState<Partial<ReviewValues> | null>(null);
-  /** the operations of the last targeted rewrite that could not be applied (reported, never guessed) */
-  const [rewriteSkipped, setRewriteSkipped] = useState<{ field: string; reason: string }[]>([]);
   const [picked, setPicked] = useState<string[]>([]);
   const [compare, setCompare] = useState<{ a: string; b: string } | null>(null);
-  /** a name the rewrite proposed: never applied by itself (the item's name is the person's), offered under the field */
-  const [titleProposal, setTitleProposal] = useState<{ title: string; before: string } | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [consignor, setConsignor] = useState<ConsignorLite | null>(serverConsignor);
   /** the pending edits came from an applied AI addition: the history says so */
@@ -422,35 +402,26 @@ export function ItemReviewPanel({
     }
   }
 
-  /** "שכתוב ב-AI": saves pending edits first (the server rewrites from the saved details), then asks for a proposal */
+  /**
+   * "הוספת מידע ב-AI": saves pending edits first, then queues a job on the SERVER. The page may be closed: the server
+   * applies the result (or keeps it as a proposal if somebody edited meanwhile) and every user sees the same state.
+   */
   async function rewrite() {
-    const mode = "patch" as const;
-    if (mode === "patch" && !additions.trim()) {
+    if (!additions.trim()) {
       toast.warning("כתבו את המידע להוספה או את התיקון המבוקש");
       return;
     }
     await flush();
     if (Object.keys(dirty.current).length) {
-      toast.warning("יש שינויים שלא נשמרו. שמרו אותם לפני השכתוב.");
+      toast.warning("יש שינויים שלא נשמרו. שמרו אותם לפני ההוספה.");
       return;
     }
     setBusy("rewrite");
     try {
-      const r = await api<{ fields: Partial<Record<ReviewField, string>>; skipped?: { field: string; reason: string }[] }>(`/api/inventory/${itemId}/ai/rewrite`, { method: "POST", json: { additions, mode } });
-      setRewriteSkipped((r.skipped ?? []).map((x) => ({ field: LABEL[x.field as ReviewField] ?? x.field, reason: x.reason })));
-      // the name is only proposed, like after an analysis; everything else is applied at once
-      if (r.fields.title) setTitleProposal({ title: r.fields.title, before: values.title });
-      const changed = (Object.keys(r.fields) as Exclude<ReviewField, "itemType">[]).filter((f) => f !== "title");
-      if (!changed.length) {
-        toast.info(r.fields.title ? "השכתוב הציע שם חדש לפריט - ההצעה מופיעה מתחת לשם" : "השכתוב לא שינה אף שדה");
-        return;
-      }
-      // applied at once (autosave saves it); the previous values stay here for "ביטול השכתוב"
-      setBeforeRewrite(Object.fromEntries(changed.map((f) => [f, values[f]])) as Partial<ReviewValues>);
-      aiOrigin.current = true;
-      for (const f of changed) change(f, r.fields[f] as ReviewValues[typeof f]);
+      await api(`/api/inventory/${itemId}/ai/rewrite`, { method: "POST", json: { additions, mode: "patch", requestKey: crypto.randomUUID() } });
       setAdditions("");
-      toast.success(`נוספו הפרטים ב-${changed.length} שדות`);
+      toast.info("ההוספה נשלחה לעיבוד ברקע", { detail: "אפשר להמשיך לעבוד או לצאת מהדף. התוצאה תישמר בשרת ותופיע לכל המשתמשים." });
+      router.refresh();
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -458,10 +429,36 @@ export function ItemReviewPanel({
     }
   }
 
-  function undoRewrite() {
-    if (!beforeRewrite) return;
-    for (const [f, v] of Object.entries(beforeRewrite) as [ReviewField, ReviewValues[ReviewField]][]) change(f, v);
-    setBeforeRewrite(null);
+  /** the server puts back the values (and their formatting) the addition replaced, never over a newer edit */
+  async function undoRewrite(runId: string) {
+    setBusy("undo");
+    try {
+      const r = await api<{ fields: string[]; kept: string[] }>(`/api/ai/runs/${runId}/rewrite/undo`, { method: "POST" });
+      toast.success(`ההוספה בוטלה (${r.fields.map((f) => LABEL[f as ReviewField] ?? f).join(", ")})`, r.kept.length ? { detail: `לא בוטלו שדות ששונו מאז: ${r.kept.map((f) => LABEL[f as ReviewField] ?? f).join(", ")}` } : undefined);
+      const newest = await loadNewest();
+      setValues({ ...newest, ...dirty.current });
+      router.refresh();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** a result the server held back because the details changed while the model worked */
+  async function applyProposal(runId: string) {
+    setBusy("proposal");
+    try {
+      const r = await api<{ fields: string[] }>(`/api/ai/runs/${runId}/rewrite/apply`, { method: "POST" });
+      toast.success(`ההצעה הוחלה (${r.fields.map((f) => LABEL[f as ReviewField] ?? f).join(", ")})`);
+      const newest = await loadNewest();
+      setValues({ ...newest, ...dirty.current });
+      router.refresh();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function restore(runId: string) {
@@ -481,6 +478,9 @@ export function ItemReviewPanel({
   }
 
   const latest = ai.latest;
+  const lastRewrite = ai.rewrites[0] ?? null;
+  /** a name the last addition proposed: never applied by itself (the item's name is the person's), offered under the field */
+  const titleProposal = lastRewrite?.status === "COMPLETED" && lastRewrite.titleProposal && !same(lastRewrite.titleProposal, values.title) ? { title: lastRewrite.titleProposal, before: values.title } : null;
   const decisions = (latest?.applied?.decisions ?? {}) as Record<string, { action: string; proposed?: string | null; reason?: string } | undefined>;
   const evidence = (f: ReviewField) => {
     const r = latest?.result;
@@ -592,7 +592,6 @@ export function ItemReviewPanel({
   );
 
   const applied = latest?.applied;
-  const findings = latest?.result?.findings ?? [];
   const approved = reviewStatus === "APPROVED";
   const busyAi = ai.aiStatus === "QUEUED" || ai.aiStatus === "RUNNING";
   const when = (iso: string | null) => (iso ? fmt.dateTime(new Date(iso)) : "");
@@ -648,25 +647,42 @@ export function ItemReviewPanel({
 
   const aiAdditions = canRewrite && canEdit && (
     <div className="space-y-2.5 rounded-md border border-rule bg-stone-2/50 p-3">
-      <Field label="הוספת מידע או תיקון" hint="מה שבדקתם ולא מופיע בפרטים, או מה שצריך לתקן: ייחוס חתימה, מקור העותק, רקע, ממצא מיוחד, שנה או שם. ה-AI יוסיף או יתקן רק את זה, במקום המתאים, בלי לנסח מחדש שדות ופסקאות שלא ביקשתם לשנות. ההוספה חלה מיד ואפשר לבטל.">
+      <Field label="הוספת מידע או תיקון" hint="מה שבדקתם ולא מופיע בפרטים, או מה שצריך לתקן: ייחוס חתימה, מקור העותק, רקע, ממצא מיוחד, שנה או שם. ה-AI יוסיף או יתקן רק את זה, במקום המתאים, בלי לנסח מחדש שדות ופסקאות שלא ביקשתם לשנות, ויישמר את ההדגשות הקיימות. העיבוד רץ בשרת: אפשר לצאת מהדף, וההוספה חלה מיד בסיומה ואפשר לבטל אותה.">
         {(p) => <Textarea {...p} rows={3} maxLength={4000} value={additions} onChange={(e) => setAdditions(e.target.value)} placeholder="למשל: החתימה בשער היא של רבי משה סופר. העותק מספריית בית המדרש בפרשבורג." />}
       </Field>
       <div className="flex flex-wrap items-center gap-3">
         <Button size="sm" variant="primary" icon={<Sparkles />} loading={busy === "rewrite"} disabled={!!busy || busyAi} onClick={() => void rewrite()}>
           הוספת המידע ב-AI
         </Button>
-        {beforeRewrite && (
+        {busyAi && <span className="text-[12px] text-ink-2">פעולת AI פעילה על הספר, אפשר להוסיף מידע בסיומה.</span>}
+        {lastRewrite?.undoable && !busyAi && (
           <span className="text-[12px] text-ink-2">
-            השכתוב הוחל ({Object.keys(beforeRewrite).map((f) => LABEL[f as ReviewField]).join(", ")})
-            <button type="button" className="ms-2 inline-flex min-h-8 items-center font-medium text-info underline" onClick={undoRewrite}>
-              ביטול השכתוב
+            ההוספה האחרונה הוחלה ({lastRewrite.fields.map((f) => LABEL[f as ReviewField] ?? f).join(", ")}
+            {lastRewrite.requestedBy ? ` · ${lastRewrite.requestedBy}` : ""})
+            <button type="button" className="ms-2 inline-flex min-h-8 items-center font-medium text-info underline disabled:opacity-50" disabled={!!busy} onClick={() => void undoRewrite(lastRewrite.id)}>
+              ביטול ההוספה
             </button>
           </span>
         )}
       </div>
-      {rewriteSkipped.length > 0 && (
+      {lastRewrite?.proposalPending && !busyAi && (
+        <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn" role="alert" data-testid="rewrite-conflict">
+          <p>
+            בזמן שה-AI עיבד את ההוספה{lastRewrite.requestedBy ? ` של ${lastRewrite.requestedBy}` : ""}, הפרטים נערכו על ידי משתמש אחר, ולכן התוצאה לא הוחלה אוטומטית ולא דרסה את העריכה החדשה. היא נשמרה כהצעה.
+          </p>
+          <Button size="sm" className="mt-2" loading={busy === "proposal"} disabled={!!busy} onClick={() => void applyProposal(lastRewrite.id)}>
+            החלת ההצעה בצורה בטוחה
+          </Button>
+        </div>
+      )}
+      {lastRewrite?.status === "FAILED" && !busyAi && (
+        <p className="rounded-md bg-danger-soft px-3 py-2 text-[12.5px] text-danger" role="alert">
+          ההוספה האחרונה נכשלה{lastRewrite.requestedBy ? ` (${lastRewrite.requestedBy})` : ""}: {lastRewrite.error ?? "שגיאה לא ידועה"}. הפרטים לא שונו.
+        </p>
+      )}
+      {lastRewrite && lastRewrite.skipped.length > 0 && !busyAi && (
         <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">
-          חלק מהפעולות לא בוצעו כי לא ניתן היה לאמת אותן מול הטקסט הנוכחי: {rewriteSkipped.map((x) => `${x.field} (${x.reason})`).join("; ")}
+          חלק מהפעולות לא בוצעו כי לא ניתן היה לאמת אותן מול הטקסט הנוכחי: {lastRewrite.skipped.map((x) => `${LABEL[x.field as ReviewField] ?? x.field} (${x.reason})`).join("; ")}
         </div>
       )}
     </div>
@@ -959,55 +975,6 @@ export function ItemReviewPanel({
               {(p) => <Textarea {...p} rows={2} maxLength={5000} readOnly={!editable} value={values.internalNotes ?? ""} onChange={(e) => change("internalNotes", e.target.value as ReviewValues["internalNotes"])} onBlur={() => void flush()} className={cn(dirty.current.internalNotes !== undefined && "ring-1 ring-warn/40")} />}
             </Field>
           </FieldGroup>
-
-        {latest?.result && (latest.result.identification.summary || findings.length > 0 || latest.result.catalogHighlight?.status === "found" || latest.images.some((i) => i.status === "skipped")) && (
-          <section className="space-y-2.5 border-t border-rule pt-4 text-[13px]">
-            <h3 className="text-[12px] font-semibold text-muted">מה זוהה בתמונות</h3>
-            {latest.result.identification.summary && <p className="text-ink-2">{latest.result.identification.summary}</p>}
-            {latest.result.catalogHighlight?.status === "found" && latest.result.catalogHighlight.mainFeature && (
-              <div className="rounded-md border border-info/30 bg-info-soft px-3 py-2">
-                <div className="flex flex-wrap items-baseline gap-x-2">
-                  <Sparkles className="size-3.5 self-center text-info" aria-hidden />
-                  <span className="text-[12px] text-muted">המאפיין המרכזי:</span>
-                  <span className="font-medium text-ink">{latest.result.catalogHighlight.mainFeature}</span>
-                  <span className={cn("text-[12px]", latest.result.catalogHighlight.verified ? "text-muted" : "text-warn")}>
-                    {latest.result.catalogHighlight.verified ? "מאומת" : "לא מאומת"}
-                    {latest.result.catalogHighlight.confidence ? ` · ביטחון ${CONFIDENCE[latest.result.catalogHighlight.confidence]?.replace("ביטחון ", "")}` : ""}
-                  </span>
-                </div>
-                {latest.result.catalogHighlight.reason && <div className="text-[12.5px] text-ink-2">{latest.result.catalogHighlight.reason}</div>}
-              </div>
-            )}
-            {latest.result.manuscriptAnalysis?.isManuscript && latest.result.manuscriptAnalysis.unreadable.length > 0 && (
-              <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn">חלקים בכתב היד שלא נקראו היטב: {latest.result.manuscriptAnalysis.unreadable.join("; ")}</div>
-            )}
-            {findings.length > 0 && (
-              <ul className="space-y-1.5">
-                {findings.map((f, i) => (
-                  <li key={i} className="rounded-md bg-stone-2 px-3 py-2">
-                    <div className="flex flex-wrap items-baseline gap-x-2">
-                      <span className="font-medium text-ink">{FINDING[f.kind] ?? f.kind}</span>
-                      <span className={cn("text-[12px]", f.reading === "certain" ? "text-muted" : "text-warn")}>{READING[f.reading]}</span>
-                    </div>
-                    {f.transcription && <div className="mt-0.5 whitespace-pre-line text-ink">&quot;{f.transcription}&quot;</div>}
-                    {f.attribution && (
-                      <div className="mt-0.5 text-[12px] text-ink-2">
-                        ייחוס: {f.attribution}
-                        {f.attributionBasis && <> - {f.attributionBasis}</>}
-                      </div>
-                    )}
-                    {f.significance && <div className="text-[12px] text-ink-2">{f.significance}</div>}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {latest.images.some((i) => i.status === "skipped") && (
-              <p className="text-[12px] text-warn">
-                תמונות שלא נשלחו לניתוח: {latest.images.filter((i) => i.status === "skipped").map((i) => `${t.categoryShort[i.category as keyof typeof t.categoryShort] ?? i.category} (${i.reason})`).join(" · ")}
-              </p>
-            )}
-          </section>
-        )}
 
         </div>
       </Dialog>

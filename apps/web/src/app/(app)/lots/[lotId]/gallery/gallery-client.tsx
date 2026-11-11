@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   DndContext,
@@ -113,6 +113,20 @@ export function Gallery({
     setSelected((s) => new Set([...s].filter((id) => r.assets.some((a) => a.id === id))));
     router.refresh();
   }, [lot.id, router]);
+
+  // "לתמונה" in the research section of the book page: show all photos and open that one in the viewer
+  useEffect(() => {
+    const open = (e: Event) => {
+      const id = (e as CustomEvent<{ assetId?: string }>).detail?.assetId;
+      const at = id ? assets.findIndex((a) => a.id === id) : -1;
+      if (at < 0) return;
+      setTab("ALL");
+      setSelected(new Set());
+      setViewer(at);
+    };
+    window.addEventListener("avot:open-asset", open);
+    return () => window.removeEventListener("avot:open-asset", open);
+  }, [assets]);
 
   const visible = useMemo(() => (tab === "ALL" ? assets : assets.filter((a) => a.category === tab)), [assets, tab]);
   const counts = useMemo(() => Object.fromEntries(PHOTO_CATEGORIES.map((c) => [c, assets.filter((a) => a.category === c).length])), [assets]);

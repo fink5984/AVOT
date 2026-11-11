@@ -128,7 +128,7 @@ export function AiAnalyzeButton({
   }
 
   const label =
-    active ? `ניתוח AI פעיל (${state.aiStatus === "QUEUED" ? "בתור" : "בניתוח"})`
+    active ? `AI בעיבוד (${state.aiStatus === "QUEUED" ? "ממתין בתור" : "בעיבוד"})`
     : state.aiStatus === "FAILED" ? `ניתוח AI נכשל${state.aiError ? `: ${state.aiError}` : ""}${state.hasAiResult ? " - ניתוח חוזר באישור מנהל" : " - לחצו לניסיון חוזר"}`
     : state.hasAiResult ? "נותח ב-AI - ניתוח חוזר באישור מנהל"
     : `ניתוח AI ל-${inventoryNumber}`;

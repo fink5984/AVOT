@@ -127,7 +127,9 @@ describe("main feature, manuscript analysis and settings rules", () => {
   });
 
   it("the prompt: the main-feature and manuscript rules exist, and the code rules are appended to ANY edited text", () => {
-    for (const s of ["catalogHighlight", "התחל בו", "verified = false", "נדיר ביותר"]) expect(DEFAULT_ANALYSIS_PROMPT).toContain(s);
+    for (const s of ["catalogHighlight", "המאפיין החשוב ביותר מופיע בתחילת הכותרת", "5 עד 12 מילים", "עד כ-80 תווים", "המשפט הראשון בתיאור", "verified = false", "נדיר ביותר"]) expect(DEFAULT_ANALYSIS_PROMPT).toContain(s);
+    // the bold mechanism is code: it reaches a prompt a manager edited too
+    for (const s of ["boldPhrases", "העתק מדויק", "אין צבעים"]) expect(CODE_RULES).toContain(s);
     for (const s of ["תמלול לפני פירוש", "autograph_certain", "text_by_author_scribe_unknown", "attributed", "unknown_author", "[לא קריא]"]) expect(DEFAULT_MANUSCRIPT_PROMPT).toContain(s);
     const edited = composeInstructions({ analysis: "טקסט אחר לגמרי", manuscript: "" });
     expect(edited.startsWith("טקסט אחר לגמרי")).toBe(true);

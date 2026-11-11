@@ -19,6 +19,8 @@ import { PhotographerNotes } from "@/components/photographer-notes";
 import { locationLabel } from "@/server/services/location-label";
 import { getAiState } from "@/server/services/ai-analysis";
 import { ItemReviewPanel } from "@/components/ai/item-review-panel";
+import { AiActivity } from "@/components/ai/ai-activity";
+import { AiResearchSection } from "@/components/ai/ai-research-section";
 import { serializeItemFormat } from "@/lib/rich-text";
 
 export async function generateMetadata({ params }: { params: Promise<{ itemId: string }> }) {
@@ -169,6 +171,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
 
       <div className="grid items-start gap-6 px-4 pb-10 lg:px-8 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0 space-y-6">
+        <AiActivity itemId={item.id} initial={{ aiStatus: ai.aiStatus, aiError: ai.aiError, detailsVersion: item.detailsVersion, activity: ai.activity }} currentUserId={user.userId} />
         <Gallery
           lot={{ id: item.id, lotNumber: Number(item.serial), catalogId: item.id, catalogNumber: "INV", title: item.title, name: item.inventoryNumber }}
           initialAssets={assets.map(toAssetDto)}
@@ -222,6 +225,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
           canRewrite={perms.edit && can(user.role, "ai.analyze") && ai.available}
           canApply={can(user.role, "ai.apply")}
         />
+        <AiResearchSection ai={ai} />
         </div>
 
         <div className="space-y-4">
