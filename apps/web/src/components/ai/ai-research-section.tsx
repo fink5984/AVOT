@@ -232,7 +232,7 @@ export function AiResearchSection({ ai }: { ai: AiState }) {
                               </p>
                             )}
                             <p className="mt-1 text-[11.5px] text-muted">
-                              לא אומת בידי אדם · {s.urlCheck === "cited" ? "הכתובת הוחזרה מכלי החיפוש" : "אותר דרך האתר שדווח בחיפוש, הכתובת המדויקת לא אומתה"} · {fmt.dateTime(new Date(s.accessedAt))}
+                              לא אומת בידי אדם · {s.urlCheck === "cited" ? "הכתובת הוחזרה מכלי החיפוש" : s.urlCheck === "host_only" ? "אותר דרך האתר שדווח בחיפוש, הכתובת המדויקת לא אומתה" : "הכתובת לא אומתה: כלי החיפוש לא החזיר תוצאות, והיא נכתבה על ידי המודל. יש לפתוח ולבדוק לפני הסתמכות"} · {fmt.dateTime(new Date(s.accessedAt))}
                             </p>
                           </li>
                         );

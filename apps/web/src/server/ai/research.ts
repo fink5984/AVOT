@@ -16,6 +16,7 @@ import {
   hasSearchableIdentification,
   researchAnswerZ,
   vetSources,
+  coerceResearchAnswer,
   type Identification,
   type ResearchRecord,
   type ResearchSettings,
@@ -131,10 +132,9 @@ export async function runResearch(args: { cfg: AiConfig; settings: ResearchSetti
     });
     let answer: z.infer<typeof researchAnswerZ>;
     try {
-      answer = parseAnswer(lenientJson(res.text), researchAnswerZ);
+      answer = researchAnswerZ.parse(coerceResearchAnswer(JSON.parse(lenientJson(res.text))));
     } catch (err) {
-      if (err instanceof InvalidAnswerError) throw new ProviderError("server", "תשובת המחקר לא הייתה במבנה הנדרש");
-      throw err;
+      throw new ProviderError("server", "תשובת המחקר לא הייתה במבנה הנדרש");
     }
     const { sources, dropped } = vetSources(answer, res.citations, { maxSources: s.maxSources, hostOnly: res.hostOnly, accessedAt });
     const totals: UsageTotals | null = res.usage ? { inputTokens: res.usage.inputTokens, cachedInputTokens: res.usage.cachedInputTokens, outputTokens: res.usage.outputTokens, extraReasoningTokens: res.usage.extraReasoningTokens } : null;

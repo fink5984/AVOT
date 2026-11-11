@@ -55,6 +55,16 @@ test("analysis with research: short headline, bold, sources with links; an addit
   await page.reload();
   await expect(page.getByRole("textbox", { name: "תיאור קטלוגי" }).locator(BOLD)).toHaveText("הקדשה בכתב ידו של המחבר");
 
+  // a manual edit after the AI: typing at the end keeps the AI's bold and is autosaved with it
+  await editor.click();
+  await page.keyboard.press("Control+End");
+  await page.keyboard.type(" הערה ידנית.");
+  await expect(page.getByText("נשמר", { exact: true }).first()).toBeVisible();
+  await page.reload();
+  const afterManual = page.getByRole("textbox", { name: "תיאור קטלוגי" });
+  await expect(afterManual).toContainText("הערה ידנית.");
+  await expect(afterManual.locator(BOLD)).toHaveText("הקדשה בכתב ידו של המחבר");
+
   // a second browser opens the same book
   const other = await browser.newContext({ locale: "he-IL", baseURL: new URL(page.url()).origin });
   const page2 = await other.newPage();
