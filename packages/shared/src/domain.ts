@@ -144,8 +144,13 @@ const plainNumber = (code: string) => (/^\d+$/.test(code) ? String(Number(code))
  * THE way a place is shown to people, everywhere: "מחסן 1 · עמודה 4 · מדף 4". Real names, no codes, no cells.
  * The server and every screen use this one function (the server wraps it for database rows).
  */
-export function formatLocationLabel(parts: { warehouseName: string; zoneName?: string | null; zoneCode: string; shelfCode: string }): string {
-  return [parts.warehouseName, parts.zoneName?.trim() || `עמודה ${plainNumber(parts.zoneCode)}`, `מדף ${plainNumber(parts.shelfCode)}`].join(" · ");
+export function formatLocationLabel(parts: { warehouseName: string; zoneName?: string | null; zoneCode: string; shelfCode: string; shelfName?: string | null }): string {
+  return [parts.warehouseName, parts.zoneName?.trim() || `עמודה ${plainNumber(parts.zoneCode)}`, shelfDisplayName(parts.shelfCode, parts.shelfName)].join(" · ");
+}
+
+/** The name a shelf is shown by: its own display name when it was renamed, else "מדף 4" from its code. The code (barcode) never changes. */
+export function shelfDisplayName(code: string, name?: string | null): string {
+  return name?.trim() || `מדף ${plainNumber(code)}`;
 }
 
 /**

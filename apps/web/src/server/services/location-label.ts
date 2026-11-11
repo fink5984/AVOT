@@ -5,7 +5,7 @@ import { formatLocationLabel } from "@avot/shared";
 export const locationInclude = { shelf: { include: { zone: { include: { warehouse: true } } } } } as const;
 
 export interface LocationWithHierarchy {
-  shelf: { code: string; zone: { code: string; name: string; warehouse: { name: string } } };
+  shelf: { code: string; name?: string | null; zone: { code: string; name: string; warehouse: { name: string } } };
 }
 
 /**
@@ -14,5 +14,5 @@ export interface LocationWithHierarchy {
  */
 export function locationLabel(l: LocationWithHierarchy): string {
   const z = l.shelf.zone;
-  return formatLocationLabel({ warehouseName: z.warehouse.name, zoneName: z.name, zoneCode: z.code, shelfCode: l.shelf.code });
+  return formatLocationLabel({ warehouseName: z.warehouse.name, zoneName: z.name, zoneCode: z.code, shelfCode: l.shelf.code, shelfName: l.shelf.name });
 }

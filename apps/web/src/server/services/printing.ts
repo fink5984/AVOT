@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { formatZoneCode } from "@avot/shared";
+import { formatZoneCode, shelfDisplayName } from "@avot/shared";
 import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { AppError, notFound } from "../errors";
@@ -373,7 +373,7 @@ async function labelsFor(orgId: string, items: PrintItemRef[] | { type: "TEST"; 
         out.push({
           type: "LOCATION",
           code: l.code,
-          shelf: `מדף ${num(l.shelf.code)}`,
+          shelf: shelfDisplayName(l.shelf.code, l.shelf.name),
           path: [z.warehouse.name, z.name || `עמודה ${num(z.code)}`].join(" · "),
         });
       }

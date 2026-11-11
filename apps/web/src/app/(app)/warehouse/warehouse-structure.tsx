@@ -19,6 +19,8 @@ import { cn } from "@/lib/cn";
 export interface ShelfDto {
   id: string;
   code: string;
+  /** display name after a rename; null = the default "מדף {code}" */
+  name: string | null;
   active: boolean;
   books: number;
   locationIds: string[];
@@ -38,6 +40,9 @@ export interface WarehouseDto {
 }
 
 const num = (code: string) => (/^\d+$/.test(code) ? String(Number(code)) : code);
+const shelfName = (s: { code: string; name: string | null }) => s.name?.trim() || `מדף ${num(s.code)}`;
+
+type RenameState = { kind: "warehouse" | "column" | "shelf"; id: string; name: string; /** a shelf only: it has its own name now (so "back to the default" is offered) */ custom?: boolean };
 
 /**
  * Warehouse → column → shelf as a picture: columns side by side, the shelves of each column stacked, each
@@ -51,7 +56,7 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
   const [activeId, setActiveId] = useState(warehouses[0]?.id ?? "");
   const [wizard, setWizard] = useState(false);
   const [shelfId, setShelfId] = useState<string | null>(null);
-  const [rename, setRename] = useState<{ kind: "warehouse" | "column"; id: string; name: string } | null>(null);
+  const [rename, setRename] = useState<RenameState | null>(null);
   const [addShelves, setAddShelves] = useState<ColumnDto | null>(null);
   const [del, setDel] = useState<DeleteTarget | null>(null);
   // "choose shelves to delete" inside one column
@@ -187,7 +192,7 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
               </div>
               <ul className="max-h-[420px] space-y-1 overflow-y-auto p-2">
                 {z.shelves.map((s) => (
-                  <li key={s.id}>
+                  <li key={s.id} className="flex items-stretch gap-1">
                     <button
                       type="button"
                       onClick={() => {
@@ -200,7 +205,7 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
                       }}
                       aria-pressed={picking?.zoneId === z.id ? picking.ids.has(s.id) : undefined}
                       className={cn(
-                        "flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-[13px] ring-1 transition-colors",
+                        "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-[13px] ring-1 transition-colors",
                         picking?.zoneId === z.id && picking.ids.has(s.id)
                           ? "bg-danger-soft text-danger ring-danger/40"
                           : !s.active
@@ -212,12 +217,17 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
                     >
                       <span className="flex items-center gap-1.5">
                         {picking?.zoneId === z.id && <input type="checkbox" readOnly tabIndex={-1} checked={picking.ids.has(s.id)} className="size-3.5 accent-[var(--color-danger)]" aria-hidden />}
-                        <span>
-                          מדף <span className="num font-semibold">{num(s.code)}</span>
+                        <span className="min-w-0 break-words text-start font-semibold" data-testid="shelf-name">
+                          {shelfName(s)}
                         </span>
                       </span>
                       <span className="num text-[12px]">{s.books}</span>
                     </button>
+                    {perms.manage && !picking && (
+                      <IconButton label={`שינוי שם ${shelfName(s)}`} size="sm" onClick={() => setRename({ kind: "shelf", id: s.id, name: shelfName(s), custom: !!s.name })}>
+                        <Pencil />
+                      </IconButton>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -248,7 +258,7 @@ export function WarehouseStructure({ warehouses, perms }: { warehouses: Warehous
           </IconButton>
         </div>
       )}
-      <ShelfPanel shelfId={shelfId} onClose={() => setShelfId(null)} perms={perms} warehouses={warehouses} />
+      <ShelfPanel shelfId={shelfId} onClose={() => setShelfId(null)} perms={perms} warehouses={warehouses} onRename={(r) => { setShelfId(null); setRename(r); }} />
     </section>
   );
 }
@@ -313,36 +323,57 @@ function WizardDialog({ open, onClose }: { open: boolean; onClose: () => void })
   );
 }
 
-function RenameDialog({ state, onClose }: { state: { kind: "warehouse" | "column"; id: string; name: string } | null; onClose: () => void }) {
+function RenameDialog({ state, onClose }: { state: RenameState | null; onClose: () => void }) {
   const router = useRouter();
   const toast = useToast();
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => setName(state?.name ?? ""), [state]);
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setName(state?.name ?? "");
+    setError(null);
+  }, [state]);
+  async function save(next: string | null) {
     if (!state) return;
     setBusy(true);
+    setError(null);
     try {
-      await api(state.kind === "warehouse" ? `/api/warehouse/${state.id}` : `/api/warehouse/columns/${state.id}`, { method: "PATCH", json: { name } });
-      toast.success("השם עודכן", { detail: "קודי המיקומים והברקודים שהודפסו לא השתנו" });
+      if (state.kind === "shelf") await api(`/api/warehouse/shelves/${state.id}`, { method: "PATCH", json: { name: next } });
+      else await api(state.kind === "warehouse" ? `/api/warehouse/${state.id}` : `/api/warehouse/columns/${state.id}`, { method: "PATCH", json: { name: next } });
+      toast.success(state.kind === "shelf" ? "שם המדף עודכן" : "השם עודכן", { detail: state.kind === "shelf" ? "הספרים נשארו על אותו מדף, וקוד המדף והברקוד שהודפס לא השתנו." : "קודי המיקומים והברקודים שהודפסו לא השתנו" });
       onClose();
       router.refresh();
     } catch (err) {
-      toast.error(errorMessage(err));
+      const message = errorMessage(err);
+      setError(message);
+      toast.error(message);
     } finally {
       setBusy(false);
     }
   }
+  const title = state?.kind === "warehouse" ? "שינוי שם מחסן" : state?.kind === "shelf" ? "שינוי שם מדף" : "שינוי שם עמודה";
   return (
-    <Dialog open={!!state} onClose={onClose} title={state?.kind === "warehouse" ? "שינוי שם מחסן" : "שינוי שם עמודה"} width="sm">
-      <form onSubmit={submit} className="space-y-3.5">
-        <Field label="שם">{(p) => <Input {...p} value={name} onChange={(e) => setName(e.target.value)} autoFocus required maxLength={100} />}</Field>
-        <div className="flex gap-2">
-          <Button type="submit" variant="primary" loading={busy} disabled={!name.trim()}>
+    <Dialog open={!!state} onClose={onClose} title={title} description={state?.kind === "shelf" ? "השם משתנה בכל מקום שבו מוצג מיקום הספר. הספרים, ההיסטוריה והברקודים לא משתנים." : undefined} width="sm">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save(name);
+        }}
+        className="space-y-3.5"
+      >
+        <Field label={state?.kind === "shelf" ? "שם המדף" : "שם"} error={error}>
+          {(p) => <Input {...p} value={name} onChange={(e) => setName(e.target.value)} autoFocus required maxLength={state?.kind === "shelf" ? 80 : 100} />}
+        </Field>
+        <div className="flex flex-wrap gap-2">
+          <Button type="submit" variant="primary" loading={busy} disabled={!name.trim() || name.trim() === state?.name}>
             שמירה
           </Button>
           <Button onClick={onClose}>ביטול</Button>
+          {state?.kind === "shelf" && state.custom && (
+            <Button variant="ghost" disabled={busy} onClick={() => void save(null)}>
+              חזרה לשם ברירת המחדל
+            </Button>
+          )}
         </div>
       </form>
     </Dialog>
@@ -392,7 +423,7 @@ interface ShelfData {
 }
 
 /** The books on one shelf, with the shelf's own actions. */
-function ShelfPanel({ shelfId, onClose, perms, warehouses }: { shelfId: string | null; onClose: () => void; perms: { manage: boolean; print: boolean; relocate: boolean }; warehouses: WarehouseDto[] }) {
+function ShelfPanel({ shelfId, onClose, perms, warehouses, onRename }: { shelfId: string | null; onClose: () => void; perms: { manage: boolean; print: boolean; relocate: boolean }; warehouses: WarehouseDto[]; onRename: (s: RenameState) => void }) {
   const router = useRouter();
   const toast = useToast();
   const print = usePrintLabels();
@@ -429,6 +460,11 @@ function ShelfPanel({ shelfId, onClose, perms, warehouses }: { shelfId: string |
               {perms.print && data.shelf.locations.length > 0 && (
                 <Button size="sm" icon={<Printer />} onClick={() => void print(data.shelf.locations.map((l) => ({ type: "LOCATION" as const, id: l.id })), { what: "תווית המדף" })}>
                   הדפסת תווית מדף
+                </Button>
+              )}
+              {perms.manage && shelf && (
+                <Button size="sm" icon={<Pencil />} onClick={() => onRename({ kind: "shelf", id: shelf.id, name: shelfName(shelf), custom: !!shelf.name })}>
+                  שינוי שם המדף
                 </Button>
               )}
               {perms.manage && shelf && (

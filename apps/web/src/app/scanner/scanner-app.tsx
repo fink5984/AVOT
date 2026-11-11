@@ -208,7 +208,7 @@ function Scanner({ user, perms }: { user: { id: string; name: string }; perms: {
   // ── location cache: lets a shelf scan work while offline ──
   const loadLocations = useCallback(async () => {
     try {
-      const r = await api<{ warehouses: { name: string; zones: { id: string; name: string; code: string; shelves: { code: string; locations: { id: string; code: string; active: boolean; aliases: { alias: string }[] }[] }[] }[] }[] }>("/api/warehouse");
+      const r = await api<{ warehouses: { name: string; zones: { id: string; name: string; code: string; shelves: { code: string; name?: string | null; locations: { id: string; code: string; active: boolean; aliases: { alias: string }[] }[] }[] }[] }[] }>("/api/warehouse");
       const map = new Map<string, Loc>();
       const zs: { id: string; name: string }[] = [];
       const plain = (c: string) => (/^\d+$/.test(c) ? String(Number(c)) : c);
@@ -218,7 +218,7 @@ function Scanner({ user, perms }: { user: { id: string; name: string }; perms: {
           for (const s of z.shelves)
             for (const l of s.locations)
               if (l.active) {
-                const loc = { id: l.id, code: l.code, label: [w.name, z.name || `עמודה ${plain(z.code)}`, `מדף ${plain(s.code)}`].join(" · ") };
+                const loc = { id: l.id, code: l.code, label: [w.name, z.name || `עמודה ${plain(z.code)}`, s.name?.trim() || `מדף ${plain(s.code)}`].join(" · ") };
                 map.set(l.code, loc);
                 // printed labels from before shelves lost their cell still scan (also offline)
                 for (const a of l.aliases) map.set(a.alias, loc);

@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 interface Tree {
   id: string;
   name: string;
-  zones: { id: string; name: string; shelves: { id: string; code: string; locations: { id: string; code: string; active: boolean }[] }[] }[];
+  zones: { id: string; name: string; shelves: { id: string; code: string; name?: string | null; locations: { id: string; code: string; active: boolean }[] }[] }[];
 }
 const num = (c: string) => (/^\d+$/.test(c) ? String(Number(c)) : c);
 
@@ -35,7 +35,7 @@ export function ShelfPicker({ onChange, className, excludeShelfIds }: { onChange
   const chosen = s && !excludeShelfIds?.has(s.id) ? s.locations.find((l) => l.active) : undefined;
 
   useEffect(() => {
-    onChange(chosen && w && z && s ? { id: chosen.id, code: chosen.code, label: [w.name, z.name, `מדף ${num(s.code)}`].join(" · ") } : null);
+    onChange(chosen && w && z && s ? { id: chosen.id, code: chosen.code, label: [w.name, z.name, s.name?.trim() || `מדף ${num(s.code)}`].join(" · ") } : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chosen?.id]);
 
@@ -62,7 +62,7 @@ export function ShelfPicker({ onChange, className, excludeShelfIds }: { onChange
         <option value="">מדף…</option>
         {z?.shelves.map((x) => (
           <option key={x.id} value={x.id} disabled={!x.locations.some((l) => l.active) || !!excludeShelfIds?.has(x.id)}>
-            מדף {num(x.code)}
+            {x.name?.trim() || `מדף ${num(x.code)}`}
           </option>
         ))}
       </Select>

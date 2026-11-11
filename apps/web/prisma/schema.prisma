@@ -1189,7 +1189,10 @@ model WarehouseZone {
 model Shelf {
   id        String    @id @default(uuid()) @db.Uuid
   zoneId    String    @db.Uuid
+  /// the identity of the shelf: part of the printed barcode (LOC-W1-C4-04). Never edited.
   code      String
+  /// display name only ("מדף עליון - הלכה"); null = the default "מדף {code}". Unique per column among live shelves (partial index, see the migration).
+  name      String?
   /// e.g. open shelf, closed cabinet, flat-file drawer, safe
   shelfType String?
   notes     String?

@@ -82,7 +82,7 @@ export default async function WarehousePage() {
                 id: z.id,
                 code: z.code,
                 name: z.name,
-                shelves: z.shelves.map((sh) => ({ id: sh.id, code: sh.code, active: sh.locations.some((l) => l.active), books: sh.locations.reduce((n, l) => n + l.itemCount, 0), locationIds: sh.locations.map((l) => l.id) })),
+                shelves: z.shelves.map((sh) => ({ id: sh.id, code: sh.code, name: sh.name, active: sh.locations.some((l) => l.active), books: sh.locations.reduce((n, l) => n + l.itemCount, 0), locationIds: sh.locations.map((l) => l.id) })),
               })),
             }))}
           />

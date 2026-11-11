@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { BOOK_SIZES, formatLocationCode } from "@avot/shared";
+import { BOOK_SIZES, formatLocationCode, shelfDisplayName } from "@avot/shared";
 import { db, type Tx } from "../db";
 import { AppError, notFound } from "../errors";
 import { audit } from "../audit";
@@ -433,6 +433,63 @@ export async function reorderStructure(user: UserPrincipal, input: z.infer<typeo
   await audit(user, { action: "warehouse.reordered", entityType: "warehouse", entityId: input.parentId, data: { kind: input.kind } });
 }
 
+export const shelfRenameSchema = z.object({
+  /** the new display name; empty / null = back to the default "מדף {number}" */
+  name: z
+    .string()
+    .max(80)
+    .nullish()
+    .transform((v) => (v ? v.replace(/\s+/g, " ").trim() : "") || null),
+});
+
+/** the form two names are compared in: case, spacing and quote style do not make a name different */
+const nameKey = (v: string) => v.normalize("NFC").replace(/[\s"'״׳]+/g, " ").trim().toLowerCase();
+
+/**
+ * Renames a shelf: a display name only. The shelf row (id), its location (id, code, barcode, aliases), the books on it,
+ * the movement history, the scanner / picking links all stay exactly as they are - nothing is created or moved. The new
+ * name must differ from the name every OTHER shelf of the same column is shown by (explicit names and the default
+ * "מדף N" of shelves that were not renamed), and a partial unique index repeats that rule for two requests at once.
+ * The previous and the new name, the user and the time are written to the history.
+ */
+export async function renameShelf(user: UserPrincipal, shelfId: string, input: z.infer<typeof shelfRenameSchema>) {
+  const shelf = await db.shelf.findFirst({ where: { id: shelfId, deletedAt: null, zone: { deletedAt: null, warehouse: { organizationId: user.organizationId } } }, include: { zone: { include: { warehouse: true } }, locations: { where: { mergedIntoId: null }, select: { id: true, code: true } } } });
+  if (!shelf) throw notFound("המדף");
+  // the route parses with shelfRenameSchema; a direct caller gets the same cleaning
+  const next = (input.name ?? "").replace(/\s+/g, " ").trim() || null;
+  if (next !== null) {
+    if (next.length < 1 || next.length > 80) throw new AppError("VALIDATION", "שם המדף: עד 80 תווים");
+    // the printed barcode text and the codes are not names a person gives
+    const siblings = await db.shelf.findMany({ where: { zoneId: shelf.zoneId, deletedAt: null, id: { not: shelf.id } }, select: { code: true, name: true } });
+    const clash = siblings.find((s) => nameKey(shelfDisplayName(s.code, s.name)) === nameKey(next));
+    if (clash) throw new AppError("CONFLICT", `בעמודה כבר יש מדף בשם "${shelfDisplayName(clash.code, clash.name)}". בחרו שם אחר.`);
+  }
+  const before = shelfDisplayName(shelf.code, shelf.name);
+  if ((shelf.name ?? null) === next) return { shelf: { id: shelf.id, code: shelf.code, name: shelf.name, displayName: before }, changed: false };
+  let updated;
+  try {
+    updated = await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Shelf" WHERE id = ${shelfId}::uuid FOR UPDATE`;
+      const u = await tx.shelf.update({ where: { id: shelfId }, data: { name: next } });
+      await audit(
+        user,
+        {
+          action: "warehouse.shelf_renamed",
+          entityType: "warehouse",
+          entityId: shelfId,
+          data: { shelfId, locationIds: shelf.locations.map((l) => l.id), locationCodes: shelf.locations.map((l) => l.code), from: before, to: shelfDisplayName(u.code, u.name), previousName: shelf.name, newName: next, column: shelf.zone.name || shelf.zone.code, warehouse: shelf.zone.warehouse.name },
+        },
+        tx,
+      );
+      return u;
+    });
+  } catch (err) {
+    if (err instanceof Error && /Shelf_zone_name_key|Unique constraint/i.test(err.message)) throw new AppError("CONFLICT", "בעמודה כבר יש מדף בשם הזה. בחרו שם אחר.");
+    throw err;
+  }
+  return { shelf: { id: updated.id, code: updated.code, name: updated.name, displayName: shelfDisplayName(updated.code, updated.name) }, changed: true };
+}
+
 /** Disables / re-enables a shelf's location. Disabling is refused while books are on it. */
 export async function setShelfActive(user: UserPrincipal, shelfId: string, active: boolean) {
   const shelf = await db.shelf.findFirst({ where: { id: shelfId, deletedAt: null, zone: { deletedAt: null, warehouse: { organizationId: user.organizationId } } }, include: { locations: { where: { mergedIntoId: null }, select: { id: true } } } });
@@ -459,7 +516,9 @@ export async function shelfContents(orgId: string, shelfId: string) {
     shelf: {
       id: shelf.id,
       code: shelf.code,
-      label: locationLabel({ shelf: { code: shelf.code, zone: { code: shelf.zone.code, name: shelf.zone.name, warehouse: shelf.zone.warehouse } } }),
+      label: locationLabel({ shelf: { code: shelf.code, name: shelf.name, zone: { code: shelf.zone.code, name: shelf.zone.name, warehouse: shelf.zone.warehouse } } }),
+      name: shelf.name,
+      displayName: shelfDisplayName(shelf.code, shelf.name),
       zone: shelf.zone.name,
       warehouse: shelf.zone.warehouse.name,
       locations: shelf.locations.map((l) => ({ id: l.id, active: l.active })),
