@@ -140,11 +140,23 @@ describe.skipIf(!hasDb)("green-screen processing against a real database", () =>
     expect(done.imageState).toBe("DONE");
     expect([done.processedWidth, done.processedHeight]).toEqual([480, 576]);
 
-    const restored = await reprocessAsset(user, assetId, { restore: true });
+    // a person's manual correction is not thrown away by restoring the original without saying so
+    const original = await db.photoAsset.findFirstOrThrow({ where: { id: assetId }, include: { files: true } });
+    await expect(reprocessAsset(user, assetId, { restore: true })).rejects.toThrow(/תיקונים ידניים/);
+    expect((await db.photoAsset.findUniqueOrThrow({ where: { id: assetId } })).processedKey).toBe(done.processedKey);
+    // a reprocess with other settings keeps the correction
+    await reprocessAsset(user, assetId, { settings: { marginPct: 2 } });
+    expect(((await db.photoAsset.findUniqueOrThrow({ where: { id: assetId } })).processing as { edits?: { crop?: unknown } }).edits?.crop).toBeTruthy();
+    expect(original.files.some((f) => f.role === "PRIMARY")).toBe(true);
+    await finalizeProcessedAsset(assetId);
+    const finalDone = await db.photoAsset.findUniqueOrThrow({ where: { id: assetId } });
+
+    const restored = await reprocessAsset(user, assetId, { restore: true, discardEdits: true });
+    expect(await db.auditLog.count({ where: { entityId: assetId, action: "photo.processing_restored" } })).toBe(1);
     expect(restored.imageState).toBe("NONE");
     expect(restored.processedKey).toBeNull();
     expect(restored.thumbKey).toBeTruthy(); // plain derivatives of the original are back
-    expect(await storage().exists(done.processedKey!)).toBe(false);
+    expect(await storage().exists(finalDone.processedKey!)).toBe(false);
   });
 
   it("a stale background job never overwrites a newer manual correction", async () => {
