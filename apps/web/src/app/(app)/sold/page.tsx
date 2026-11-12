@@ -6,7 +6,8 @@ import { listSold } from "@/server/services/sales-views";
 import { PageBody, PageHeader, Stat } from "@/components/ui/misc";
 import { formatUsd } from "@/lib/money";
 import { fmt } from "@/i18n";
-import { SoldTable } from "./sold-table";
+import { parseEnumList, parseIdList } from "@/lib/search-text";
+import { SoldTable, SOLD_STAGES } from "./sold-table";
 
 export const metadata = { title: "נמכרו" };
 
@@ -14,8 +15,13 @@ export const metadata = { title: "נמכרו" };
 export default async function SoldPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const user = await requirePageUser("sales.view");
   const sp = await searchParams;
-  const financial = ["NONE", "UNPAID", "PARTIAL", "PAID"].includes(sp.financial ?? "") ? (sp.financial as "UNPAID") : undefined;
-  const data = await listSold(user, { q: sp.q, catalogId: /^[0-9a-f-]{36}$/i.test(sp.catalogId ?? "") ? sp.catalogId : undefined, houseId: /^[0-9a-f-]{36}$/i.test(sp.houseId ?? "") ? sp.houseId : undefined, financial, stage: sp.stage });
+  const data = await listSold(user, {
+    q: sp.q,
+    catalogIds: parseIdList(sp.catalogId),
+    houseIds: parseIdList(sp.houseId),
+    financials: parseEnumList(sp.financial, ["NONE", "UNPAID", "PARTIAL", "PAID"] as const),
+    stages: parseEnumList(sp.stage, SOLD_STAGES),
+  });
   const [catalogs, houses] = await Promise.all([
     db.catalog.findMany({ where: { organizationId: user.organizationId, ...catalogScope(user) }, select: { id: true, number: true, name: true, auctionHouse: { select: { name: true } } }, orderBy: [{ saleDate: "desc" }, { createdAt: "desc" }], take: 200 }),
     db.auctionHouse.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true }, orderBy: { sortOrder: "asc" } }),
@@ -38,7 +44,6 @@ export default async function SoldPage({ searchParams }: { searchParams: Promise
           truncated={data.truncated}
           catalogs={catalogs.map((c) => ({ id: c.id, label: `${c.auctionHouse.name} · ${c.number} · ${c.name}` }))}
           houses={houses}
-          filters={{ q: sp.q ?? "", catalogId: sp.catalogId ?? "", houseId: sp.houseId ?? "", financial: sp.financial ?? "", stage: sp.stage ?? "" }}
           perms={{
             release: canUser(user, "pick.release"),
             releaseUnpaid: canUser(user, "pick.release.unpaid"),

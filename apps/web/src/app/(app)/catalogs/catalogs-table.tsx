@@ -93,7 +93,7 @@ export function CatalogsTable({ rows, canEdit, canDelete, emptyText }: { rows: C
                       </span>
                     </div>
                   </td>
-                  <td className="num hidden px-3 py-3 text-start text-ink-2 lg:table-cell">{fmt.num(c.photoCount)}</td>
+                  <td className="num hidden px-3 py-3 text-ink-2 lg:table-cell">{fmt.num(c.photoCount)}</td>
                   <td className="hidden px-3 py-3 text-muted lg:table-cell">{c.saleDate ? fmt.date(c.saleDate) : "\u2014"}</td>
                   <td className="hidden px-3 py-3 text-muted xl:table-cell" title={fmt.dateTime(c.updatedAt)}>
                     {fmt.relative(c.updatedAt)}

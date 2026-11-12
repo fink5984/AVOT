@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { PackageCheck, Send } from "lucide-react";
 import type { SoldRow } from "@/server/services/sales-views";
 import { Button } from "@/components/ui/button";
-import { Input, Select } from "@/components/ui/field";
+import { ListControls, ListResults, type FilterGroup } from "@/components/list/list-controls";
 import { EmptyState } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,9 @@ import { fmt } from "@/i18n";
 import { AttachBuyerDialog } from "@/components/sales/legacy-sale-dialog";
 
 const itemHref = (r: SoldRow) => (r.lotId ? `/lots/${r.lotId}` : `/inventory/${r.itemId}`);
+
+/** every value the "stage" filter accepts (the page validates the address against it) */
+export const SOLD_STAGES = ["OPEN", "DONE", "READY", "AWAITING_RELEASE", "AWAITING_PICK", "PICKED", "PACKED", "SHIPPED", "DELIVERED"] as const;
 
 const STAGES = [
   ["AWAITING_RELEASE", "ממתין לשחרור לליקוט"],
@@ -33,14 +36,12 @@ export function SoldTable({
   truncated,
   catalogs,
   houses,
-  filters,
   perms,
 }: {
   rows: SoldRow[];
   truncated: boolean;
   catalogs: { id: string; label: string }[];
   houses: { id: string; name: string }[];
-  filters: { q: string; catalogId: string; houseId: string; financial: string; stage: string };
   perms: { release: boolean; releaseUnpaid: boolean; ship: boolean; customers: boolean; legacy: boolean };
 }) {
   const router = useRouter();
@@ -61,47 +62,43 @@ export function SoldTable({
     }
   }
 
+  const groups: FilterGroup[] = [
+    { kind: "multi", key: "houseId", label: "בית מכירות", section: "קטלוגים ומכירות", options: houses.map((h) => ({ value: h.id, label: h.name })) },
+    { kind: "multi", key: "catalogId", label: "קטלוג", section: "קטלוגים ומכירות", searchable: true, options: catalogs.map((c) => ({ value: c.id, label: c.label })) },
+    {
+      kind: "multi",
+      key: "financial",
+      label: "מצב תשלום",
+      section: "תשלום",
+      options: [
+        { value: "UNPAID", label: "ממתין לתשלום" },
+        { value: "PARTIAL", label: "שולם חלקית" },
+        { value: "PAID", label: "שולם" },
+      ],
+    },
+    {
+      kind: "multi",
+      key: "stage",
+      label: "ליקוט ומשלוח",
+      section: "ליקוט ומשלוח",
+      options: [
+        { value: "OPEN", label: "בטיפול (טרם נשלח)" },
+        { value: "DONE", label: "הטיפול הסתיים (נשלח / נמסר)" },
+        { value: "READY", label: "מוכן למשלוח (משוחרר, טרם במשלוח)" },
+        ...STAGES.map(([value, label]) => ({ value, label })),
+      ],
+    },
+  ];
+
   return (
     <>
-      <form action="/sold" className="mb-4 flex flex-wrap items-center gap-2">
-        <Input type="search" name="q" defaultValue={filters.q} placeholder="חיפוש: שם ספר, מספר לוט, מספר מלאי, לקוח, קטלוג" aria-label="חיפוש" className="min-w-0 flex-1 sm:w-80 sm:flex-none" />
-        <Select name="houseId" defaultValue={filters.houseId} aria-label="בית מכירות" className="w-full sm:w-40">
-          <option value="">כל בתי המכירות</option>
-          {houses.map((h) => (
-            <option key={h.id} value={h.id}>
-              {h.name}
-            </option>
-          ))}
-        </Select>
-        <Select name="catalogId" defaultValue={filters.catalogId} aria-label="קטלוג" className="w-full sm:w-56">
-          <option value="">כל הקטלוגים</option>
-          {catalogs.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.label}
-            </option>
-          ))}
-        </Select>
-        <Select name="financial" defaultValue={filters.financial} aria-label="מצב תשלום" className="w-full sm:w-40">
-          <option value="">כל מצבי התשלום</option>
-          <option value="UNPAID">ממתין לתשלום</option>
-          <option value="PARTIAL">שולם חלקית</option>
-          <option value="PAID">שולם</option>
-        </Select>
-        <Select name="stage" defaultValue={filters.stage} aria-label="מצב ליקוט ומשלוח" className="w-full sm:w-48">
-          <option value="">כל מצבי הליקוט והמשלוח</option>
-          <option value="OPEN">בטיפול (טרם נשלח)</option>
-          <option value="DONE">הטיפול הסתיים (נשלח / נמסר)</option>
-          <option value="READY">מוכן למשלוח (משוחרר, טרם במשלוח)</option>
-          {STAGES.map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </Select>
-        <Button type="submit" variant="primary">
-          סינון
-        </Button>
-      </form>
+      <ListControls
+        className="mb-4"
+        placeholder="חיפוש: שם ספר, מספר לוט, מספר מלאי, לקוח, קטלוג"
+        searchLabel="חיפוש"
+        groups={groups}
+      />
+      <ListResults>
 
       {rows.length === 0 ? (
         <EmptyState title="אין לוטים שנמכרו">לוטים יופיעו כאן אחרי ייבוא תוצאות מכירה (מדף הקטלוג) או רישום מכירה ידני.</EmptyState>
@@ -208,6 +205,7 @@ export function SoldTable({
           </table>
         </div>
       )}
+      </ListResults>
       {truncated && <p className="mt-3 text-[12.5px] text-muted">מוצגות 1,000 השורות הראשונות. יש לצמצם את הסינון.</p>}
       {prep && prep.customerId && <PrepareShipmentDialog open onClose={() => setPrep(null)} customerId={prep.customerId} customerName={prep.customerName ?? ""} focusPurchaseId={prep.purchaseId} />}
       {attach && <AttachBuyerDialog open onClose={() => setAttach(null)} purchaseId={attach.purchaseId} />}

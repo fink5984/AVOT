@@ -1,4 +1,5 @@
 import "server-only";
+import { searchTokens } from "@/lib/search-text";
 import { asJson } from "../json";
 import { z } from "zod";
 import { DEFAULT_REQUIREMENTS, PHOTO_CATEGORIES } from "@avot/shared";
@@ -131,8 +132,8 @@ export async function listCatalogs(user: UserPrincipal, opts: { q?: string; stat
     ...catalogScope(user),
     ...(opts.houseId ? { auctionHouseId: opts.houseId } : {}),
     ...(opts.status && opts.status !== "ALL" ? { status: opts.status as "DRAFT" | "ACTIVE" | "ARCHIVED" } : {}),
-    ...(opts.q
-      ? { OR: [{ name: { contains: opts.q, mode: "insensitive" as const } }, { number: { contains: opts.q } }] }
+    ...(searchTokens(opts.q).length
+      ? { AND: searchTokens(opts.q).map((w) => ({ OR: [{ name: { contains: w, mode: "insensitive" as const } }, { number: { contains: w, mode: "insensitive" as const } }, { description: { contains: w, mode: "insensitive" as const } }] })) }
       : {}),
   };
   const orderBy =

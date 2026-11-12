@@ -5,6 +5,7 @@ import { listCatalogs } from "@/server/services/catalogs";
 import { PageBody, PageHeader } from "@/components/ui/misc";
 import { CatalogsToolbar, NewCatalogButton } from "./catalogs-client";
 import { CatalogsTable } from "./catalogs-table";
+import { ListResults } from "@/components/list/list-controls";
 import { HouseSwitcher } from "@/components/house-switcher";
 
 export interface CatalogsSearch {
@@ -35,7 +36,8 @@ export async function CatalogsView({ user, house, houses, sp }: { user: UserPrin
         }
       />
       <PageBody>
-        <CatalogsToolbar q={sp.q ?? ""} status={status} sort={sp.sort ?? "updated"} />
+        <CatalogsToolbar status={status} />
+        <ListResults className="mt-3">
         <CatalogsTable
           canEdit={canEdit}
           canDelete={can(user.role, "catalog.delete")}
@@ -53,6 +55,7 @@ export async function CatalogsView({ user, house, houses, sp }: { user: UserPrin
             updatedAt: c.updatedAt.toISOString(),
           }))}
         />
+        </ListResults>
       </PageBody>
     </>
   );

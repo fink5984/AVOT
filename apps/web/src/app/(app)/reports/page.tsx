@@ -67,20 +67,20 @@ export default async function ReportsPage() {
                     <td className="px-3 py-3">
                       <Progress value={count(c.id, "COMPLETED")} max={count(c.id)} />
                     </td>
-                    <td className="num px-3 py-2 text-start">{count(c.id)}</td>
-                    <td className="num px-3 py-2 text-start">{count(c.id, "COMPLETED")}</td>
-                    <td className="num px-3 py-2 text-start">
+                    <td className="num px-3 py-2">{count(c.id)}</td>
+                    <td className="num px-3 py-2">{count(c.id, "COMPLETED")}</td>
+                    <td className="num px-3 py-2">
                       <Link href={`/catalogs/${c.id}?status=PENDING_REVIEW`} className="hover:underline">
                         {count(c.id, "PENDING_REVIEW")}
                       </Link>
                     </td>
-                    <td className="num px-3 py-2 text-start">
+                    <td className="num px-3 py-2">
                       <Link href={`/catalogs/${c.id}?status=NEEDS_RESHOOT`} className="hover:underline">
                         {count(c.id, "NEEDS_RESHOOT")}
                       </Link>
                     </td>
-                    <td className="num px-3 py-2 text-start">{count(c.id, "NOT_STARTED")}</td>
-                    <td className="num px-3 py-2 text-start">{fmt.num(photoStats.find((p) => p.catalogId === c.id)?._count._all ?? 0)}</td>
+                    <td className="num px-3 py-2">{count(c.id, "NOT_STARTED")}</td>
+                    <td className="num px-3 py-2">{fmt.num(photoStats.find((p) => p.catalogId === c.id)?._count._all ?? 0)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -102,7 +102,7 @@ export default async function ReportsPage() {
                   .map((u) => (
                     <tr key={u.createdById ?? "none"}>
                       <td className="px-5 py-2.5">{users.find((x) => x.id === u.createdById)?.name ?? "לא משויך (ייבוא/עמדה)"}</td>
-                      <td className="num w-24 px-5 py-2.5 text-start font-semibold">{fmt.num(u._count._all)}</td>
+                      <td className="num w-24 px-5 py-2.5 font-semibold">{fmt.num(u._count._all)}</td>
                     </tr>
                   ))}
               </tbody>
@@ -124,7 +124,7 @@ export default async function ReportsPage() {
                       <td className="px-3 py-2.5">
                         <div className="h-2 rounded-full bg-ink/80" style={{ width: `${Math.max(2, (Number(d.count) / peak) * 100)}%` }} aria-hidden />
                       </td>
-                      <td className="num w-20 px-5 py-2.5 text-start font-semibold">{fmt.num(Number(d.count))}</td>
+                      <td className="num w-20 px-5 py-2.5 font-semibold">{fmt.num(Number(d.count))}</td>
                     </tr>
                   );
                 })}

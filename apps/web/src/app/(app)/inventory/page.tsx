@@ -1,10 +1,13 @@
 import Link from "next/link";
-import { FilterToggle } from "./filter-toggle";
 import { z } from "zod";
 import { requirePageUser } from "@/server/auth/principal";
 import { can } from "@/server/auth/permissions";
-import { ITEM_REVIEW_STATUSES } from "@avot/shared";
-import { INVENTORY_VIEWS, inventoryBreakdown, inventoryCounts, listInventory, type InventoryView } from "@/server/services/inventory";
+import { AI_ANALYSIS_STATUSES, COMMERCIAL_STATUSES, ITEM_REVIEW_STATUSES, ITEM_TYPES, PHOTO_STATUSES, PHYSICAL_STATUSES } from "@avot/shared";
+import { db } from "@/server/db";
+import { catalogScope } from "@/server/auth/houses";
+import { ListControls, ListResults, type FilterGroup } from "@/components/list/list-controls";
+import { parseEnumList, parseIdList } from "@/lib/search-text";
+import { INVENTORY_VIEWS, inventoryBreakdown, inventoryCounts, listInventory, type InventoryFilters, type InventoryView } from "@/server/services/inventory";
 import { listHouses } from "@/server/services/houses";
 import { PageBody, PageHeader } from "@/components/ui/misc";
 import { fmt, t } from "@/i18n";
@@ -32,9 +35,39 @@ interface Search {
   sort?: string;
   page?: string;
   new?: string;
-  /** "מצב פרטי הפריט" */
+  /** "מצב פרטי הפריט" (a single value from an older link) */
   review?: string;
+  // the filter window (several values are comma separated)
+  photo?: string;
+  rev?: string;
+  ai?: string;
+  comm?: string;
+  phys?: string;
+  type?: string;
+  houses?: string;
+  catalogs?: string;
+  assigned?: string;
+  wh?: string;
+  col?: string;
+  noloc?: string;
+  consignors?: string;
+  photos?: string;
+  author?: string;
+  place?: string;
+  year?: string;
+  addedFrom?: string;
+  addedTo?: string;
+  numFrom?: string;
+  numTo?: string;
 }
+
+const OPTS = <T extends string>(values: readonly T[], label: Record<T, string>) => values.map((v) => ({ value: v, label: label[v] }));
+const dayStart = (v?: string) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? new Date(`${v}T00:00:00`) : undefined);
+/** the number people see (10000035) or the short sequence number (35): both mean the same book */
+const serialOf = (v?: string) => {
+  const n = Number((v ?? "").replace(/\D/g, ""));
+  return Number.isFinite(n) && n > 0 ? (n >= 10_000_000 ? n - 10_000_000 : n) : undefined;
+};
 
 /**
  * Central inventory: every physical book, independent of house or catalog.
@@ -49,15 +82,78 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
   const page = Math.max(1, Number(sp.page ?? 1) || 1);
   const sort = (["updated", "number", "title"].includes(sp.sort ?? "") ? sp.sort : "updated") as "updated" | "number" | "title";
   const review = (ITEM_REVIEW_STATUSES as readonly string[]).includes(sp.review ?? "") ? sp.review : undefined;
+  const canCatalogs = can(user.role, "catalog.view");
+  const canConsignors = can(user.role, "consignor.view");
+  // what the filter window offers: only things this user may see (catalogs of their houses, consignors if they may open them)
+  const [catalogRows, consignorRows, warehouseRows] = await Promise.all([
+    canCatalogs ? db.catalog.findMany({ where: { organizationId: user.organizationId, ...catalogScope(user) }, select: { id: true, number: true, name: true, auctionHouse: { select: { name: true } } }, orderBy: [{ saleDate: "desc" }, { createdAt: "desc" }], take: 300 }) : [],
+    canConsignors ? db.consignor.findMany({ where: { organizationId: user.organizationId, archivedAt: null }, select: { id: true, name: true }, orderBy: { name: "asc" }, take: 1000 }) : [],
+    db.warehouse.findMany({ where: { organizationId: user.organizationId }, select: { id: true, name: true, zones: { where: { deletedAt: null }, select: { id: true, code: true, name: true }, orderBy: { sortOrder: "asc" } } }, orderBy: [{ isDefault: "desc" }, { code: "asc" }] }),
+  ]);
+  const filters: InventoryFilters = {
+    photoStatuses: parseEnumList(sp.photo, PHOTO_STATUSES),
+    reviewStatuses: parseEnumList(sp.rev, ITEM_REVIEW_STATUSES),
+    aiStatuses: parseEnumList(sp.ai, AI_ANALYSIS_STATUSES),
+    commercialStatuses: parseEnumList(sp.comm, COMMERCIAL_STATUSES),
+    physicalStatuses: parseEnumList(sp.phys, PHYSICAL_STATUSES),
+    itemTypes: parseEnumList(sp.type, ITEM_TYPES),
+    houseIds: canCatalogs ? parseIdList(sp.houses).filter((id) => houses.some((h) => h.id === id)) : [],
+    catalogIds: canCatalogs ? parseIdList(sp.catalogs).filter((id) => catalogRows.some((c) => c.id === id)) : [],
+    assigned: sp.assigned === "yes" ? true : sp.assigned === "no" ? false : undefined,
+    warehouseIds: parseIdList(sp.wh),
+    zoneIds: parseIdList(sp.col),
+    noLocation: sp.noloc === "1",
+    consignorIds: canConsignors ? parseIdList(sp.consignors) : [],
+    hasPhotos: sp.photos === "yes" ? true : sp.photos === "no" ? false : undefined,
+    author: sp.author,
+    printPlace: sp.place,
+    printYear: sp.year,
+    addedFrom: dayStart(sp.addedFrom),
+    addedTo: (() => {
+      const d = dayStart(sp.addedTo);
+      return d ? new Date(d.getTime() + 24 * 3600 * 1000) : undefined;
+    })(),
+    serialFrom: serialOf(sp.numFrom),
+    serialTo: serialOf(sp.numTo),
+  };
   const [data, counts, bk] = await Promise.all([
-    listInventory(user, { q: sp.q, view, houseId: house?.id, reviewStatus: review, sort, page, pageSize: 100 }),
+    listInventory(user, { q: sp.q, view, houseId: house?.id, reviewStatus: review, filters, sort, page, pageSize: 100 }),
     inventoryCounts(user.organizationId),
     inventoryBreakdown(user.organizationId),
   ]);
+  const groups: FilterGroup[] = [
+    { kind: "multi", key: "photo", label: "צילום", section: "מצב הספר", options: OPTS(PHOTO_STATUSES, t.photoStatus) },
+    { kind: "multi", key: "rev", label: "סקירת פרטים", section: "מצב הספר", options: OPTS(ITEM_REVIEW_STATUSES, t.reviewStatus) },
+    { kind: "multi", key: "ai", label: "ניתוח AI", section: "מצב הספר", options: OPTS(AI_ANALYSIS_STATUSES, t.aiStatus) },
+    { kind: "multi", key: "comm", label: "מצב מסחרי", section: "מצב הספר", options: OPTS(COMMERCIAL_STATUSES, t.commercialStatus) },
+    { kind: "multi", key: "phys", label: "מצב פיזי", section: "מצב הספר", options: OPTS(PHYSICAL_STATUSES, t.physicalStatus) },
+    ...(canCatalogs
+      ? ([
+          ...(houses.length > 1 ? [{ kind: "multi", key: "houses", label: "בית מכירות", section: "קטלוגים ומכירות", options: houses.map((h) => ({ value: h.id, label: h.name })) } as const] : []),
+          { kind: "multi", key: "catalogs", label: "קטלוג", section: "קטלוגים ומכירות", searchable: true, options: catalogRows.map((c) => ({ value: c.id, label: `${c.auctionHouse.name} · ${c.number} · ${c.name}` })) },
+          { kind: "choice", key: "assigned", label: "שיוך לקטלוג", section: "קטלוגים ומכירות", options: [{ value: "yes", label: "משויך לקטלוג" }, { value: "no", label: "לא משויך" }] },
+        ] satisfies FilterGroup[])
+      : []),
+    { kind: "multi", key: "type", label: "סוג פריט", section: "נתוני ספר", options: OPTS(ITEM_TYPES, t.itemType) },
+    { kind: "text", key: "author", label: "מחבר", section: "נתוני ספר", placeholder: "חלק מהשם" },
+    { kind: "text", key: "place", label: "מקום הדפסה", section: "נתוני ספר" },
+    { kind: "text", key: "year", label: "שנת הדפסה", section: "נתוני ספר", placeholder: "כפי שנרשמה, למשל תר״ח או 1848" },
+    ...(warehouseRows.length > 0
+      ? ([
+          ...(warehouseRows.length > 1 ? [{ kind: "multi", key: "wh", label: "מחסן", section: "מחסן", options: warehouseRows.map((w) => ({ value: w.id, label: w.name })) } as const] : []),
+          { kind: "multi", key: "col", label: "עמודה", section: "מחסן", searchable: true, options: warehouseRows.flatMap((w) => w.zones.map((z) => ({ value: z.id, label: warehouseRows.length > 1 ? `${w.name} · ${z.name?.trim() || `עמודה ${z.code}`}` : z.name?.trim() || `עמודה ${z.code}` }))) },
+        ] satisfies FilterGroup[])
+      : []),
+    { kind: "flag", key: "noloc", label: "ללא מיקום במחסן", section: "מחסן" },
+    ...(canConsignors ? ([{ kind: "multi", key: "consignors", label: "מפקיד", section: "נתונים נוספים", searchable: true, options: consignorRows.map((c) => ({ value: c.id, label: c.name })) }] satisfies FilterGroup[]) : []),
+    { kind: "choice", key: "photos", label: "תמונות", section: "נתונים נוספים", options: [{ value: "yes", label: "עם תמונות" }, { value: "no", label: "בלי תמונות" }] },
+    { kind: "range", key: "added", label: "תאריך הוספה", section: "נתונים נוספים", type: "date" },
+    { kind: "range", key: "num", label: "טווח מספרי מלאי", section: "נתונים נוספים", type: "number" },
+  ];
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
   const qs = (patch: Partial<Search>) => {
     const p = new URLSearchParams();
-    const merged = { q: sp.q, view: view === "all" ? undefined : view, house: sp.house, review, sort: sort === "updated" ? undefined : sort, ...patch };
+    const merged = { ...sp, q: sp.q, view: view === "all" ? undefined : view, house: sp.house, review, sort: sort === "updated" ? undefined : sort, new: undefined, ...patch };
     for (const [k, v] of Object.entries(merged)) if (v) p.set(k, String(v));
     const s = p.toString();
     return s ? `/inventory?${s}` : "/inventory";
@@ -100,44 +196,17 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
               </Link>
             ))}
           </nav>
-          <form action="/inventory" className="flex w-full flex-wrap items-center gap-2 sm:ms-auto sm:w-auto">
-            {view !== "all" && <input type="hidden" name="view" value={view} />}
-            <input
-              type="search"
-              name="q"
-              defaultValue={sp.q ?? ""}
-              placeholder="חיפוש: שם, מחבר, מפקיד, מספר ספר, ברקוד"
-              aria-label="חיפוש במלאי"
-              className="h-9 min-w-0 flex-1 basis-40 rounded-md border border-rule-strong bg-paper px-3 text-[13.5px] shadow-card focus:border-ink/40 focus:outline-none focus:ring-[3px] focus:ring-ink/6 sm:w-64"
-            />
-            <button className="h-9 shrink-0 rounded-md bg-ink sm:order-last px-3.5 text-[13px] font-medium text-paper">סינון</button>
-            <FilterToggle activeCount={[sp.house, review, sort !== "updated" ? sort : ""].filter(Boolean).length}>
-            {houses.length > 0 && (
-              <select name="house" defaultValue={sp.house ?? ""} aria-label="בית מכירות" className="h-9 rounded-md border border-rule-strong bg-paper px-2 text-[13px] shadow-card">
-                <option value="">כל בתי המכירות</option>
-                {houses.map((h) => (
-                  <option key={h.slug} value={h.slug}>
-                    משויך ל{h.name}
-                  </option>
-                ))}
-              </select>
-            )}
-            <select name="review" defaultValue={review ?? ""} aria-label="מצב פרטי הפריט" className="h-9 rounded-md border border-rule-strong bg-paper px-2 text-[13px] shadow-card">
-              <option value="">כל מצבי הפרטים</option>
-              {ITEM_REVIEW_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {t.reviewStatus[s]}
-                </option>
-              ))}
-            </select>
-            <select name="sort" defaultValue={sort} aria-label="מיון" className="h-9 rounded-md border border-rule-strong bg-paper px-2 text-[13px] shadow-card">
-              <option value="updated">עודכנו לאחרונה</option>
-              <option value="number">לפי מספר מלאי</option>
-              <option value="title">לפי שם</option>
-            </select>
-            </FilterToggle>
-          </form>
         </div>
+        <ListControls
+          className="mt-3"
+          placeholder="חיפוש: שם ספר, מחבר, מפקיד, מספר מלאי, ברקוד, קטלוג"
+          searchLabel="חיפוש במלאי"
+          groups={groups}
+          resetKeys={["view", "review", "house"]}
+          sort={{ defaultValue: "updated", options: [{ value: "updated", label: "עודכנו לאחרונה" }, { value: "number", label: "לפי מספר מלאי" }, { value: "title", label: "לפי שם" }] }}
+        />
+
+        <ListResults className="mt-1">
 
         <InventoryTable
           rows={data.items}
@@ -157,6 +226,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
           defaultHouse={house?.slug ?? null}
           focusAdd={sp.new === "1"}
         />
+        </ListResults>
 
         {pages > 1 && (
           <nav aria-label="דפים" className="mt-4 flex items-center justify-center gap-2 text-[13px]">

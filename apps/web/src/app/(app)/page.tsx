@@ -222,7 +222,7 @@ export default async function OverviewPage({ searchParams }: { searchParams: Pro
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-[13.5px] font-medium">{i.title}</span>
-                          <span className="num block text-start font-mono text-[12px] text-muted">{i.inventoryNumber}</span>
+                          <span className="num block font-mono text-[12px] text-muted">{i.inventoryNumber}</span>
                         </span>
                         <PhotoStatusBadge status={i.photoStatus} />
                       </Link>

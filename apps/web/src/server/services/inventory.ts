@@ -12,6 +12,7 @@ import { changeStatus } from "./item-status";
 import { locationLabel, locationInclude } from "./location-label";
 import { requireConsignor } from "./consignors";
 import { changedMaterialFields, reviewAfterHumanEdit } from "./item-review";
+import { normalizeQuery, searchTokens } from "@/lib/search-text";
 import { ITEM_FORMAT_FIELDS, formatToStore, itemTextFormatSchema, readTextFormat, type TextFormat } from "@/lib/rich-text";
 
 const optionalText = (max: number) => z.string().trim().max(max).nullish().transform((v) => (v ? v : null));
@@ -312,9 +313,67 @@ export interface InventoryListOptions {
   physicalStatus?: string;
   /** "מצב פרטי הפריט" */
   reviewStatus?: string;
+  /** the list's filter panel: several values inside one group match ANY of them, different groups must ALL match */
+  filters?: InventoryFilters;
   sort?: "updated" | "number" | "title";
   page?: number;
   pageSize?: number;
+}
+
+export interface InventoryFilters {
+  photoStatuses?: string[];
+  reviewStatuses?: string[];
+  aiStatuses?: string[];
+  commercialStatuses?: string[];
+  physicalStatuses?: string[];
+  itemTypes?: string[];
+  houseIds?: string[];
+  catalogIds?: string[];
+  /** true = in an active catalog / lot, false = in none */
+  assigned?: boolean;
+  warehouseIds?: string[];
+  /** "עמודה" (a zone of a warehouse) */
+  zoneIds?: string[];
+  /** no storage location at all */
+  noLocation?: boolean;
+  consignorIds?: string[];
+  /** true = has photos, false = none */
+  hasPhotos?: boolean;
+  author?: string;
+  printPlace?: string;
+  printYear?: string;
+  addedFrom?: Date;
+  addedTo?: Date;
+  serialFrom?: number;
+  serialTo?: number;
+}
+
+/** One search word against the fields people actually look a book up by (not every column: this runs on every keystroke). */
+function tokenMatch(tok: string): Prisma.InventoryItemWhereInput {
+  const asDigits = /^\d+$/.test(tok);
+  const or: Prisma.InventoryItemWhereInput[] = [
+    { title: { contains: tok, mode: "insensitive" } },
+    { subtitle: { contains: tok, mode: "insensitive" } },
+    { author: { contains: tok, mode: "insensitive" } },
+    { publisher: { contains: tok, mode: "insensitive" } },
+    { printPlace: { contains: tok, mode: "insensitive" } },
+    { printYear: { contains: tok, mode: "insensitive" } },
+    { consignor: { name: { contains: tok, mode: "insensitive" } } },
+    // the lot / catalog the book sits in now
+    {
+      lotMemberships: {
+        some: {
+          isActive: true,
+          removedAt: null,
+          lot: { OR: [{ title: { contains: tok, mode: "insensitive" } }, { catalog: { OR: [{ name: { contains: tok, mode: "insensitive" } }, { number: { contains: tok, mode: "insensitive" } }] } }, ...(asDigits && tok.length <= 6 ? [{ lotNumber: Number(tok) }] : [])] },
+        },
+      },
+    },
+  ];
+  if (tok.length >= 3) or.push({ inventoryNumber: { contains: tok.toUpperCase() } });
+  if (tok.length >= 4) or.push({ barcode: { contains: tok, mode: "insensitive" } });
+  if (asDigits && tok.length <= 7) or.push({ serial: BigInt(tok) });
+  return { OR: or };
 }
 
 export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.InventoryItemWhereInput {
@@ -323,24 +382,22 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
   // commercial stock only: a sold book leaves this list at once (it stays in the warehouse until it ships). The physical views
   // (missing, waiting for pick, no location) show what is really in the house, sold or not.
   if (!o.includeSold && o.view !== "missing" && o.view !== "awaiting_pick" && o.view !== "no_location") and.push({ commercialStatus: { not: "SOLD" } });
-  const q = o.q?.trim();
+  const q = normalizeQuery(o.q);
   if (q) {
     const code = classifyCode(q);
     // "35" finds 10000035 (short numbers are sequence numbers); long digit strings match the number / barcode
     const serial = /^\d{1,7}$/.test(q) ? BigInt(q) : undefined;
+    const words = searchTokens(q);
     and.push({
       OR: [
+        // a scanned or typed code, exactly
         ...(code.type === "ITEM" ? [{ inventoryNumber: code.value }, { aliases: { some: { alias: code.value } } }] : []),
         { barcode: q },
         { aliases: { some: { alias: q.toUpperCase() } } },
         ...(/^\d{3,}$/.test(q) ? [{ inventoryNumber: { contains: q } }] : []),
         ...(serial !== undefined ? [{ serial }] : []),
-        { title: { contains: q, mode: "insensitive" } },
-        { subtitle: { contains: q, mode: "insensitive" } },
-        { author: { contains: q, mode: "insensitive" } },
-        { printPlace: { contains: q, mode: "insensitive" } },
-        { printYear: { contains: q, mode: "insensitive" } },
-        { consignor: { name: { contains: q, mode: "insensitive" } } },
+        // words, in any order: every word has to match something in the row
+        { AND: words.map(tokenMatch) },
       ],
     });
   }
@@ -377,7 +434,41 @@ export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.I
   if (o.photoStatus) and.push({ photoStatus: o.photoStatus as never });
   if (o.physicalStatus) and.push({ physicalStatus: o.physicalStatus as never });
   if (o.reviewStatus && (ITEM_REVIEW_STATUSES as readonly string[]).includes(o.reviewStatus)) and.push({ reviewStatus: o.reviewStatus as never });
+  if (o.filters) and.push(...filterClauses(o.filters));
   return { AND: and };
+}
+
+const activeMembership = { isActive: true, removedAt: null } as const;
+
+function filterClauses(f: InventoryFilters): Prisma.InventoryItemWhereInput[] {
+  const and: Prisma.InventoryItemWhereInput[] = [];
+  const has = (a?: unknown[]): a is unknown[] => !!a && a.length > 0;
+  if (has(f.photoStatuses)) and.push({ photoStatus: { in: f.photoStatuses as never[] } });
+  if (has(f.reviewStatuses)) and.push({ reviewStatus: { in: f.reviewStatuses as never[] } });
+  if (has(f.aiStatuses)) and.push({ aiStatus: { in: f.aiStatuses as never[] } });
+  if (has(f.commercialStatuses)) and.push({ commercialStatus: { in: f.commercialStatuses as never[] } });
+  if (has(f.physicalStatuses)) and.push({ physicalStatus: { in: f.physicalStatuses as never[] } });
+  if (has(f.itemTypes)) and.push({ itemType: { in: f.itemTypes as never[] } });
+  if (has(f.consignorIds)) and.push({ consignorId: { in: f.consignorIds as string[] } });
+  if (has(f.houseIds)) and.push({ lotMemberships: { some: { ...activeMembership, lot: { catalog: { auctionHouseId: { in: f.houseIds as string[] } } } } } });
+  if (has(f.catalogIds)) and.push({ lotMemberships: { some: { ...activeMembership, lot: { catalogId: { in: f.catalogIds as string[] } } } } });
+  if (f.assigned === true) and.push({ lotMemberships: { some: activeMembership } });
+  if (f.assigned === false) and.push({ lotMemberships: { none: activeMembership } });
+  // places: "no location" is one more value of the same group (a book is in the chosen warehouse / column OR has no location)
+  const places: Prisma.InventoryItemWhereInput[] = [];
+  if (has(f.warehouseIds)) places.push({ currentLocation: { shelf: { zone: { warehouseId: { in: f.warehouseIds as string[] } } } } });
+  if (has(f.zoneIds)) places.push({ currentLocation: { shelf: { zoneId: { in: f.zoneIds as string[] } } } });
+  if (f.noLocation) places.push({ currentLocationId: null });
+  if (places.length) and.push({ OR: places });
+  if (f.hasPhotos === true) and.push({ photoCount: { gt: 0 } });
+  if (f.hasPhotos === false) and.push({ photoCount: 0 });
+  for (const k of ["author", "printPlace", "printYear"] as const) {
+    const v = normalizeQuery(f[k]);
+    if (v) and.push({ [k]: { contains: v, mode: "insensitive" } });
+  }
+  if (f.addedFrom || f.addedTo) and.push({ createdAt: { ...(f.addedFrom ? { gte: f.addedFrom } : {}), ...(f.addedTo ? { lt: f.addedTo } : {}) } });
+  if (f.serialFrom !== undefined || f.serialTo !== undefined) and.push({ serial: { ...(f.serialFrom !== undefined ? { gte: BigInt(f.serialFrom) } : {}), ...(f.serialTo !== undefined ? { lte: BigInt(f.serialTo) } : {}) } });
+  return and;
 }
 
 export async function listInventory(user: UserPrincipal, o: InventoryListOptions) {

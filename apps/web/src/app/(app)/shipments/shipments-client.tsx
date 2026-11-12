@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { PackageCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input, Select } from "@/components/ui/field";
+import { ListControls, ListResults, type FilterGroup } from "@/components/list/list-controls";
 import { EmptyState, Panel } from "@/components/ui/misc";
 import { FinancialBadge, ShipmentBadge } from "@/components/sales/status";
 import { PrepareShipmentDialog } from "@/components/sales/prepare-shipment-dialog";
@@ -27,17 +27,50 @@ export function ShipmentsClient({
   open,
   catalogs,
   houses,
-  filters,
   canCustomers,
+  canMoney = true,
 }: {
   rows: Row[];
   open: { id: string; number: number; status: string; customer: string; lots: number; books: number }[];
   catalogs: { id: string; label: string }[];
   houses: { id: string; name: string }[];
-  filters: { q: string; houseId: string; catalogId: string; financial: string; stage: string; partial: boolean; ready: boolean };
   canCustomers: boolean;
+  /** payment states are hidden from warehouse staff (they do not see money) */
+  canMoney?: boolean;
 }) {
   const [prep, setPrep] = useState<Row | null>(null);
+  const groups: FilterGroup[] = [
+    { kind: "multi", key: "houseId", label: "בית מכירות", section: "קטלוגים ומכירות", options: houses.map((h) => ({ value: h.id, label: h.name })) },
+    { kind: "multi", key: "catalogId", label: "קטלוג", section: "קטלוגים ומכירות", searchable: true, options: catalogs.map((c) => ({ value: c.id, label: c.label })) },
+    ...(canMoney
+      ? ([
+          {
+            kind: "multi",
+            key: "financial",
+            label: "מצב כספי",
+            section: "תשלום",
+            options: [
+              { value: "UNPAID", label: "ממתין לתשלום" },
+              { value: "PARTIAL", label: "שולם חלקית" },
+              { value: "PAID", label: "שולם" },
+            ],
+          },
+        ] satisfies FilterGroup[])
+      : []),
+    {
+      kind: "multi",
+      key: "stage",
+      label: "מצב ליקוט",
+      section: "ליקוט ומשלוח",
+      options: [
+        { value: "AWAITING_PICK", label: "ממתין לליקוט" },
+        { value: "PICKED", label: "לוקט" },
+        { value: "PACKED", label: "נארז" },
+      ],
+    },
+    { kind: "flag", key: "ready", label: "מוכנים למשלוח", section: "ליקוט ומשלוח" },
+    { kind: "flag", key: "partial", label: "משלוחים חלקיים", section: "ליקוט ומשלוח" },
+  ];
   return (
     <>
       {open.length > 0 && (
@@ -58,48 +91,8 @@ export function ShipmentsClient({
         </Panel>
       )}
 
-      <form action="/shipments" className="mb-4 flex flex-wrap items-center gap-2">
-        <Input type="search" name="q" defaultValue={filters.q} placeholder="חיפוש לקוח" aria-label="חיפוש לקוח" className="min-w-0 flex-1 sm:w-56 sm:flex-none" />
-        <Select name="houseId" defaultValue={filters.houseId} aria-label="בית מכירות" className="w-full sm:w-40">
-          <option value="">כל בתי המכירות</option>
-          {houses.map((h) => (
-            <option key={h.id} value={h.id}>
-              {h.name}
-            </option>
-          ))}
-        </Select>
-        <Select name="catalogId" defaultValue={filters.catalogId} aria-label="קטלוג" className="w-full sm:w-52">
-          <option value="">כל הקטלוגים</option>
-          {catalogs.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.label}
-            </option>
-          ))}
-        </Select>
-        <Select name="financial" defaultValue={filters.financial} aria-label="מצב כספי" className="w-full sm:w-40">
-          <option value="">כל המצבים הכספיים</option>
-          <option value="UNPAID">ממתין לתשלום</option>
-          <option value="PARTIAL">שולם חלקית</option>
-          <option value="PAID">שולם</option>
-        </Select>
-        <Select name="stage" defaultValue={filters.stage} aria-label="מצב ליקוט" className="w-full sm:w-40">
-          <option value="">כל מצבי הליקוט</option>
-          <option value="AWAITING_PICK">ממתין לליקוט</option>
-          <option value="PICKED">לוקט</option>
-          <option value="PACKED">נארז</option>
-        </Select>
-        <label className="flex items-center gap-1.5 text-[13px]">
-          <input type="checkbox" name="ready" value="1" defaultChecked={filters.ready} className="size-4 accent-[var(--color-ink)]" />
-          מוכנים למשלוח
-        </label>
-        <label className="flex items-center gap-1.5 text-[13px]">
-          <input type="checkbox" name="partial" value="1" defaultChecked={filters.partial} className="size-4 accent-[var(--color-ink)]" />
-          משלוחים חלקיים
-        </label>
-        <Button type="submit" variant="primary">
-          סינון
-        </Button>
-      </form>
+      <ListControls className="mb-4" placeholder="חיפוש לקוח: שם, אימייל או טלפון" searchLabel="חיפוש לקוח" groups={groups} />
+      <ListResults>
 
       {rows.length === 0 ? (
         <EmptyState title="אין לקוחות עם פריטים שממתינים למשלוח" />
@@ -137,6 +130,7 @@ export function ShipmentsClient({
           </ul>
         </div>
       )}
+      </ListResults>
       {prep && <PrepareShipmentDialog open onClose={() => setPrep(null)} customerId={prep.customerId} customerName={prep.name} />}
     </>
   );

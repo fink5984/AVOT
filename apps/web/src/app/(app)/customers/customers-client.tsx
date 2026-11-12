@@ -6,7 +6,8 @@ import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
-import { Field, Input, Select } from "@/components/ui/field";
+import { Field, Input } from "@/components/ui/field";
+import { ListControls, ListResults, type FilterGroup } from "@/components/list/list-controls";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
@@ -29,7 +30,21 @@ interface Row {
   waitingLots: number;
 }
 
-export function CustomersClient({ rows, q, filter, canEdit }: { rows: Row[]; q: string; filter: string; canEdit: boolean }) {
+const GROUPS: FilterGroup[] = [
+  {
+    kind: "multi",
+    key: "filter",
+    label: "מצב הלקוח",
+    section: "לקוחות",
+    options: [
+      { value: "owing", label: "עם יתרה פתוחה" },
+      { value: "waiting", label: "עם פריטים הממתינים למשלוח" },
+      { value: "needsDetails", label: "דורשים השלמת פרטים" },
+    ],
+  },
+];
+
+export function CustomersClient({ rows, canEdit }: { rows: Row[]; canEdit: boolean }) {
   const router = useRouter();
   const toast = useToast();
   const [adding, setAdding] = useState(false);
@@ -49,23 +64,14 @@ export function CustomersClient({ rows, q, filter, canEdit }: { rows: Row[]; q: 
 
   return (
     <>
-      <form action="/customers" className="mb-4 flex flex-wrap items-center gap-2">
-        <Input type="search" name="q" defaultValue={q} placeholder="חיפוש: שם, אימייל, טלפון, מספר לקוח או מזהה חיצוני" aria-label="חיפוש לקוחות" className="min-w-0 flex-1 sm:w-96 sm:flex-none" />
-        <Select name="filter" defaultValue={filter} aria-label="סינון" className="w-full sm:w-52">
-          <option value="all">כל הלקוחות</option>
-          <option value="owing">עם יתרה פתוחה</option>
-          <option value="waiting">עם פריטים הממתינים למשלוח</option>
-          <option value="needsDetails">דורשים השלמת פרטים</option>
-        </Select>
-        <Button type="submit" variant="primary">
-          חיפוש
-        </Button>
+      <ListControls className="mb-4" placeholder="חיפוש: שם, אימייל, טלפון, מספר לקוח או מזהה חיצוני" searchLabel="חיפוש לקוחות" groups={GROUPS}>
         {canEdit && (
           <Button icon={<Plus />} onClick={() => setAdding(true)} className="sm:ms-auto">
             לקוח חדש
           </Button>
         )}
-      </form>
+      </ListControls>
+      <ListResults>
 
       {rows.length === 0 ? (
         <EmptyState title="אין לקוחות">לקוחות נוצרים אוטומטית בייבוא תוצאות מכירה, או ידנית מכאן.</EmptyState>
@@ -114,8 +120,8 @@ export function CustomersClient({ rows, q, filter, canEdit }: { rows: Row[]; q: 
                     {c.needsDetails && <Badge tone="warn" className="ms-2">דורש השלמת פרטים</Badge>}
                   </td>
                   <td className="px-3 py-2.5 text-[12.5px]" dir="ltr">
-                    <div className="text-start">{c.email}</div>
-                    <div className="text-start text-muted">{c.phone}</div>
+                    <div>{c.email}</div>
+                    <div className="text-muted">{c.phone}</div>
                   </td>
                   <td className="px-3 py-2.5 text-[12px] text-muted">{c.external.join(", ")}</td>
                   <td className="num px-3 py-2.5">{c.sales}</td>
@@ -129,6 +135,7 @@ export function CustomersClient({ rows, q, filter, canEdit }: { rows: Row[]; q: 
           </table>
         </div>
       )}
+      </ListResults>
 
       <Dialog
         open={adding}

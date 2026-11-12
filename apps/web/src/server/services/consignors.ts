@@ -1,4 +1,5 @@
 import "server-only";
+import { searchTokens } from "@/lib/search-text";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { db, type Tx } from "../db";
@@ -86,10 +87,14 @@ async function idsByPhoneDigits(orgId: string, digits: string): Promise<string[]
 export function consignorWhere(orgId: string, o: { q?: string; includeArchived?: boolean }, phoneIds: string[] = []): Prisma.ConsignorWhereInput {
   const and: Prisma.ConsignorWhereInput[] = [{ organizationId: orgId }];
   if (!o.includeArchived) and.push({ archivedAt: null });
-  const q = o.q?.trim();
-  if (q) {
+  const words = searchTokens(o.q);
+  if (words.length) {
+    // every word matches the name / e-mail / phone (any order); a phone typed with dashes or spaces also finds its digits
     and.push({
-      OR: [{ name: { contains: q, mode: "insensitive" } }, { email: { contains: q, mode: "insensitive" } }, { phone: { contains: q } }, ...(phoneIds.length ? [{ id: { in: phoneIds } }] : [])],
+      OR: [
+        { AND: words.map((w) => ({ OR: [{ name: { contains: w, mode: "insensitive" as const } }, { email: { contains: w, mode: "insensitive" as const } }, { phone: { contains: w } }] })) },
+        ...(phoneIds.length ? [{ id: { in: phoneIds } }] : []),
+      ],
     });
   }
   return { AND: and };

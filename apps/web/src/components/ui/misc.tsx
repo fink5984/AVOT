@@ -145,7 +145,7 @@ export function Stat({
         {tone && <span className={cn("size-1.5 rounded-full", { danger: "bg-danger", info: "bg-info", green: "bg-green", warn: "bg-warn", accent: "bg-accent" }[tone])} aria-hidden />}
         {label}
       </div>
-      <div className="num mt-1.5 text-start text-[26px] font-semibold leading-none tracking-[-0.02em] text-ink">{value}</div>
+      <div className="num mt-1.5 text-[26px] font-semibold leading-none tracking-[-0.02em] text-ink">{value}</div>
       {sub && <div className="mt-1.5 text-[12px] text-muted">{sub}</div>}
     </>
   );

@@ -169,8 +169,8 @@ export function CatalogHeaderActions({
                 <tbody className="divide-y divide-rule">
                   {preview.rows.slice(0, 200).map((r) => (
                     <tr key={r.line}>
-                      <td className="num px-2 py-1 text-start text-muted">{r.line}</td>
-                      <td className="num px-2 py-1 text-start">{r.lotNumber ?? "אוטומטי"}</td>
+                      <td className="num px-2 py-1 text-muted">{r.line}</td>
+                      <td className="num px-2 py-1">{r.lotNumber ?? "אוטומטי"}</td>
                       <td className="px-2 py-1">{r.title}</td>
                       <td className="px-2 py-1 text-muted">{r.author ?? ""}</td>
                     </tr>

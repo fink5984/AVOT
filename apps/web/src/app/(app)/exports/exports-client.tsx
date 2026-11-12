@@ -96,7 +96,7 @@ export function ExportsTable({
                     </div>
                   )}
                 </td>
-                <td className="num px-3 py-2.5 text-start text-muted">{fmt.bytes(j.resultBytes)}</td>
+                <td className="num px-3 py-2.5 text-muted">{fmt.bytes(j.resultBytes)}</td>
                 <td className="px-3 py-2.5 text-muted" title={fmt.dateTime(j.createdAt)}>
                   {fmt.relative(j.createdAt)}
                 </td>

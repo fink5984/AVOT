@@ -1,4 +1,5 @@
 import "server-only";
+import { searchTokens } from "@/lib/search-text";
 import { z } from "zod";
 import { Prisma } from "@prisma/client";
 import { db, type Tx } from "../db";
@@ -550,6 +551,11 @@ export interface ShipmentFilters {
   catalogId?: string;
   financial?: string;
   stage?: string;
+  /** the filter window: several values = any of them */
+  houseIds?: string[];
+  catalogIds?: string[];
+  financials?: string[];
+  stages?: string[];
   onlyPartial?: boolean;
   onlyReady?: boolean;
 }
@@ -559,19 +565,24 @@ export interface ShipmentFilters {
  * Counts keep customers, lots, physical books and shipments apart.
  */
 export async function shippingOverview(user: UserPrincipal, f: ShipmentFilters = {}) {
+  const houseIds = [...(f.houseIds ?? []), ...(f.houseId ? [f.houseId] : [])];
+  const catalogIds = [...(f.catalogIds ?? []), ...(f.catalogId ? [f.catalogId] : [])];
+  const financials = [...(f.financials ?? []), ...(f.financial ? [f.financial] : [])];
+  const stages = [...(f.stages ?? []), ...(f.stage ? [f.stage] : [])];
   const purchases = await db.purchase.findMany({
     where: {
       organizationId: user.organizationId,
       status: "ACTIVE",
-      ...(f.catalogId ? { catalogId: f.catalogId } : {}),
-      ...(f.houseId ? { catalog: { auctionHouseId: f.houseId } } : {}),
-      ...(user.houseIds === null ? {} : { catalog: { auctionHouseId: { in: user.houseIds, ...(f.houseId ? { equals: f.houseId } : {}) } } }),
+      ...(catalogIds.length ? { catalogId: { in: catalogIds } } : {}),
+      ...(houseIds.length ? { catalog: { auctionHouseId: { in: houseIds } } } : {}),
+      // a user of one house only ever sees that house's sales (the chosen houses can only narrow it further)
+      ...(user.houseIds === null ? {} : { catalog: { auctionHouseId: { in: houseIds.length ? houseIds.filter((h) => user.houseIds!.includes(h)) : user.houseIds } } }),
     },
     select: { customerId: true },
     distinct: ["customerId"],
   });
   const customerIds = purchases.map((p) => p.customerId).filter((x): x is string => !!x);
-  const customers = await db.customer.findMany({ where: { id: { in: customerIds }, ...(f.q ? { OR: [{ name: { contains: f.q, mode: "insensitive" } }, { email: { contains: f.q, mode: "insensitive" } }] } : {}) }, orderBy: { name: "asc" }, take: 500 });
+  const customers = await db.customer.findMany({ where: { id: { in: customerIds }, ...(searchTokens(f.q).length ? { AND: searchTokens(f.q).map((w) => ({ OR: [{ name: { contains: w, mode: "insensitive" as const } }, { email: { contains: w, mode: "insensitive" as const } }, { phone: { contains: w } }] })) } : {}) }, orderBy: { name: "asc" }, take: 500 });
   const rows = [];
   const totals = { waitingBooks: 0, waitingLots: 0, customersOpen: 0, packedBooks: 0, shippedBooks: 0, completedShipments: 0, customersBlockedByPayment: 0, partialShipments: 0 };
   // warehouse staff prepare shipments but do not see money: payment states are hidden from them
@@ -583,8 +594,8 @@ export async function shippingOverview(user: UserPrincipal, f: ShipmentFilters =
     const open = await db.shipment.count({ where: { customerId: c.id, status: { in: ["DRAFT", "PACKED"] } } });
     const finStatuses = new Set(waiting.map((b) => b.financial));
     const blockedByPayment = waiting.some((b) => !b.released && b.financial !== "PAID");
-    if (f.financial && !(f.financial === "PAID" ? waiting.length > 0 && !blockedByPayment : finStatuses.has(f.financial))) continue;
-    if (f.stage && !waiting.some((b) => b.stage === f.stage)) continue;
+    if (financials.length && !financials.some((fin) => (fin === "PAID" ? waiting.length > 0 && !blockedByPayment : finStatuses.has(fin as never)))) continue;
+    if (stages.length && !waiting.some((b) => stages.includes(b.stage))) continue;
     if (f.onlyReady && !waiting.some((b) => b.available)) continue;
     const partial = (await db.shipment.count({ where: { customerId: c.id, partialConfirmed: true } })) > 0;
     if (f.onlyPartial && !partial) continue;

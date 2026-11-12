@@ -30,10 +30,8 @@ test("consignors page: create, search by name and phone, edit", async ({ page })
   await expect(page.getByRole("link", { name: `לקוח ${RUN}` })).toBeVisible();
 
   await page.getByRole("searchbox", { name: "חיפוש מפקידים" }).fill("0507776655");
-  await page.getByRole("button", { name: "חיפוש", exact: true }).click();
   await expect(page.getByRole("link", { name: `לקוח ${RUN}` })).toBeVisible();
   await page.getByRole("searchbox", { name: "חיפוש מפקידים" }).fill("zzz-no-such");
-  await page.getByRole("button", { name: "חיפוש", exact: true }).click();
   await expect(page.getByText("לא נמצאו מפקידים")).toBeVisible();
 
   await page.goto(`/consignors?q=${encodeURIComponent(`לקוח ${RUN}`)}`);

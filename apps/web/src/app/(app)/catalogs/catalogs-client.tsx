@@ -6,6 +6,7 @@ import { Archive, ArchiveRestore, Copy, MoreHorizontal, Pencil, Plus, Trash2 } f
 import { Button, IconButton } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Field, Input, Select, Textarea } from "@/components/ui/field";
+import { ListControls } from "@/components/list/list-controls";
 import { Menu } from "@/components/ui/menu";
 import { Tabs } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/toast";
@@ -21,28 +22,23 @@ export interface CatalogFormValue {
   status: "DRAFT" | "ACTIVE" | "ARCHIVED";
 }
 
-export function CatalogsToolbar({ q, status, sort }: { q: string; status: string; sort: string }) {
+export function CatalogsToolbar({ status }: { status: string }) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
-  const [text, setText] = useState(q);
 
   const set = (key: string, value: string) => {
     const p = new URLSearchParams(params.toString());
     if (value) p.set(key, value);
     else p.delete(key);
     p.delete("new");
-    router.replace(`${pathname}?${p.toString()}`);
+    p.delete("page");
+    const qs = p.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
   };
 
-  useEffect(() => {
-    const id = setTimeout(() => text !== q && set("q", text.trim()), 300);
-    return () => clearTimeout(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text]);
-
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-3">
       <Tabs
         variant="pill"
         label="סינון לפי סטטוס"
@@ -56,12 +52,12 @@ export function CatalogsToolbar({ q, status, sort }: { q: string; status: string
           { value: "ALL", label: "הכול" },
         ]}
       />
-      <Input value={text} onChange={(e) => setText(e.target.value)} placeholder="חיפוש לפי שם או מספר" className="w-full sm:ms-auto sm:w-64" aria-label="חיפוש קטלוגים" type="search" />
-      <Select value={sort} onChange={(e) => set("sort", e.target.value)} className="w-full sm:w-48" aria-label="מיון">
-        <option value="updated">מיון: עודכן לאחרונה</option>
-        <option value="number">מיון: מספר קטלוג</option>
-        <option value="name">מיון: שם</option>
-      </Select>
+      <ListControls
+        placeholder="חיפוש לפי שם, מספר או תיאור"
+        searchLabel="חיפוש קטלוגים"
+        resetKeys={["status"]}
+        sort={{ defaultValue: "updated", options: [{ value: "updated", label: "מיון: עודכן לאחרונה" }, { value: "number", label: "מיון: מספר קטלוג" }, { value: "name", label: "מיון: שם" }] }}
+      />
     </div>
   );
 }

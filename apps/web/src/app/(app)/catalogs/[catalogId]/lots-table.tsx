@@ -25,6 +25,7 @@ import { AiAnalyzeButton, type AiButtonState } from "@/components/ai/ai-button";
 import { fmt, t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { matchesTokens } from "@/lib/search-text";
 import { LotPriceCell } from "@/components/lot-price";
 import { RecordSaleDialog } from "@/components/sales/record-sale-dialog";
 
@@ -129,18 +130,10 @@ export function LotsTable({
   const quickRef = useRef<HTMLInputElement>(null);
 
   const visible = useMemo(() => {
-    const needle = q.trim().toLowerCase();
     let rows = lots.filter((l) => (status === "ALL" || l.status === status) && (reviewFilter === "ALL" || l.review.status === reviewFilter) && (!missingPrice || (l.assignmentStatus === "ACTIVE" && l.startingPrice === null)));
-    if (needle) {
-      rows = rows.filter(
-        (l) =>
-          String(l.lotNumber) === needle ||
-          l.title.toLowerCase().includes(needle) ||
-          l.subtitle?.toLowerCase().includes(needle) ||
-          l.author?.toLowerCase().includes(needle) ||
-          l.inventoryNumber.toLowerCase().includes(needle) ||
-          l.books.some((b) => b.inventoryNumber.toLowerCase().includes(needle) || b.title.toLowerCase().includes(needle)),
-      );
+    // every word has to match something in the lot (any order); the lot number and a book's inventory number count too
+    if (q.trim()) {
+      rows = rows.filter((l) => matchesTokens([l.lotNumber, l.title, l.subtitle, l.author, l.inventoryNumber, l.bibliography.author, l.bibliography.printPlace, l.bibliography.printYear, ...l.books.flatMap((b) => [b.inventoryNumber, b.title])], q));
     }
     const sorted = [...rows];
     if (sort === "number") sorted.sort((a, b) => a.lotNumber - b.lotNumber);
@@ -337,7 +330,12 @@ export function LotsTable({
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-0 flex-1 sm:order-3 sm:ms-auto sm:flex-none sm:w-60">
           <Search className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-faint" />
-          <Input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="סינון: מספר, שם או מחבר" className="ps-9" aria-label="סינון פריטים" />
+          <Input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="סינון: מספר, שם או מחבר" className="ps-9 pe-8 [&::-webkit-search-cancel-button]:hidden" aria-label="סינון פריטים" />
+          {q && (
+            <button type="button" onClick={() => setQ("")} aria-label="ניקוי החיפוש" title="ניקוי החיפוש" className="absolute end-1.5 top-1/2 -translate-y-1/2 rounded p-1 text-muted hover:bg-stone hover:text-ink">
+              <X className="size-3.5" />
+            </button>
+          )}
         </div>
         <Button className="sm:hidden" icon={<SlidersHorizontal />} onClick={() => setFiltersOpen((o) => !o)} aria-expanded={filtersOpen}>
           סינון ומיון

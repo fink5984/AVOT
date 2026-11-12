@@ -172,7 +172,7 @@ export function StationsAdmin({ devices, users, serverUrl }: { devices: Station[
                       <div className="text-[11.5px] text-muted">{d.cameraKind === "NONE" || !d.cameraKind ? "לא זוהתה מצלמה" : d.cameraConnected ? "USB מחובר" : "מנותקת"}</div>
                     </td>
                     <td className="px-3 py-2.5 text-muted">{d.controllingUser ?? "—"}</td>
-                    <td className="num px-3 py-2.5 text-start text-muted">{d.agentVersion ?? "—"}</td>
+                    <td className="num px-3 py-2.5 text-muted">{d.agentVersion ?? "—"}</td>
                     <td className="px-3 py-2.5">
                       <div className="max-w-48 truncate font-mono text-[11px] text-muted" dir="ltr" title={d.storagePath ?? undefined}>
                         {d.storagePath ?? "—"}

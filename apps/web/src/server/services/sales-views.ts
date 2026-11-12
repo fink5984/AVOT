@@ -1,4 +1,5 @@
 import "server-only";
+import { searchTokens } from "@/lib/search-text";
 import { Prisma } from "@prisma/client";
 import { db } from "../db";
 import { notFound } from "../errors";
@@ -19,6 +20,11 @@ export interface SoldFilters {
   q?: string;
   houseId?: string;
   catalogId?: string;
+  /** the filter window: several values = any of them */
+  houseIds?: string[];
+  catalogIds?: string[];
+  financials?: string[];
+  stages?: string[];
   customerId?: string;
   financial?: FinancialStatus;
   /** AWAITING_RELEASE | AWAITING_PICK | PICKED | PACKED | SHIPPED | DELIVERED | READY (released, not yet in a shipment) | OPEN (still being handled) | DONE (left the warehouse) */
@@ -63,35 +69,37 @@ export interface SoldRow {
 const bookSelect = { id: true, inventoryNumber: true, title: true, physicalStatus: true, primaryAssetId: true, currentLocation: { include: locationInclude } } as const;
 
 export async function listSold(user: UserPrincipal, f: SoldFilters = {}) {
-  const q = f.q?.trim();
-  const asNumber = q && /^\d+$/.test(q) ? Number(q) : undefined;
-  const catalogOnly = !!(f.houseId || f.catalogId);
-  const bookMatch: Prisma.InventoryItemWhereInput | undefined = q ? { OR: [{ inventoryNumber: { contains: q.toUpperCase() } }, { title: { contains: q, mode: "insensitive" } }] } : undefined;
+  const words = searchTokens(f.q);
+  const houseIds = [...(f.houseIds ?? []), ...(f.houseId ? [f.houseId] : [])];
+  const catalogIds = [...(f.catalogIds ?? []), ...(f.catalogId ? [f.catalogId] : [])];
+  const financials = [...(f.financials ?? []), ...(f.financial ? [f.financial] : [])];
+  const stages = [...(f.stages ?? []), ...(f.stage ? [f.stage] : [])];
+  const catalogOnly = houseIds.length > 0 || catalogIds.length > 0;
+  // one search word against everything a sale is looked up by; every word has to match something (any order)
+  const wordMatch = (w: string): Prisma.PurchaseWhereInput => {
+    const asNumber = /^\d{1,9}$/.test(w) ? Number(w) : undefined;
+    const bookMatch: Prisma.InventoryItemWhereInput = { OR: [{ inventoryNumber: { contains: w.toUpperCase() } }, { title: { contains: w, mode: "insensitive" } }, { author: { contains: w, mode: "insensitive" } }] };
+    return {
+      OR: [
+        { lot: { title: { contains: w, mode: "insensitive" } } },
+        { customer: { name: { contains: w, mode: "insensitive" } } },
+        { customer: { email: { contains: w, mode: "insensitive" } } },
+        { catalog: { OR: [{ number: { contains: w, mode: "insensitive" } }, { name: { contains: w, mode: "insensitive" } }] } },
+        { lot: { members: { some: { removedAt: null, item: bookMatch } } } },
+        { item: bookMatch },
+        ...(asNumber !== undefined ? [{ lot: { lotNumber: asNumber } }, { customer: { number: asNumber } }] : []),
+      ],
+    };
+  };
   const purchases = await db.purchase.findMany({
     where: {
       organizationId: user.organizationId,
       status: "ACTIVE",
       // a legacy sale has no catalog, so no auction house: it is visible to everyone who may see sales
-      ...(catalogOnly ? { catalog: { ...catalogScope(user), ...(f.houseId ? { auctionHouseId: f.houseId } : {}) } } : user.houseIds === null ? {} : { OR: [{ catalogId: null }, { catalog: catalogScope(user) }] }),
-      ...(f.catalogId ? { catalogId: f.catalogId } : {}),
+      ...(catalogOnly ? { catalog: { ...catalogScope(user), ...(houseIds.length ? { auctionHouseId: { in: houseIds } } : {}) } } : user.houseIds === null ? {} : { OR: [{ catalogId: null }, { catalog: catalogScope(user) }] }),
+      ...(catalogIds.length ? { catalogId: { in: catalogIds } } : {}),
       ...(f.customerId ? { customerId: f.customerId } : {}),
-      ...(q
-        ? {
-            AND: [
-              {
-                OR: [
-                  { lot: { title: { contains: q, mode: "insensitive" } } },
-                  { customer: { name: { contains: q, mode: "insensitive" } } },
-                  { customer: { email: { contains: q, mode: "insensitive" } } },
-                  { catalog: { OR: [{ number: { contains: q, mode: "insensitive" } }, { name: { contains: q, mode: "insensitive" } }] } },
-                  { lot: { members: { some: { removedAt: null, item: bookMatch } } } },
-                  { item: bookMatch },
-                  ...(asNumber !== undefined ? [{ lot: { lotNumber: asNumber } }, { customer: { number: asNumber } }] : []),
-                ],
-              },
-            ],
-          }
-        : {}),
+      ...(words.length ? { AND: words.map(wordMatch) } : {}),
     },
     include: {
       lot: { select: { id: true, lotNumber: true, title: true, primaryAssetId: true, startingPrice: true } },
@@ -156,16 +164,17 @@ export async function listSold(user: UserPrincipal, f: SoldFilters = {}) {
       shipmentNumber: ship?.number ?? null,
     };
   });
-  if (f.financial) rows = rows.filter((r) => r.financial === f.financial);
-  if (f.stage) {
-    rows = rows.filter((r) => {
-      if (f.stage === "AWAITING_RELEASE") return !r.released && r.stage === "IN_WAREHOUSE";
-      if (f.stage === "READY") return r.released && !r.shipmentId && ["AWAITING_PICK", "PICKED", "PACKED", "IN_WAREHOUSE"].includes(r.stage);
+  if (financials.length) rows = rows.filter((r) => financials.includes(r.financial));
+  if (stages.length) {
+    const inStage = (r: SoldRow, st: string) => {
+      if (st === "AWAITING_RELEASE") return !r.released && r.stage === "IN_WAREHOUSE";
+      if (st === "READY") return r.released && !r.shipmentId && ["AWAITING_PICK", "PICKED", "PACKED", "IN_WAREHOUSE"].includes(r.stage);
       // still being handled = not shipped / delivered yet; done = left the warehouse
-      if (f.stage === "OPEN") return r.stage !== "SHIPPED" && r.stage !== "DELIVERED";
-      if (f.stage === "DONE") return r.stage === "SHIPPED" || r.stage === "DELIVERED";
-      return r.stage === f.stage;
-    });
+      if (st === "OPEN") return r.stage !== "SHIPPED" && r.stage !== "DELIVERED";
+      if (st === "DONE") return r.stage === "SHIPPED" || r.stage === "DELIVERED";
+      return r.stage === st;
+    };
+    rows = rows.filter((r) => stages.some((st) => inStage(r, st)));
   }
   const take = f.take ?? 1000;
   const priced = rows.filter((r) => r.hammerPrice !== null);
@@ -186,25 +195,28 @@ export async function listSold(user: UserPrincipal, f: SoldFilters = {}) {
 
 /* ───────────────────────── customers ───────────────────────── */
 
-export async function listCustomers(user: UserPrincipal, opts: { q?: string; filter?: "all" | "owing" | "waiting" | "needsDetails"; take?: number } = {}) {
-  const q = opts.q?.trim();
-  const asNumber = q && /^\d+$/.test(q) ? Number(q) : undefined;
+export async function listCustomers(user: UserPrincipal, opts: { q?: string; filter?: "all" | "owing" | "waiting" | "needsDetails"; /** several states: any of them */ filters?: ("owing" | "waiting" | "needsDetails")[]; take?: number } = {}) {
+  const states = new Set([...(opts.filters ?? []), ...(opts.filter && opts.filter !== "all" ? [opts.filter] : [])]);
+  const words = searchTokens(opts.q);
+  const wordMatch = (w: string): Prisma.CustomerWhereInput => {
+    const asNumber = /^\d{1,9}$/.test(w) ? Number(w) : undefined;
+    return {
+      OR: [
+        { name: { contains: w, mode: "insensitive" } },
+        { email: { contains: w, mode: "insensitive" } },
+        { phone: { contains: w } },
+        { identities: { some: { externalId: { contains: w } } } },
+        ...(asNumber !== undefined ? [{ number: asNumber }] : []),
+      ],
+    };
+  };
   const customers = await db.customer.findMany({
     where: {
       organizationId: user.organizationId,
       status: "ACTIVE",
-      ...(opts.filter === "needsDetails" ? { needsDetails: true } : {}),
-      ...(q
-        ? {
-            OR: [
-              { name: { contains: q, mode: "insensitive" } },
-              { email: { contains: q, mode: "insensitive" } },
-              { phone: { contains: q } },
-              { identities: { some: { externalId: { contains: q } } } },
-              ...(asNumber !== undefined ? [{ number: asNumber }] : []),
-            ],
-          }
-        : {}),
+      // "needs details" is a stored flag, the other two are computed below: with several states chosen a customer may match any of them
+      ...(states.has("needsDetails") && states.size === 1 ? { needsDetails: true } : {}),
+      ...(words.length ? { AND: words.map(wordMatch) } : {}),
     },
     include: { identities: { select: { system: true, kind: true, externalId: true, context: true } } },
     orderBy: { name: "asc" },
@@ -245,7 +257,7 @@ export async function listCustomers(user: UserPrincipal, opts: { q?: string; fil
       waitingLots,
     };
   });
-  const filtered = rows.filter((r) => (opts.filter === "owing" ? Number(r.open) > 0 : opts.filter === "waiting" ? r.waitingLots > 0 : true));
+  const filtered = rows.filter((r) => states.size === 0 || (states.has("owing") && Number(r.open) > 0) || (states.has("waiting") && r.waitingLots > 0) || (states.has("needsDetails") && r.needsDetails));
   return filtered;
 }
 

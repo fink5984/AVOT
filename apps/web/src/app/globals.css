@@ -81,6 +81,20 @@
     direction: ltr;
     unicode-bidi: isolate;
   }
+  /* A block-level number (table cell, stat value) is laid out left-to-right, which by itself flips its "start" to the left
+     while the Hebrew header above it starts on the right. The whole application is right-to-left, so these blocks start on
+     the right like their header; an explicit text-center / text-end on the cell still wins (utilities come later). */
+  td.num,
+  th.num,
+  div.num,
+  p.num,
+  dd.num,
+  dt.num,
+  li.num,
+  td[dir="ltr"],
+  th[dir="ltr"] {
+    text-align: right;
+  }
   input,
   textarea,
   select,
@@ -174,6 +188,14 @@
 @media print {
   body {
     background: white;
+  }
+  /* the desktop frame has a fixed height with an inner scroll area: on paper everything flows */
+  .app-frame,
+  .app-card,
+  [data-app-scroll] {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
   }
   .no-print {
     display: none !important;
