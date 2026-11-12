@@ -23,7 +23,7 @@ export default async function ConsignorCardPage({ params, searchParams }: { para
   const consignor = await getConsignor(user, consignorId).catch((e) => (e instanceof AppError && e.code === "NOT_FOUND" ? null : Promise.reject(e)));
   if (!consignor) notFound();
   const page = Math.max(1, Number((await searchParams).page ?? 1) || 1);
-  const books = await listInventory(user, { consignorId, sort: "number", page, pageSize: PAGE_SIZE });
+  const books = await listInventory(user, { consignorId, includeSold: true, sort: "number", page, pageSize: PAGE_SIZE });
   const pages = Math.max(1, Math.ceil(books.total / PAGE_SIZE));
   const link = (p: number) => `/consignors/${consignorId}${p > 1 ? `?page=${p}` : ""}`;
 

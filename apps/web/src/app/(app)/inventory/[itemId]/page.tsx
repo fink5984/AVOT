@@ -20,6 +20,7 @@ import { locationLabel } from "@/server/services/location-label";
 import { getAiState } from "@/server/services/ai-analysis";
 import { ItemReviewPanel } from "@/components/ai/item-review-panel";
 import { SalePanel } from "@/components/sales/sale-panel";
+import { legacySaleBlockReason } from "@/server/services/legacy-sales";
 import { AiActivity } from "@/components/ai/ai-activity";
 import { AiResearchSection } from "@/components/ai/ai-research-section";
 import { serializeItemFormat } from "@/lib/rich-text";
@@ -163,8 +164,9 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
                 captureHref: `/capture/${item.id}${category ? `?category=${category}` : ""}`,
                 ai: { aiStatus: item.aiStatus, hasAiResult: item.aiCompletedAt !== null, aiError: item.aiError },
                 approverEmail: can(user.role, "ai.reanalyze.approve") ? user.email : undefined,
+                legacyBlock: can(user.role, "sale.legacy") ? await legacySaleBlockReason(db, user.organizationId, item.id) : null,
               }}
-              perms={{ ...perms, relocate: perms.move, fulfil: can(user.role, "pick.fulfil"), delete: can(user.role, "inventory.delete"), ai: can(user.role, "ai.analyze") }}
+              perms={{ ...perms, relocate: perms.move, fulfil: can(user.role, "pick.fulfil"), delete: can(user.role, "inventory.delete"), ai: can(user.role, "ai.analyze"), legacy: can(user.role, "sale.legacy") }}
             />
           </>
         }

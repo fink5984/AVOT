@@ -4,7 +4,7 @@ import { z } from "zod";
 import { requirePageUser } from "@/server/auth/principal";
 import { can } from "@/server/auth/permissions";
 import { ITEM_REVIEW_STATUSES } from "@avot/shared";
-import { INVENTORY_VIEWS, inventoryCounts, listInventory, type InventoryView } from "@/server/services/inventory";
+import { INVENTORY_VIEWS, inventoryBreakdown, inventoryCounts, listInventory, type InventoryView } from "@/server/services/inventory";
 import { listHouses } from "@/server/services/houses";
 import { PageBody, PageHeader } from "@/components/ui/misc";
 import { fmt, t } from "@/i18n";
@@ -49,9 +49,10 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
   const page = Math.max(1, Number(sp.page ?? 1) || 1);
   const sort = (["updated", "number", "title"].includes(sp.sort ?? "") ? sp.sort : "updated") as "updated" | "number" | "title";
   const review = (ITEM_REVIEW_STATUSES as readonly string[]).includes(sp.review ?? "") ? sp.review : undefined;
-  const [data, counts] = await Promise.all([
+  const [data, counts, bk] = await Promise.all([
     listInventory(user, { q: sp.q, view, houseId: house?.id, reviewStatus: review, sort, page, pageSize: 100 }),
     inventoryCounts(user.organizationId),
+    inventoryBreakdown(user.organizationId),
   ]);
   const pages = Math.max(1, Math.ceil(data.total / data.pageSize));
   const qs = (patch: Partial<Search>) => {
@@ -68,7 +69,15 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
         title="מלאי"
         meta={
           <span>
-            <span className="num">{fmt.num(counts.all)}</span> ספרים · מלאי משותף לכל בתי המכירות
+            <span className="num" data-testid="active-count">{fmt.num(counts.all)}</span> ספרים במלאי הפעיל · מלאי משותף לכל בתי המכירות
+            {can(user.role, "sales.view") && bk.soldBooks > 0 && (
+              <>
+                {" · "}
+                <Link href="/sold" className="underline-offset-2 hover:underline" data-testid="sold-link">
+                  <span className="num">{fmt.num(bk.soldBooks)}</span> ספרים שנמכרו ({fmt.num(bk.soldInHouse + bk.soldAwaitingPick + bk.soldPickedPacked)} עדיין במחסן)
+                </Link>
+              </>
+            )}
           </span>
         }
         actions={<InventoryActions canCreate={can(user.role, "inventory.create")} canImport={can(user.role, "inventory.import")} />}

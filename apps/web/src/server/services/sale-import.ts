@@ -282,16 +282,16 @@ async function applyRows(tx: Tx, user: UserPrincipal, imp: { id: string; catalog
       res.purchaseId = active.id;
       const manual = (active.manualFields as string[]) ?? [];
       const sameBuyer = active.customerId === customerId;
-      const samePrice = active.hammerPrice.toFixed(2) === r.hammerPrice;
+      const samePrice = active.hammerPrice?.toFixed(2) === r.hammerPrice;
       if (sameBuyer && samePrice) {
         res.action = "UNCHANGED";
         continue;
       }
-      const locked = manual.length > 0 || !!active.releasedAt || !!active.order.payments.length || !!(await tx.shipmentItem.count({ where: { purchaseId: active.id } }));
+      const locked = manual.length > 0 || !!active.releasedAt || !!active.order?.payments.length || !!(await tx.shipmentItem.count({ where: { purchaseId: active.id } }));
       if (locked) {
         res.action = "CONFLICT";
         res.messages.push(
-          `הקובץ שונה ממה שנרשם${!sameBuyer ? " (קונה)" : ""}${!samePrice ? ` (מחיר פטיש: ${active.hammerPrice.toFixed(2)} ← ${r.hammerPrice})` : ""}, אבל אחרי הקליטה הקודמת בוצעו תיקון ידני, תשלום, שחרור או משלוח. לא שונה`,
+          `הקובץ שונה ממה שנרשם${!sameBuyer ? " (קונה)" : ""}${!samePrice ? ` (מחיר פטיש: ${active.hammerPrice?.toFixed(2)} ← ${r.hammerPrice})` : ""}, אבל אחרי הקליטה הקודמת בוצעו תיקון ידני, תשלום, שחרור או משלוח. לא שונה`,
         );
         continue;
       }
@@ -304,7 +304,7 @@ async function applyRows(tx: Tx, user: UserPrincipal, imp: { id: string; catalog
         where: { id: active.id },
         data: { customerId, orderId: order.id, hammerPrice: new Prisma.Decimal(r.hammerPrice!), buyerPremium: r.buyerPremium ? new Prisma.Decimal(r.buyerPremium) : active.buyerPremium, tax: r.tax ? new Prisma.Decimal(r.tax) : active.tax, bidderNumber: r.bidderNumber ?? active.bidderNumber, importId: imp.id },
       });
-      await tx.saleEvent.create({ data: { organizationId: user.organizationId, purchaseId: active.id, customerId, catalogId: imp.catalogId, kind: "IMPORT_CHANGED", data: asJson({ before: { customerId: active.customerId, hammerPrice: active.hammerPrice.toFixed(2) }, after: { customerId, hammerPrice: r.hammerPrice }, importId: imp.id }), userId: user.userId } });
+      await tx.saleEvent.create({ data: { organizationId: user.organizationId, purchaseId: active.id, customerId, catalogId: imp.catalogId, kind: "IMPORT_CHANGED", data: asJson({ before: { customerId: active.customerId, hammerPrice: active.hammerPrice?.toFixed(2) }, after: { customerId, hammerPrice: r.hammerPrice }, importId: imp.id }), userId: user.userId } });
       res.action = "UPDATE";
       res.messages.push("נתוני הרכישה עודכנו לפי הקובץ המתוקן");
       continue;

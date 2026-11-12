@@ -26,8 +26,8 @@ export default async function SoldPage({ searchParams }: { searchParams: Promise
       <PageHeader title="נמכרו" meta={<span>לוטים שנמכרו בכל המכירות המורשות · מספר הלוטים נפרד ממספר הספרים הפיזיים</span>} />
       <PageBody>
         <div className="mb-5 grid grid-cols-2 divide-x-reverse divide-rule overflow-hidden rounded-xl border border-rule bg-paper shadow-card sm:grid-cols-3 lg:grid-cols-6" data-testid="sold-summary">
-          <Stat label="לוטים שנמכרו" value={fmt.num(s.soldLots)} sub={`${fmt.num(s.soldBooks)} ספרים פיזיים`} />
-          <Stat label="סכום מכירות (פטיש)" value={formatUsd(s.hammerTotal)} />
+          <Stat label="לוטים שנמכרו" value={fmt.num(s.soldLots)} sub={`${fmt.num(s.soldBooks)} ספרים פיזיים${s.legacy ? ` · ${fmt.num(s.legacy)} מכירות ישנות` : ""}`} />
+          <Stat label="סכום מכירות (פטיש)" value={formatUsd(s.hammerTotal)} sub={s.unknownPrice ? `${fmt.num(s.unknownPrice)} ללא מחיר ידוע (לא נספרו)` : undefined} />
           <Stat label="לקוחות" value={fmt.num(s.customers)} />
           <Stat label="ממתינים לתשלום" value={fmt.num(s.awaitingPayment)} tone="danger" sub="לוטים" />
           <Stat label="ממתינים למשלוח" value={fmt.num(s.awaitingShipment)} tone="warn" sub="לוטים" />
@@ -44,6 +44,7 @@ export default async function SoldPage({ searchParams }: { searchParams: Promise
             releaseUnpaid: canUser(user, "pick.release.unpaid"),
             ship: canUser(user, "shipment.prepare"),
             customers: canUser(user, "customer.view"),
+            legacy: canUser(user, "sale.legacy"),
           }}
         />
       </PageBody>

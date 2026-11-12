@@ -419,7 +419,7 @@ function AddShelvesDialog({ column, onClose }: { column: ColumnDto | null; onClo
 
 interface ShelfData {
   shelf: { id: string; code: string; label: string; zone: string; warehouse: string; locations: { id: string; active: boolean }[] };
-  items: { id: string; inventoryNumber: string; title: string; author: string | null; thumbAssetId: string | null }[];
+  items: { id: string; inventoryNumber: string; title: string; author: string | null; sold?: boolean; thumbAssetId: string | null }[];
 }
 
 /** The books on one shelf, with the shelf's own actions. */
@@ -492,7 +492,10 @@ function ShelfPanel({ shelfId, onClose, perms, warehouses, onRename }: { shelfId
                     <span className="block size-9 shrink-0 overflow-hidden rounded bg-stone ring-1 ring-rule">{b.thumbAssetId && <img src={`/api/assets/${b.thumbAssetId}/thumb`} alt="" loading="lazy" className="size-full object-cover" />}</span>
                     <Link href={`/inventory/${b.id}`} className="min-w-0 flex-1">
                       <span className="block truncate text-[13.5px] font-medium">{b.title}</span>
-                      <span className="num block font-mono text-[12px] text-muted">{b.inventoryNumber}</span>
+                      <span className="num block font-mono text-[12px] text-muted">
+                        {b.inventoryNumber}
+                        {b.sold && <span className="ms-2 rounded bg-warn/15 px-1.5 font-sans text-[11.5px] font-medium text-warn">נמכר - ממתין להוצאה</span>}
+                      </span>
                     </Link>
                     {perms.relocate && (
                       <IconButton label="שנה מיקום" size="sm" onClick={() => setMoveBook(b)}>

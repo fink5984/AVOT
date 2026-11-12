@@ -184,10 +184,12 @@ export interface ScanResponse {
     assignment: { house: string; catalogNumber: string; lotNumber: number } | null;
     /** the sale of a sold book - only what the task needs (no customer id, amounts or contact details) */
     sale?: {
-      customerName: string;
-      lot: number;
-      house: string;
-      catalogNumber: string;
+      /** sold in the old system (before AVOT): no lot, no catalog, maybe no known buyer */
+      legacy?: boolean;
+      customerName: string | null;
+      lot: number | null;
+      house: string | null;
+      catalogNumber: string | null;
       financial: string;
       released: boolean;
       stage: string;

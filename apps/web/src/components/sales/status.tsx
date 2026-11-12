@@ -2,8 +2,8 @@ import { Badge, type Tone } from "@/components/ui/badge";
 
 /** The three independent states of a sale, each with its own badge: financial, physical (stage), and the release to picking. */
 
-export const FINANCIAL_LABEL: Record<string, string> = { NONE: "טרם חושב חיוב", UNPAID: "ממתין לתשלום", PARTIAL: "שולם חלקית", PAID: "שולם במלואו" };
-const FINANCIAL_TONE: Record<string, Tone> = { NONE: "neutral", UNPAID: "danger", PARTIAL: "warn", PAID: "green" };
+export const FINANCIAL_LABEL: Record<string, string> = { NONE: "טרם חושב חיוב", UNPAID: "ממתין לתשלום", PARTIAL: "שולם חלקית", PAID: "שולם במלואו", UNKNOWN: "אין נתוני תשלום" };
+const FINANCIAL_TONE: Record<string, Tone> = { NONE: "neutral", UNPAID: "danger", PARTIAL: "warn", PAID: "green", UNKNOWN: "neutral" };
 
 export function FinancialBadge({ status, className }: { status: string; className?: string }) {
   if (status === "HIDDEN") return null;

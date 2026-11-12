@@ -510,7 +510,7 @@ export async function shelfContents(orgId: string, shelfId: string) {
     where: { organizationId: orgId, currentLocationId: { in: shelf.locations.map((l) => l.id) }, deletionRequestedAt: null },
     orderBy: { serial: "asc" },
     take: 500,
-    select: { id: true, inventoryNumber: true, title: true, author: true, physicalStatus: true, primaryAssetId: true },
+    select: { id: true, inventoryNumber: true, title: true, author: true, physicalStatus: true, commercialStatus: true, primaryAssetId: true },
   });
   return {
     shelf: {
@@ -523,7 +523,7 @@ export async function shelfContents(orgId: string, shelfId: string) {
       warehouse: shelf.zone.warehouse.name,
       locations: shelf.locations.map((l) => ({ id: l.id, active: l.active })),
     },
-    items: items.map((i) => ({ id: i.id, inventoryNumber: i.inventoryNumber, title: i.title, author: i.author, physicalStatus: i.physicalStatus, thumbAssetId: i.primaryAssetId })),
+    items: items.map((i) => ({ id: i.id, inventoryNumber: i.inventoryNumber, title: i.title, author: i.author, physicalStatus: i.physicalStatus, sold: i.commercialStatus === "SOLD", thumbAssetId: i.primaryAssetId })),
   };
 }
 

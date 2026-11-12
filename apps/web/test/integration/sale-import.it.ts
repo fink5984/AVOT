@@ -118,7 +118,7 @@ describe.skipIf(!hasDb)("sale results import (real database)", () => {
     expect(pc.rows.find((r) => r.lotNumber === 2)!.action).toBe("UPDATE");
     await commitImport(ctx.editor, c.importId);
     const lot2 = await db.lot.findFirstOrThrow({ where: { catalogId: catalog.id, lotNumber: 2 } });
-    expect((await db.purchase.findFirstOrThrow({ where: { lotId: lot2.id, status: "ACTIVE" } })).hammerPrice.toFixed(2)).toBe("250.00");
+    expect((await db.purchase.findFirstOrThrow({ where: { lotId: lot2.id, status: "ACTIVE" } })).hammerPrice!.toFixed(2)).toBe("250.00");
 
     // a person corrects lot 3 by hand, a payment is recorded for lot 1's order; a later corrected file does not touch them
     const lot3 = await db.lot.findFirstOrThrow({ where: { catalogId: catalog.id, lotNumber: 3 } });
@@ -126,14 +126,14 @@ describe.skipIf(!hasDb)("sale results import (real database)", () => {
     await correctPurchase(ctx.editor, p3.id, { hammerPrice: "333" });
     const lot1 = await db.lot.findFirstOrThrow({ where: { catalogId: catalog.id, lotNumber: 1 } });
     const p1 = await db.purchase.findFirstOrThrow({ where: { lotId: lot1.id, status: "ACTIVE" } });
-    await recordPayment(ctx.editor, p1.orderId, { amount: "50" });
+    await recordPayment(ctx.editor, p1.orderId!, { amount: "50" });
     const changed = base.map((r) => (r[0] === 3 ? [3, "Sold", 310, 8, "רן", "ran@example.com", null] : r[0] === 1 ? [1, "Sold", 110, 7, "דנה", "dana@example.com", null] : r)) as Row[];
     const d = await imp(catalog.id, changed);
     const pd = await commitImport(ctx.editor, d.importId);
     expect(pd.rows.find((r) => r.lotNumber === 3)!.action).toBe("CONFLICT");
     expect(pd.rows.find((r) => r.lotNumber === 1)!.action).toBe("CONFLICT");
-    expect((await db.purchase.findUniqueOrThrow({ where: { id: p3.id } })).hammerPrice.toFixed(2)).toBe("333.00");
-    expect((await db.purchase.findUniqueOrThrow({ where: { id: p1.id } })).hammerPrice.toFixed(2)).toBe("100.00");
+    expect((await db.purchase.findUniqueOrThrow({ where: { id: p3.id } })).hammerPrice!.toFixed(2)).toBe("333.00");
+    expect((await db.purchase.findUniqueOrThrow({ where: { id: p1.id } })).hammerPrice!.toFixed(2)).toBe("100.00");
   }, 120_000);
 
   it("a file with only the sold lots does not make the missing lots 'unsold'", async () => {
@@ -209,7 +209,7 @@ describe.skipIf(!hasDb)("sale results import (real database)", () => {
     const up = await imp(catalog.id, [HEAD, [1, "Sold", "$1,250.50", 1, "כסף", "money@example.com", null]]);
     await commitImport(ctx.editor, up.importId);
     const p = await db.purchase.findFirstOrThrow({ where: { catalogId: catalog.id } });
-    expect(p.hammerPrice.toFixed(2)).toBe("1250.50");
+    expect(p.hammerPrice!.toFixed(2)).toBe("1250.50");
     expect(p.buyerPremium).toBeNull();
     expect(p.tax).toBeNull();
     const l = await orderLedger(db, p.orderId);
@@ -240,10 +240,10 @@ describe.skipIf(!hasDb)("sale results import (real database)", () => {
 
       // release before payment: refused for an editor, allowed for an admin (separate permission)
       await expect(releasePurchase(ctx.editor, p.id)).rejects.toMatchObject({ details: { code: "UNPAID_RELEASE" } });
-      await recordPayment(ctx.editor, p.orderId, { amount: "300", method: "העברה", reference: "A1" });
+      await recordPayment(ctx.editor, p.orderId!, { amount: "300", method: "העברה", reference: "A1" });
       expect(await orderLedger(db, p.orderId)).toMatchObject({ status: "PARTIAL", paid: "300.00", due: "500.00" });
       await expect(releasePurchase(ctx.editor, p.id)).rejects.toMatchObject({ details: { code: "UNPAID_RELEASE" } });
-      await recordPayment(ctx.editor, p.orderId, { amount: "500" });
+      await recordPayment(ctx.editor, p.orderId!, { amount: "500" });
       expect(await orderLedger(db, p.orderId)).toMatchObject({ status: "PAID", due: "0.00" });
       const rel = await releasePurchase(ctx.editor, p.id);
       expect(rel.released).toBe(true);
@@ -263,7 +263,7 @@ describe.skipIf(!hasDb)("sale results import (real database)", () => {
       await cancelPurchase(ctx.admin, p.id, { reason: "הלקוח חזר בו" });
       const cp = await db.purchase.findUniqueOrThrow({ where: { id: p.id } });
       expect(cp).toMatchObject({ status: "CANCELLED", cancelReason: "הלקוח חזר בו", cancelledById: ctx.admin.userId });
-      expect(cp.hammerPrice.toFixed(2)).toBe("800.00");
+      expect(cp.hammerPrice!.toFixed(2)).toBe("800.00");
       expect((await db.lot.findUniqueOrThrow({ where: { id: lots[0]!.lot.id } })).commercialStatus).toBe("UNSOLD");
       expect((await item()).physicalStatus).toBe("IN_STORAGE" === (await item()).physicalStatus ? "IN_STORAGE" : "AWAITING_STORAGE");
       expect(await db.pickTask.count({ where: { lotId: lots[0]!.lot.id, status: "OPEN" } })).toBe(0);
@@ -291,7 +291,7 @@ describe.skipIf(!hasDb)("sale results import (real database)", () => {
       const c = await createCustomer(ctx.editor, { name: "משולב", email: "combo@example.com" });
       const p = await recordSale(ctx.editor, { lotId: ids[0]!, customerId: c.id, hammerPrice: "900" });
       expect(await db.purchase.count({ where: { lotId: ids[0]! } })).toBe(1);
-      await recordPayment(ctx.editor, p.orderId, { amount: "900" });
+      await recordPayment(ctx.editor, p.orderId!, { amount: "900" });
       await releasePurchase(ctx.editor, p.id);
       expect(await db.pickTask.count({ where: { lotId: ids[0]!, status: "OPEN" } })).toBe(2);
     });

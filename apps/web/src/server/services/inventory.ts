@@ -304,6 +304,8 @@ export interface InventoryListOptions {
   houseId?: string;
   /** only this consignor's books */
   consignorId?: string;
+  /** books that were sold are not part of the active stock: the default list hides them (they are in "נמכרו" until they leave, and after) */
+  includeSold?: boolean;
   /** hide books that already hold an ACTIVE assignment in this catalog (the "add from inventory" picker) */
   notInCatalogId?: string;
   photoStatus?: string;
@@ -318,6 +320,9 @@ export interface InventoryListOptions {
 export function inventoryWhere(orgId: string, o: InventoryListOptions): Prisma.InventoryItemWhereInput {
   // books waiting for their permanent deletion are out of everyday work
   const and: Prisma.InventoryItemWhereInput[] = [{ organizationId: orgId, deletionRequestedAt: null }];
+  // commercial stock only: a sold book leaves this list at once (it stays in the warehouse until it ships). The physical views
+  // (missing, waiting for pick, no location) show what is really in the house, sold or not.
+  if (!o.includeSold && o.view !== "missing" && o.view !== "awaiting_pick" && o.view !== "no_location") and.push({ commercialStatus: { not: "SOLD" } });
   const q = o.q?.trim();
   if (q) {
     const code = classifyCode(q);
@@ -452,9 +457,50 @@ export type InventoryRow = Awaited<ReturnType<typeof listInventory>>["items"][nu
 export async function inventoryCounts(orgId: string) {
   const views = INVENTORY_VIEWS.filter((v) => v !== "all");
   const counts = await Promise.all(views.map((view) => db.inventoryItem.count({ where: inventoryWhere(orgId, { view }) })));
-  const total = await db.inventoryItem.count({ where: { organizationId: orgId, deletionRequestedAt: null } });
+  const total = await db.inventoryItem.count({ where: inventoryWhere(orgId, {}) });
   return { all: total, ...Object.fromEntries(views.map((v, i) => [v, counts[i]!])) } as Record<InventoryView, number>;
 }
+
+/**
+ * The three views of the same books, counted apart (a combined lot is one lot but several books):
+ *   active      books still in the commercial stock (not sold)
+ *   physical    books that are physically in the house (not shipped, not missing) - sold or not
+ *   sold        books that were sold, split by where they are now
+ * Lots sold (purchases) are counted separately from the physical books.
+ */
+export async function inventoryBreakdown(orgId: string) {
+  const base = { organizationId: orgId, deletionRequestedAt: null };
+  const sold = { ...base, commercialStatus: "SOLD" as const };
+  const [active, physical, missing, soldBooks, soldInHouse, soldAwaitingPick, soldPickedPacked, shipped, soldLots, legacyLots] = await Promise.all([
+    db.inventoryItem.count({ where: { ...base, commercialStatus: { not: "SOLD" } } }),
+    db.inventoryItem.count({ where: { ...base, physicalStatus: { notIn: ["SHIPPED", "MISSING"] } } }),
+    db.inventoryItem.count({ where: { ...base, physicalStatus: "MISSING" } }),
+    db.inventoryItem.count({ where: sold }),
+    db.inventoryItem.count({ where: { ...sold, physicalStatus: { in: ["AWAITING_STORAGE", "IN_STORAGE"] } } }),
+    db.inventoryItem.count({ where: { ...sold, physicalStatus: "AWAITING_PICK" } }),
+    db.inventoryItem.count({ where: { ...sold, physicalStatus: { in: ["PICKED", "PACKED"] } } }),
+    db.inventoryItem.count({ where: { ...base, physicalStatus: "SHIPPED" } }),
+    db.purchase.count({ where: { organizationId: orgId, status: "ACTIVE" } }),
+    db.purchase.count({ where: { organizationId: orgId, status: "ACTIVE", lotId: null } }),
+  ]);
+  return {
+    /** active stock available for sale */
+    active,
+    /** physically in the house, including sold books that wait for pick / shipment */
+    physical,
+    missing,
+    /** sold books (physical), and where they are: still on the shelf, waiting for pick, picked / packed, left */
+    soldBooks,
+    soldInHouse,
+    soldAwaitingPick,
+    soldPickedPacked,
+    shipped,
+    /** purchases (a combined lot is one) */
+    soldLots,
+    legacyLots,
+  };
+}
+export type InventoryBreakdown = Awaited<ReturnType<typeof inventoryBreakdown>>;
 
 /* ───────────────────────── lookup by code ───────────────────────── */
 

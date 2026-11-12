@@ -15,6 +15,7 @@ import { api, errorMessage } from "@/lib/api";
 import { OPEN_DETAILS_EVENT } from "@/lib/item-events";
 import { usePrintLabels } from "@/lib/print";
 import { AiAnalyzeButton, type AiButtonState } from "@/components/ai/ai-button";
+import { LegacySaleDialog } from "@/components/sales/legacy-sale-dialog";
 
 export interface ItemActionsSubject {
   id: string;
@@ -34,6 +35,8 @@ export interface ItemActionsSubject {
   ai?: AiButtonState;
   /** prefilled approver email of the re-analysis dialog (the current user, when they are a manager) */
   approverEmail?: string;
+  /** why "sold in the old system" is not possible for this book (explained on click); null when possible */
+  legacyBlock?: string | null;
 }
 
 export interface ItemActionsPerms {
@@ -47,6 +50,8 @@ export interface ItemActionsPerms {
   pick?: boolean;
   /** start an AI analysis */
   ai?: boolean;
+  /** mark the book as sold in the old system (book page menu) */
+  legacy?: boolean;
 }
 
 /** The same service as the phone scanner's "הוצאה זמנית / הוצאה סופית", also used by the bulk bar of the table. */
@@ -85,6 +90,7 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
   const [edit, setEdit] = useState<ItemFormValue | null>(null);
   const [loadingEdit, setLoadingEdit] = useState(false);
   const [del, setDel] = useState(false);
+  const [legacy, setLegacy] = useState(false);
   const size = context === "table" ? "sm" : "md";
   const sold = subject.commercialStatus === "SOLD" || subject.physicalStatus === "SHIPPED";
 
@@ -149,6 +155,9 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
   if (perms.relocate && subject.hasLocation) menu.push({ label: "הוצאה זמנית מהמדף", icon: <BookUp />, onSelect: () => void checkout("TEMP", [subject.id]) });
   if (perms.fulfil && subject.commercialStatus === "SOLD") menu.push({ label: "הוצאה סופית (נשלח)", icon: <BookUp />, onSelect: () => void checkout("FINAL", [subject.id]) });
   if (context === "page" && perms.pick && !subject.hasOpenPick && subject.physicalStatus !== "SHIPPED") menu.push({ label: "משימת ליקוט ידנית", icon: <PackageOpen />, onSelect: () => void requestPick() });
+  if (context === "page" && perms.legacy) {
+    menu.push({ label: "סמן כנמכר במערכת הישנה", icon: <Gavel />, onSelect: () => (subject.legacyBlock ? toast.warning("לא ניתן לסמן את הספר כנמכר במערכת הישנה", { detail: subject.legacyBlock }) : setLegacy(true)) });
+  }
   if (perms.delete) {
     if (menu.length) menu.push("separator");
     menu.push({ label: "מחיקה לצמיתות", icon: <Trash2 />, danger: true, onSelect: () => setDel(true) });
@@ -197,6 +206,7 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
       </div>
       {assign && <AssignDialog open onClose={() => setAssign(false)} items={[{ id: subject.id, inventoryNumber: subject.inventoryNumber, title: subject.title }]} />}
       {move && <LocationDialog open onClose={() => setMove(false)} items={[{ id: subject.id, inventoryNumber: subject.inventoryNumber, title: subject.title }]} />}
+      {legacy && <LegacySaleDialog open onClose={() => setLegacy(false)} itemId={subject.id} />}
       {edit && <ItemFormDialog open onClose={() => setEdit(null)} initial={edit} />}
       {del && <DeleteDialog kind="books" open ids={[subject.id]} onClose={() => setDel(false)} onDone={() => (context === "page" ? router.push("/inventory") : router.refresh())} />}
     </>

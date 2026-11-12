@@ -28,13 +28,13 @@ export async function finishSalePreview(user: UserPrincipal, catalogId: string) 
     orderBy: { lotNumber: "asc" },
   });
   const purchases = await db.purchase.findMany({ where: { catalogId, status: "ACTIVE" }, select: { customerId: true, hammerPrice: true, lotId: true, customer: { select: { needsDetails: true } } } });
-  const soldLotIds = new Set(purchases.map((p) => p.lotId));
+  const soldLotIds = new Set(purchases.map((p) => p.lotId).filter((x): x is string => !!x));
   const live = lots.filter((l) => l.assignmentStatus === "ACTIVE" || soldLotIds.has(l.id));
   const unsold = live.filter((l) => l.commercialStatus === "UNSOLD" && l.assignmentStatus === "ACTIVE");
   // no result: still waiting in the sale (not sold, not marked unsold) - and sold lots whose buyer was never recorded
   const unknown = live.filter((l) => l.assignmentStatus === "ACTIVE" && (l.commercialStatus === "ASSIGNED" || l.commercialStatus === "OFFERED"));
   const soldNoBuyer = lots.filter((l) => l.commercialStatus === "SOLD" && !soldLotIds.has(l.id));
-  const needsDetails = new Set(purchases.filter((p) => p.customer.needsDetails).map((p) => p.customerId));
+  const needsDetails = new Set(purchases.filter((p) => p.customer?.needsDetails).map((p) => p.customerId));
   return {
     catalog: { id: catalog.id, number: catalog.number, name: catalog.name, finishedAt: catalog.saleFinishedAt?.toISOString() ?? null, archived: catalog.status === "ARCHIVED" },
     totalLots: live.length,
@@ -43,7 +43,7 @@ export async function finishSalePreview(user: UserPrincipal, catalogId: string) 
     unsoldLots: unsold.length,
     unknownLots: unknown.length,
     unknownList: unknown.slice(0, 50).map((l) => ({ id: l.id, lotNumber: l.lotNumber, title: l.title })),
-    hammerTotal: addMoney(...purchases.map((p) => p.hammerPrice.toFixed(2))),
+    hammerTotal: addMoney(...purchases.map((p) => p.hammerPrice?.toFixed(2))),
     buyers: new Set(purchases.map((p) => p.customerId)).size,
     purchases: purchases.length,
     /** lots that still need a person: no result, a sale without a buyer, a buyer with missing details */

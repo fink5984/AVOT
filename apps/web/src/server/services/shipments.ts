@@ -11,7 +11,7 @@ import { asJson } from "../json";
 import { parseUsd } from "@/lib/money";
 import { changeStatus } from "./item-status";
 import { moveItemTx } from "./warehouse";
-import { orderLedger, stageOf, type Stage } from "./sales";
+import { orderLedger, stageOf, purchaseItemIds, purchaseName, type Stage } from "./sales";
 import { memberItemIds } from "./lot-members";
 import type { Address } from "./customers";
 
@@ -28,15 +28,17 @@ export const SHIPMENT_LABEL: Record<string, string> = { DRAFT: "בהכנה", PAC
 
 export interface WaitingBook {
   purchaseId: string;
-  lotId: string;
-  lotNumber: number;
-  catalogId: string;
-  catalogNumber: string;
-  house: string;
+  /** a sale from the old system has no lot, catalog or house */
+  legacy: boolean;
+  lotId: string | null;
+  lotNumber: number | null;
+  catalogId: string | null;
+  catalogNumber: string | null;
+  house: string | null;
   itemId: string;
   inventoryNumber: string;
   title: string;
-  hammerPrice: string;
+  hammerPrice: string | null;
   released: boolean;
   financial: string;
   stage: Stage;
@@ -55,24 +57,29 @@ export interface WaitingBook {
 export async function customerBooks(tx: Tx | typeof db, orgId: string, customerId: string, opts: { includeShipped?: boolean } = {}): Promise<WaitingBook[]> {
   const purchases = await tx.purchase.findMany({
     where: { organizationId: orgId, customerId, status: "ACTIVE" },
-    include: { lot: true, catalog: { include: { auctionHouse: { select: { name: true } } } } },
-    orderBy: [{ catalog: { saleDate: "asc" } }, { lot: { lotNumber: "asc" } }],
+    include: { lot: true, catalog: { include: { auctionHouse: { select: { name: true } } } }, item: { select: { id: true, inventoryNumber: true, title: true, physicalStatus: true } } },
+    orderBy: [{ catalog: { saleDate: "asc" } }, { lot: { lotNumber: "asc" } }, { createdAt: "asc" }],
   });
   if (!purchases.length) return [];
-  const members = await tx.lotMember.findMany({
-    where: { lotId: { in: purchases.map((p) => p.lotId) }, removedAt: null },
+  const lotMembers = await tx.lotMember.findMany({
+    where: { lotId: { in: purchases.map((p) => p.lotId).filter((x): x is string => !!x) }, removedAt: null },
     orderBy: { sortOrder: "asc" },
     include: { item: { select: { id: true, inventoryNumber: true, title: true, physicalStatus: true } } },
   });
+  // the books of a purchase: the members of its lot, or the one book a legacy sale hangs on
+  const members = [
+    ...lotMembers.map((m) => ({ purchaseKey: m.lotId, lotId: m.lotId as string | null, inventoryItemId: m.inventoryItemId, item: m.item })),
+    ...purchases.filter((p) => !p.lotId && p.item).map((p) => ({ purchaseKey: p.id, lotId: null as string | null, inventoryItemId: p.item!.id, item: p.item! })),
+  ];
   const itemIds = members.map((m) => m.inventoryItemId);
   const shipItems = await tx.shipmentItem.findMany({ where: { inventoryItemId: { in: itemIds }, isActive: true }, include: { shipment: { select: { id: true, status: true } } } });
-  const orders = [...new Set(purchases.map((p) => p.orderId))];
+  const orders = [...new Set(purchases.map((p) => p.orderId).filter((x): x is string => !!x))];
   const ledgers = new Map<string, Awaited<ReturnType<typeof orderLedger>>>();
   for (const o of orders) ledgers.set(o, await orderLedger(tx, o));
   const out: WaitingBook[] = [];
   for (const p of purchases) {
-    const fin = ledgers.get(p.orderId)!.purchases.find((x) => x.id === p.id)?.status ?? "NONE";
-    for (const m of members.filter((x) => x.lotId === p.lotId)) {
+    const fin = p.orderId ? (ledgers.get(p.orderId)!.purchases.find((x) => x.id === p.id)?.status ?? "NONE") : "UNKNOWN";
+    for (const m of members.filter((x) => x.purchaseKey === (p.lotId ?? p.id))) {
       const si = shipItems.find((s) => s.inventoryItemId === m.inventoryItemId);
       const delivered = si?.shipment.status === "DELIVERED";
       const stage = stageOf([{ physicalStatus: m.item.physicalStatus, delivered }]);
@@ -81,19 +88,20 @@ export async function customerBooks(tx: Tx | typeof db, orgId: string, customerI
       let reason: string | null = null;
       if (gone) reason = "כבר נשלח";
       else if (si) reason = "כבר משויך למשלוח";
-      else if (!p.releasedAt) reason = fin === "PAID" ? "טרם שוחרר לליקוט" : "טרם שולם ולא שוחרר לליקוט";
+      else if (!p.releasedAt) reason = fin === "PAID" || fin === "UNKNOWN" ? "טרם שוחרר לליקוט" : "טרם שולם ולא שוחרר לליקוט";
       else if (m.item.physicalStatus === "MISSING") reason = "הספר מסומן כחסר";
       out.push({
         purchaseId: p.id,
+        legacy: !p.lotId,
         lotId: p.lotId,
-        lotNumber: p.lot.lotNumber,
+        lotNumber: p.lot?.lotNumber ?? null,
         catalogId: p.catalogId,
-        catalogNumber: p.catalog.number,
-        house: p.catalog.auctionHouse.name,
+        catalogNumber: p.catalog?.number ?? null,
+        house: p.catalog?.auctionHouse.name ?? null,
         itemId: m.item.id,
         inventoryNumber: m.item.inventoryNumber,
         title: m.item.title,
-        hammerPrice: p.hammerPrice.toFixed(2),
+        hammerPrice: p.hammerPrice?.toFixed(2) ?? null,
         released: !!p.releasedAt,
         financial: fin,
         stage,
@@ -121,17 +129,18 @@ export async function shippingHint(user: UserPrincipal, opts: { purchaseId?: str
   let purchaseId = opts.purchaseId;
   if (!purchaseId && opts.itemId) {
     const m = await db.lotMember.findFirst({ where: { inventoryItemId: opts.itemId, removedAt: null, lot: { purchases: { some: { status: "ACTIVE" } } } }, select: { lotId: true } });
-    const p = m ? await db.purchase.findFirst({ where: { lotId: m.lotId, status: "ACTIVE" }, select: { id: true } }) : null;
+    const p = await db.purchase.findFirst({ where: m ? { lotId: m.lotId, status: "ACTIVE" } : { inventoryItemId: opts.itemId, lotId: null, status: "ACTIVE" }, select: { id: true } });
     purchaseId = p?.id;
   }
   if (!purchaseId) return null;
   const p = await db.purchase.findFirst({ where: { id: purchaseId, organizationId: user.organizationId }, include: { customer: { select: { id: true, name: true, number: true } } } });
   if (!p) throw notFound("הרכישה");
+  if (!p.customerId) return null;
   const books = await customerBooks(db, user.organizationId, p.customerId);
   const mine = books.filter((b) => b.purchaseId === p.id);
   const mineShipments = new Set(mine.map((b) => b.shipmentId).filter((x): x is string => !!x));
   const others = books.filter((b) => b.purchaseId !== p.id);
-  const lots = (xs: WaitingBook[]) => new Set(xs.map((x) => x.lotId)).size;
+  const lots = (xs: WaitingBook[]) => new Set(xs.map((x) => x.purchaseId)).size;
   return {
     customer: p.customer,
     otherLots: lots(others),
@@ -196,11 +205,11 @@ export async function createShipment(user: UserPrincipal, raw: z.input<typeof cr
   return db.$transaction(async (tx) => {
     const purchases = await tx.purchase.findMany({ where: { id: { in: input.purchaseIds }, organizationId: user.organizationId, customerId: customer.id, status: "ACTIVE" }, include: { lot: true } });
     if (purchases.length !== new Set(input.purchaseIds).size) throw new AppError("CONFLICT", "חלק מהרכישות אינן פעילות או אינן של הלקוח");
-    for (const p of purchases) if (!(await visibleHouse(user, p.catalogId))) throw new AppError("FORBIDDEN", "אין הרשאה לרכישה מבית מכירות אחר");
+    for (const p of purchases) if (p.catalogId && !(await visibleHouse(user, p.catalogId))) throw new AppError("FORBIDDEN", "אין הרשאה לרכישה מבית מכירות אחר");
     const itemIds: { purchaseId: string; itemId: string }[] = [];
     for (const p of purchases) {
-      if (!p.releasedAt) throw new AppError("CONFLICT", `פריט ${p.lot.lotNumber} טרם שוחרר לליקוט - לא ניתן לצרף אותו למשלוח`);
-      for (const id of await memberItemIds(p.lotId, tx)) itemIds.push({ purchaseId: p.id, itemId: id });
+      if (!p.releasedAt) throw new AppError("CONFLICT", `${purchaseName(p)} טרם שוחרר לליקוט - לא ניתן לצרף אותו למשלוח`);
+      for (const id of await purchaseItemIds(tx, p)) itemIds.push({ purchaseId: p.id, itemId: id });
     }
     const ids = itemIds.map((x) => x.itemId).sort();
     await tx.$queryRaw`SELECT id FROM "InventoryItem" WHERE id = ANY(${ids}::uuid[]) ORDER BY id FOR UPDATE`;
@@ -257,8 +266,8 @@ export async function addToShipment(user: UserPrincipal, shipmentId: string, pur
     if (purchases.length !== new Set(purchaseIds).size) throw new AppError("CONFLICT", "חלק מהרכישות אינן פעילות או אינן של הלקוח");
     let added = 0;
     for (const p of purchases) {
-      if (!p.releasedAt) throw new AppError("CONFLICT", `פריט ${p.lot.lotNumber} טרם שוחרר לליקוט`);
-      for (const itemId of await memberItemIds(p.lotId, tx)) {
+      if (!p.releasedAt) throw new AppError("CONFLICT", `${purchaseName(p)} טרם שוחרר לליקוט`);
+      for (const itemId of await purchaseItemIds(tx, p)) {
         await tx.$queryRaw`SELECT id FROM "InventoryItem" WHERE id = ${itemId}::uuid FOR UPDATE`;
         const it = await tx.inventoryItem.findUniqueOrThrow({ where: { id: itemId }, select: { inventoryNumber: true, physicalStatus: true } });
         if (it.physicalStatus === "SHIPPED") throw new AppError("CONFLICT", `הספר ${it.inventoryNumber} כבר נשלח`);
@@ -514,9 +523,10 @@ export async function getShipment(user: UserPrincipal, id: string) {
       title: i.item.title,
       thumbAssetId: i.item.primaryAssetId,
       physicalStatus: i.item.physicalStatus,
-      lotId: i.purchase.lot.id,
-      lotNumber: i.purchase.lot.lotNumber,
-      catalogNumber: i.purchase.lot.catalog.number,
+      lotId: i.purchase.lot?.id ?? null,
+      lotNumber: i.purchase.lot?.lotNumber ?? null,
+      catalogNumber: i.purchase.lot?.catalog.number ?? null,
+      legacy: !i.purchase.lot,
       purchaseId: i.purchase.id,
       removedAt: i.removedAt?.toISOString() ?? null,
       removeReason: i.removeReason,
@@ -560,7 +570,7 @@ export async function shippingOverview(user: UserPrincipal, f: ShipmentFilters =
     select: { customerId: true },
     distinct: ["customerId"],
   });
-  const customerIds = purchases.map((p) => p.customerId);
+  const customerIds = purchases.map((p) => p.customerId).filter((x): x is string => !!x);
   const customers = await db.customer.findMany({ where: { id: { in: customerIds }, ...(f.q ? { OR: [{ name: { contains: f.q, mode: "insensitive" } }, { email: { contains: f.q, mode: "insensitive" } }] } : {}) }, orderBy: { name: "asc" }, take: 500 });
   const rows = [];
   const totals = { waitingBooks: 0, waitingLots: 0, customersOpen: 0, packedBooks: 0, shippedBooks: 0, completedShipments: 0, customersBlockedByPayment: 0, partialShipments: 0 };
@@ -579,7 +589,7 @@ export async function shippingOverview(user: UserPrincipal, f: ShipmentFilters =
     const partial = (await db.shipment.count({ where: { customerId: c.id, partialConfirmed: true } })) > 0;
     if (f.onlyPartial && !partial) continue;
     if (!waiting.length && !open) continue;
-    const lots = (xs: WaitingBook[]) => new Set(xs.map((x) => x.lotId)).size;
+    const lots = (xs: WaitingBook[]) => new Set(xs.map((x) => x.purchaseId)).size;
     totals.waitingBooks += waiting.length;
     totals.waitingLots += lots(waiting);
     totals.packedBooks += waiting.filter((b) => b.stage === "PACKED").length;
@@ -596,7 +606,7 @@ export async function shippingOverview(user: UserPrincipal, f: ShipmentFilters =
       readyBooks: waiting.filter((b) => b.available).length,
       shippedLots: lots(shipped),
       financial: !seeMoney ? "HIDDEN" : waiting.some((b) => b.financial === "UNPAID") ? "UNPAID" : waiting.some((b) => b.financial === "PARTIAL") ? "PARTIAL" : waiting.length ? "PAID" : "NONE",
-      catalogs: [...new Set(books.map((b) => `${b.house} ${b.catalogNumber}`))],
+      catalogs: [...new Set(books.map((b) => (b.legacy ? "מכירה ישנה" : `${b.house} ${b.catalogNumber}`)))],
       openShipments: open,
     });
   }

@@ -52,7 +52,7 @@ export interface OrderLedger {
   status: FinancialStatus;
 }
 
-type LedgerPurchase = { id: string; status: string; hammerPrice: Prisma.Decimal; buyerPremium: Prisma.Decimal | null; tax: Prisma.Decimal | null; createdAt: Date; lot?: { lotNumber: number } };
+type LedgerPurchase = { id: string; status: string; hammerPrice: Prisma.Decimal | null; buyerPremium: Prisma.Decimal | null; tax: Prisma.Decimal | null; createdAt: Date; lot?: { lotNumber: number } | null };
 
 /** Pure: money states from the active purchases and the recorded payments of one order. Payments settle purchases in lot order. */
 export function computeLedger(orderId: string, purchases: LedgerPurchase[], payments: { amount: Prisma.Decimal; status: string }[]): OrderLedger {
@@ -60,13 +60,13 @@ export function computeLedger(orderId: string, purchases: LedgerPurchase[], paym
   const totalPaid = addMoney(...payments.filter((p) => p.status === "RECORDED").map((p) => p.amount.toFixed(2)));
   let left = totalPaid;
   const rows: PurchaseCharge[] = active.map((p) => {
-    const charge = addMoney(p.hammerPrice.toFixed(2), p.buyerPremium?.toFixed(2), p.tax?.toFixed(2));
+    const charge = addMoney(p.hammerPrice?.toFixed(2), p.buyerPremium?.toFixed(2), p.tax?.toFixed(2));
     const put = cmpMoney(left, charge) >= 0 ? charge : cmpMoney(left, "0.00") > 0 ? left : "0.00";
     left = subMoney(left, put);
     return {
       id: p.id,
       charge,
-      incomplete: p.buyerPremium === null || p.tax === null,
+      incomplete: p.hammerPrice === null || p.buyerPremium === null || p.tax === null,
       paid: put,
       status: cmpMoney(put, "0.00") === 0 ? "UNPAID" : cmpMoney(put, charge) >= 0 ? "PAID" : "PARTIAL",
     };
@@ -77,7 +77,8 @@ export function computeLedger(orderId: string, purchases: LedgerPurchase[], paym
   return { orderId, purchases: rows, charge, paid: totalPaid, due, overpaid: cmpMoney(totalPaid, charge) > 0 && rows.length ? subMoney(totalPaid, charge) : null, incomplete: rows.some((r) => r.incomplete), status };
 }
 
-export async function orderLedger(tx: Tx | typeof db, orderId: string): Promise<OrderLedger> {
+export async function orderLedger(tx: Tx | typeof db, orderId: string | null): Promise<OrderLedger> {
+  if (!orderId) return computeLedger("", [], []);
   const [purchases, payments] = await Promise.all([
     tx.purchase.findMany({ where: { orderId }, select: { id: true, status: true, hammerPrice: true, buyerPremium: true, tax: true, createdAt: true, lot: { select: { lotNumber: true } } } }),
     tx.payment.findMany({ where: { orderId }, select: { amount: true, status: true } }),
@@ -231,7 +232,7 @@ export const correctPurchaseSchema = z.object({
 async function loadPurchase(user: UserPrincipal, id: string) {
   const p = await db.purchase.findFirst({ where: { id, organizationId: user.organizationId }, include: { catalog: true, lot: true } });
   if (!p) throw notFound("הרכישה");
-  assertHouse(user, p.catalog.auctionHouseId);
+  if (p.catalog) assertHouse(user, p.catalog.auctionHouseId);
   return p;
 }
 
@@ -240,13 +241,14 @@ export async function correctPurchase(user: UserPrincipal, id: string, raw: z.in
   const input = correctPurchaseSchema.parse(raw);
   const p = await loadPurchase(user, id);
   if (p.status !== "ACTIVE") throw new AppError("CONFLICT", "הרכישה בוטלה ואינה ניתנת לתיקון");
+  if (!p.lotId) throw new AppError("CONFLICT", "זו מכירה ישנה: ניתן רק לשייך לה לקוח (משדך לקוח) או לבטל את הסימון");
   return db.$transaction(async (tx) => {
     const cur = await tx.purchase.findUniqueOrThrow({ where: { id } });
     const data: Prisma.PurchaseUncheckedUpdateInput = {};
     const touched = new Set<string>(cur.manualFields as string[]);
     const before: Record<string, unknown> = {};
-    if (input.hammerPrice !== undefined && input.hammerPrice !== cur.hammerPrice.toFixed(2)) {
-      before.hammerPrice = cur.hammerPrice.toFixed(2);
+    if (input.hammerPrice !== undefined && input.hammerPrice !== cur.hammerPrice!.toFixed(2)) {
+      before.hammerPrice = cur.hammerPrice!.toFixed(2);
       data.hammerPrice = new Prisma.Decimal(input.hammerPrice!);
       touched.add("hammerPrice");
     }
@@ -265,11 +267,11 @@ export async function correctPurchase(user: UserPrincipal, id: string, raw: z.in
       if (!c) throw notFound("הלקוח");
       const shipped = await tx.shipmentItem.count({ where: { purchaseId: id, isActive: true } });
       if (shipped) throw new AppError("CONFLICT", "הרכישה כבר משויכת למשלוח - לא ניתן להחליף קונה");
-      const paid = await tx.payment.count({ where: { orderId: cur.orderId, status: "RECORDED" } });
+      const paid = await tx.payment.count({ where: { orderId: cur.orderId!, status: "RECORDED" } });
       if (paid) throw new AppError("CONFLICT", "נרשמו תשלומים להזמנה של הקונה הנוכחי - לא ניתן להחליף קונה לפני ביטול התשלומים");
       const order = await tx.buyerOrder.upsert({
-        where: { catalogId_customerId: { catalogId: cur.catalogId, customerId: c.id } },
-        create: { organizationId: user.organizationId, catalogId: cur.catalogId, customerId: c.id },
+        where: { catalogId_customerId: { catalogId: cur.catalogId!, customerId: c.id } },
+        create: { organizationId: user.organizationId, catalogId: cur.catalogId!, customerId: c.id },
         update: {},
       });
       before.customerId = cur.customerId;
@@ -299,8 +301,13 @@ export const cancelPurchaseSchema = z.object({
 export async function cancelPurchase(user: UserPrincipal, id: string, raw: z.input<typeof cancelPurchaseSchema>) {
   const input = cancelPurchaseSchema.parse(raw);
   const p = await loadPurchase(user, id);
+  if (!p.lotId) {
+    const { unmarkLegacySoldTx } = await import("./legacy-sales");
+    return db.$transaction((tx) => unmarkLegacySoldTx(tx, user, id, input.reason));
+  }
+  const lotId = p.lotId;
   return db.$transaction(async (tx) => {
-    const itemIds = await lockLotAndItems(tx, p.lotId);
+    const itemIds = await lockLotAndItems(tx, lotId);
     const cur = await tx.purchase.findUniqueOrThrow({ where: { id } });
     if (cur.status === "CANCELLED") throw new AppError("CONFLICT", "הרכישה כבר בוטלה");
     const gone = await tx.shipmentItem.findFirst({ where: { purchaseId: id, isActive: true, shipment: { status: { in: ["SHIPPED", "DELIVERED"] } } } });
@@ -310,7 +317,7 @@ export async function cancelPurchase(user: UserPrincipal, id: string, raw: z.inp
     // unsent shipment lines
     await tx.shipmentItem.updateMany({ where: { purchaseId: id, isActive: true }, data: { isActive: false, removedAt: now, removedById: user.userId, removeReason: "העסקה בוטלה" } });
     // open pick tasks: the book stays on its shelf (or must be re-shelved by the warehouse if already picked)
-    for (const t of await tx.pickTask.findMany({ where: { lotId: p.lotId, status: { in: ["OPEN", "PICKED", "PACKED"] } } })) {
+    for (const t of await tx.pickTask.findMany({ where: { lotId, status: { in: ["OPEN", "PICKED", "PACKED"] } } })) {
       await tx.pickTask.update({ where: { id: t.id }, data: { status: "CANCELLED", cancelledAt: now } });
       const it = await tx.inventoryItem.findUniqueOrThrow({ where: { id: t.inventoryItemId }, select: { currentLocationId: true } });
       await changeStatus(tx, user, t.inventoryItemId, "PHYSICAL", it.currentLocationId ? "IN_STORAGE" : "AWAITING_STORAGE", { refType: "pick", refId: t.id, reason: "העסקה בוטלה" });
@@ -320,10 +327,10 @@ export async function cancelPurchase(user: UserPrincipal, id: string, raw: z.inp
       data: { status: "CANCELLED", cancelledAt: now, cancelledById: user.userId, cancelReason: input.reason, refundNote: input.refundNote ?? null, returnedToStock: true },
     });
     // the lot is not sold any more; its sale history stays on the purchase
-    await tx.lot.update({ where: { id: p.lotId }, data: { commercialStatus: "UNSOLD" } });
-    for (const itemId of itemIds) await syncItemCommercial(tx, user, itemId, { reason: "עסקה בוטלה", refId: p.lotId });
-    await tx.saleEvent.create({ data: { organizationId: user.organizationId, purchaseId: id, customerId: p.customerId, catalogId: p.catalogId, kind: "CANCELLED", data: asJson({ reason: input.reason, hammerPrice: p.hammerPrice.toFixed(2), refundNote: input.refundNote ?? null }), userId: user.userId } });
-    await audit(user, { action: "sale.cancelled", entityType: "lot", entityId: p.lotId, lotId: p.lotId, data: asJson({ purchaseId: id, reason: input.reason }) }, tx);
+    await tx.lot.update({ where: { id: lotId }, data: { commercialStatus: "UNSOLD" } });
+    for (const itemId of itemIds) await syncItemCommercial(tx, user, itemId, { reason: "עסקה בוטלה", refId: lotId });
+    await tx.saleEvent.create({ data: { organizationId: user.organizationId, purchaseId: id, customerId: p.customerId, catalogId: p.catalogId, kind: "CANCELLED", data: asJson({ reason: input.reason, hammerPrice: p.hammerPrice?.toFixed(2) ?? null, refundNote: input.refundNote ?? null }), userId: user.userId } });
+    await audit(user, { action: "sale.cancelled", entityType: "lot", entityId: lotId, lotId, data: asJson({ purchaseId: id, reason: input.reason }) }, tx);
     return { purchaseId: id };
   });
 }
@@ -375,9 +382,14 @@ export async function voidPayment(user: UserPrincipal, paymentId: string, reason
 export async function releasePurchaseTx(tx: Tx, user: UserPrincipal, purchaseId: string, opts: { note?: string | null } = {}) {
   const p = await tx.purchase.findFirst({ where: { id: purchaseId, organizationId: user.organizationId }, include: { lot: { include: { catalog: true } } } });
   if (!p) throw notFound("הרכישה");
-  assertHouse(user, p.lot.catalog.auctionHouseId);
+  if (p.lot) assertHouse(user, p.lot.catalog.auctionHouseId);
   if (p.status !== "ACTIVE") throw new AppError("CONFLICT", "העסקה בוטלה - לא ניתן לשחרר לליקוט");
   if (p.releasedAt) return { released: false as const, purchase: p };
+  if (!p.lot || !p.lotId) {
+    // a sale from the old system: there is no price or order here, so there is no payment gate (it was settled before AVOT)
+    const { releaseLegacyTx } = await import("./legacy-sales");
+    return releaseLegacyTx(tx, user, p, opts.note ?? null);
+  }
   const ledger = await orderLedger(tx, p.orderId);
   const mine = ledger.purchases.find((x) => x.id === purchaseId);
   const paid = mine?.status === "PAID";
@@ -408,6 +420,17 @@ export async function releasePaidOfOrder(user: UserPrincipal, orderId: string) {
     for (const r of ready) if ((await releasePurchaseTx(tx, user, r.id)).released) released += 1;
     return { released };
   });
+}
+
+/** the physical books of a purchase: the members of its lot, or the one book a legacy sale hangs on */
+export async function purchaseItemIds(tx: Tx | typeof db, p: { lotId: string | null; inventoryItemId: string | null }): Promise<string[]> {
+  if (p.lotId) return memberItemIds(p.lotId, tx);
+  return p.inventoryItemId ? [p.inventoryItemId] : [];
+}
+
+/** how a purchase is called in messages */
+export function purchaseName(p: { lot?: { lotNumber: number } | null }): string {
+  return p.lot ? `פריט ${p.lot.lotNumber}` : "הספר (מכירה ישנה)";
 }
 
 /* ───────────────────────── physical stage (read model) ───────────────────────── */

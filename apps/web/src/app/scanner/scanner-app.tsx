@@ -679,13 +679,18 @@ function Scanner({ user, perms }: { user: { id: string; name: string }; perms: {
 
       {mode !== "COUNT" && result?.item?.sale && (
         <section className="mx-3 mt-1 rounded-xl bg-accent-soft/60 p-3 text-[13px] ring-1 ring-rule" data-testid="handheld-sale">
-          <div className="font-semibold">קונה: {result.item.sale.customerName}</div>
-          <div className="mt-0.5 text-ink-2">
-            {result.item.sale.house}, קטלוג {result.item.sale.catalogNumber}, פריט {result.item.sale.lot}
+          <div className="font-semibold">
+            {result.item.sale.legacy && <span className="me-1.5 rounded bg-stone px-1.5 py-0.5 text-[11.5px] font-medium">מכירה ישנה</span>}
+            קונה: {result.item.sale.customerName ?? "לא ידוע"}
           </div>
+          {!result.item.sale.legacy && (
+            <div className="mt-0.5 text-ink-2">
+              {result.item.sale.house}, קטלוג {result.item.sale.catalogNumber}, פריט {result.item.sale.lot}
+            </div>
+          )}
           <div className="mt-0.5 text-muted">
-            {{ NONE: "טרם חושב חיוב", UNPAID: "ממתין לתשלום", PARTIAL: "שולם חלקית", PAID: "שולם" }[result.item.sale.financial] ?? ""}
-            {" · "}
+            {result.item.sale.legacy ? "" : ({ NONE: "טרם חושב חיוב", UNPAID: "ממתין לתשלום", PARTIAL: "שולם חלקית", PAID: "שולם" }[result.item.sale.financial] ?? "")}
+            {!result.item.sale.legacy && " · "}
             {result.item.sale.released ? "משוחרר לליקוט" : "טרם שוחרר לליקוט"}
           </div>
           {result.item.sale.otherWaitingBooks > 0 && (

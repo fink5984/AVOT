@@ -58,6 +58,12 @@ async function nextLotNumber(tx: Tx, catalogId: string) {
  * counts (its membership was closed when it merged).
  */
 export async function syncItemCommercial(tx: Tx, principal: Principal, itemId: string, ref: { reason?: string; refId?: string } = {}) {
+  // a sale from the old system hangs on the book itself (no lot): the sales module is the source of truth, a lot sync never undoes it
+  const legacy = await tx.purchase.findFirst({ where: { inventoryItemId: itemId, status: "ACTIVE", lotId: null }, select: { id: true } });
+  if (legacy) {
+    await changeStatus(tx, principal, itemId, "COMMERCIAL", "SOLD", { reason: ref.reason ?? "נמכר במערכת הישנה", refType: "purchase", refId: legacy.id });
+    return;
+  }
   const active = await activeLotOfItem(itemId, tx);
   const latest =
     active ??

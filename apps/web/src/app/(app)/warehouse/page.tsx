@@ -5,6 +5,7 @@ import { can } from "@/server/auth/permissions";
 import { db } from "@/server/db";
 import { warehouseTree } from "@/server/services/warehouse";
 import { listCounts } from "@/server/services/counting";
+import { inventoryBreakdown } from "@/server/services/inventory";
 import { ButtonLink } from "@/components/ui/button";
 import { EmptyState, PageBody, PageHeader, Panel, Stat } from "@/components/ui/misc";
 import { fmt, t } from "@/i18n";
@@ -19,11 +20,12 @@ const COUNT_STATUS: Record<string, string> = { OPEN: "בספירה", REVIEW: "מ
 export default async function WarehousePage() {
   const user = await requirePageUser("warehouse.view");
   const org = user.organizationId;
-  const [tree, counts, byStatus, openPicks] = await Promise.all([
+  const [tree, counts, byStatus, openPicks, bk] = await Promise.all([
     warehouseTree(org),
     listCounts(org),
     db.inventoryItem.groupBy({ by: ["physicalStatus"], where: { organizationId: org }, _count: { _all: true } }),
     db.pickTask.count({ where: { organizationId: org, status: { in: ["OPEN", "PICKED", "PACKED"] } } }),
+    inventoryBreakdown(org),
   ]);
   const n = (s: string) => byStatus.find((b) => b.physicalStatus === s)?._count._all ?? 0;
   const manage = can(user.role, "warehouse.manage");
@@ -69,6 +71,11 @@ export default async function WarehousePage() {
           <Stat label={t.physicalStatus.SHIPPED} value={fmt.num(n("SHIPPED"))} />
           <Stat label={t.physicalStatus.MISSING} value={fmt.num(n("MISSING"))} tone={n("MISSING") ? "danger" : undefined} href="/inventory?view=missing" />
         </div>
+
+        <p className="-mt-3 text-[13px] text-muted" data-testid="warehouse-breakdown">
+          <span className="num font-semibold text-ink">{fmt.num(bk.physical)}</span> ספרים נמצאים פיזית בבית המכירות · מתוכם{" "}
+          <span className="num font-semibold text-ink">{fmt.num(bk.soldInHouse + bk.soldAwaitingPick + bk.soldPickedPacked)}</span> נמכרו וממתינים להוצאה · <span className="num font-semibold text-ink">{fmt.num(bk.active)}</span> במלאי הפעיל
+        </p>
 
         <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
           <WarehouseStructure

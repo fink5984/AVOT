@@ -15,6 +15,9 @@ import { PrepareShipmentDialog } from "@/components/sales/prepare-shipment-dialo
 import { api, errorMessage } from "@/lib/api";
 import { formatUsd } from "@/lib/money";
 import { fmt } from "@/i18n";
+import { AttachBuyerDialog } from "@/components/sales/legacy-sale-dialog";
+
+const itemHref = (r: SoldRow) => (r.lotId ? `/lots/${r.lotId}` : `/inventory/${r.itemId}`);
 
 const STAGES = [
   ["AWAITING_RELEASE", "ממתין לשחרור לליקוט"],
@@ -38,18 +41,20 @@ export function SoldTable({
   catalogs: { id: string; label: string }[];
   houses: { id: string; name: string }[];
   filters: { q: string; catalogId: string; houseId: string; financial: string; stage: string };
-  perms: { release: boolean; releaseUnpaid: boolean; ship: boolean; customers: boolean };
+  perms: { release: boolean; releaseUnpaid: boolean; ship: boolean; customers: boolean; legacy: boolean };
 }) {
   const router = useRouter();
   const toast = useToast();
   const [prep, setPrep] = useState<SoldRow | null>(null);
+  const [attach, setAttach] = useState<SoldRow | null>(null);
 
   async function release(r: SoldRow) {
-    if (r.financial !== "PAID" && !perms.releaseUnpaid) return toast.error("הרכישה טרם שולמה במלואה. שחרור לפני תשלום דורש הרשאה מיוחדת");
-    if (r.financial !== "PAID" && !window.confirm(`פריט ${r.lotNumber} טרם שולם במלואו. לשחרר אותו לליקוט בכל זאת?`)) return;
+    // a sale from the old system was settled before AVOT: there is no payment state to wait for
+    if (!r.legacy && r.financial !== "PAID" && !perms.releaseUnpaid) return toast.error("הרכישה טרם שולמה במלואה. שחרור לפני תשלום דורש הרשאה מיוחדת");
+    if (!r.legacy && r.financial !== "PAID" && !window.confirm(`פריט ${r.lotNumber} טרם שולם במלואו. לשחרר אותו לליקוט בכל זאת?`)) return;
     try {
       await api(`/api/purchases/${r.purchaseId}/release`, { method: "POST" });
-      toast.success(`פריט ${r.lotNumber} שוחרר לליקוט`);
+      toast.success(r.legacy ? "הספר שוחרר לליקוט" : `פריט ${r.lotNumber} שוחרר לליקוט`);
       router.refresh();
     } catch (err) {
       toast.error(errorMessage(err));
@@ -84,6 +89,8 @@ export function SoldTable({
         </Select>
         <Select name="stage" defaultValue={filters.stage} aria-label="מצב ליקוט ומשלוח" className="w-full sm:w-48">
           <option value="">כל מצבי הליקוט והמשלוח</option>
+          <option value="OPEN">בטיפול (טרם נשלח)</option>
+          <option value="DONE">הטיפול הסתיים (נשלח / נמסר)</option>
           <option value="READY">מוכן למשלוח (משוחרר, טרם במשלוח)</option>
           {STAGES.map(([k, v]) => (
             <option key={k} value={k}>
@@ -106,21 +113,21 @@ export function SoldTable({
               <li key={r.purchaseId} className="flex gap-3 px-3 py-3">
                 <span className="block size-16 shrink-0 overflow-hidden rounded-md bg-stone ring-1 ring-rule">{r.thumbAssetId && <img src={`/api/assets/${r.thumbAssetId}/thumb`} alt="" loading="lazy" className="size-full object-cover" />}</span>
                 <div className="min-w-0 flex-1 text-[13px]">
-                  <Link href={`/lots/${r.lotId}`} className="block text-[14.5px] font-medium leading-snug">
-                    <span className="num me-1.5 rounded bg-stone px-1.5 text-[13px] font-semibold">{r.lotNumber}</span>
+                  <Link href={itemHref(r)} className="block text-[14.5px] font-medium leading-snug">
+                    {r.lotNumber !== null && <span className="num me-1.5 rounded bg-stone px-1.5 text-[13px] font-semibold">{r.lotNumber}</span>}
                     {r.title}
                   </Link>
-                  <div className="mt-0.5 text-muted">
-                    {r.house}, קטלוג {r.catalogNumber}
-                  </div>
+                  <div className="mt-0.5 text-muted">{r.legacy ? `מכירה ישנה · ${r.inventoryNumber ?? ""}` : `${r.house}, קטלוג ${r.catalogNumber}`}</div>
+                  {r.location && <div className="text-[12px] text-muted">{r.location}</div>}
                   <div className="mt-0.5">
-                    {perms.customers ? <Link href={`/customers/${r.customerId}`} className="font-medium text-ink-2 underline-offset-2 hover:underline">{r.customerName}</Link> : r.customerName} · <span className="num font-semibold">{formatUsd(r.hammerPrice)}</span>
+                    {r.customerId ? perms.customers ? <Link href={`/customers/${r.customerId}`} className="font-medium text-ink-2 underline-offset-2 hover:underline">{r.customerName}</Link> : r.customerName : <span className="text-muted">לקוח לא ידוע</span>} · {r.hammerPrice === null ? <span className="text-muted">מחיר לא ידוע</span> : <span className="num font-semibold">{formatUsd(r.hammerPrice)}</span>}
                   </div>
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
-                    <FinancialBadge status={r.financial} />
+                    {r.legacy && <Badge tone="neutral" dot={false}>מכירה ישנה</Badge>}
+                    {!r.legacy && <FinancialBadge status={r.financial} />}
                     <StageBadge stage={r.stage} released={r.released} />
                   </div>
-                  <RowActions r={r} perms={perms} onRelease={release} onPrepare={setPrep} />
+                  <RowActions r={r} perms={perms} onRelease={release} onPrepare={setPrep} onAttach={setAttach} />
                 </div>
               </li>
             ))}
@@ -144,8 +151,8 @@ export function SoldTable({
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-2">
                       <span className="block size-10 shrink-0 overflow-hidden rounded bg-stone ring-1 ring-rule">{r.thumbAssetId && <img src={`/api/assets/${r.thumbAssetId}/thumb`} alt="" loading="lazy" className="size-full object-cover" />}</span>
-                      <Link href={`/lots/${r.lotId}`} className="num font-semibold underline-offset-2 hover:underline">
-                        {r.lotNumber}
+                      <Link href={itemHref(r)} className="num font-semibold underline-offset-2 hover:underline">
+                        {r.lotNumber ?? "פתיחה"}
                       </Link>
                     </div>
                   </td>
@@ -154,24 +161,35 @@ export function SoldTable({
                     <div className="num font-mono text-[11.5px] text-muted">{r.books.length > 1 ? `${r.books.length} ספרים · ` : ""}{r.books.map((b) => b.inventoryNumber).join(" · ")}</div>
                     {r.location && <div className="text-[12px] text-muted">{r.location}</div>}
                     {r.afterAuction && <Badge tone="info" className="mt-1">נמכר לאחר המכרז</Badge>}
+                    {r.legacy && <Badge tone="neutral" dot={false} className="mt-1">מכירה ישנה</Badge>}
                   </td>
                   <td className="px-3 py-3 text-[12.5px]">
-                    <Link href={`/catalogs/${r.catalogId}`} className="hover:underline">
-                      {r.house}, {r.catalogNumber}
-                    </Link>
-                    <div className="text-muted">{fmt.date(r.saleDate)}</div>
+                    {r.catalogId ? (
+                      <>
+                        <Link href={`/catalogs/${r.catalogId}`} className="hover:underline">
+                          {r.house}, {r.catalogNumber}
+                        </Link>
+                        <div className="text-muted">{fmt.date(r.saleDate)}</div>
+                      </>
+                    ) : (
+                      <span className="text-muted">ללא קטלוג</span>
+                    )}
                   </td>
                   <td className="px-3 py-3">
-                    {perms.customers ? <Link href={`/customers/${r.customerId}`} className="font-medium hover:underline">{r.customerName}</Link> : r.customerName}
-                    <div className="num text-[11.5px] text-muted">לקוח {r.customerNumber}</div>
+                    {r.customerId ? (
+                      <>
+                        {perms.customers ? <Link href={`/customers/${r.customerId}`} className="font-medium hover:underline">{r.customerName}</Link> : r.customerName}
+                        <div className="num text-[11.5px] text-muted">לקוח {r.customerNumber}</div>
+                      </>
+                    ) : (
+                      <span className="text-muted">לא ידוע</span>
+                    )}
                   </td>
                   <td className="px-3 py-3">
                     <div className="num text-muted">{formatUsd(r.startingPrice, "פתיחה: לא הוגדר")}</div>
-                    <div className="num text-[15px] font-semibold">{formatUsd(r.hammerPrice)}</div>
+                    {r.hammerPrice === null ? <div className="text-[13px] text-muted">מחיר לא ידוע</div> : <div className="num text-[15px] font-semibold">{formatUsd(r.hammerPrice)}</div>}
                   </td>
-                  <td className="px-3 py-3">
-                    <FinancialBadge status={r.financial} />
-                  </td>
+                  <td className="px-3 py-3">{r.legacy ? <span className="text-[12px] text-muted">אין נתוני תשלום</span> : <FinancialBadge status={r.financial} />}</td>
                   <td className="px-3 py-3">
                     <StageBadge stage={r.stage} released={r.released} />
                     {r.releasedUnpaid && <div className="mt-0.5 text-[11.5px] text-warn">שוחרר לפני תשלום</div>}
@@ -182,7 +200,7 @@ export function SoldTable({
                     )}
                   </td>
                   <td className="px-3 py-3">
-                    <RowActions r={r} perms={perms} onRelease={release} onPrepare={setPrep} />
+                    <RowActions r={r} perms={perms} onRelease={release} onPrepare={setPrep} onAttach={setAttach} />
                   </td>
                 </tr>
               ))}
@@ -191,12 +209,13 @@ export function SoldTable({
         </div>
       )}
       {truncated && <p className="mt-3 text-[12.5px] text-muted">מוצגות 1,000 השורות הראשונות. יש לצמצם את הסינון.</p>}
-      {prep && <PrepareShipmentDialog open onClose={() => setPrep(null)} customerId={prep.customerId} customerName={prep.customerName} focusPurchaseId={prep.purchaseId} />}
+      {prep && prep.customerId && <PrepareShipmentDialog open onClose={() => setPrep(null)} customerId={prep.customerId} customerName={prep.customerName ?? ""} focusPurchaseId={prep.purchaseId} />}
+      {attach && <AttachBuyerDialog open onClose={() => setAttach(null)} purchaseId={attach.purchaseId} />}
     </>
   );
 }
 
-function RowActions({ r, perms, onRelease, onPrepare }: { r: SoldRow; perms: { release: boolean; ship: boolean }; onRelease: (r: SoldRow) => void; onPrepare: (r: SoldRow) => void }) {
+function RowActions({ r, perms, onRelease, onPrepare, onAttach }: { r: SoldRow; perms: { release: boolean; ship: boolean; legacy?: boolean }; onRelease: (r: SoldRow) => void; onPrepare: (r: SoldRow) => void; onAttach: (r: SoldRow) => void }) {
   const gone = r.stage === "SHIPPED" || r.stage === "DELIVERED";
   return (
     <div className="mt-2 flex flex-wrap gap-1.5 md:mt-0">
@@ -205,7 +224,12 @@ function RowActions({ r, perms, onRelease, onPrepare }: { r: SoldRow; perms: { r
           שחרור לליקוט
         </Button>
       )}
-      {perms.ship && !gone && !r.shipmentId && (
+      {r.legacy && !r.customerId && perms.legacy && !gone && (
+        <Button size="sm" onClick={() => onAttach(r)}>
+          שיוך לקוח
+        </Button>
+      )}
+      {perms.ship && !gone && !r.shipmentId && r.customerId && (
         <Button size="sm" variant="primary" icon={<PackageCheck />} onClick={() => onPrepare(r)}>
           הכנה למשלוח
         </Button>

@@ -21,28 +21,34 @@ export interface SoldFilters {
   catalogId?: string;
   customerId?: string;
   financial?: FinancialStatus;
-  /** AWAITING_RELEASE | AWAITING_PICK | PICKED | PACKED | SHIPPED | DELIVERED | READY (released, not yet in a shipment) */
+  /** AWAITING_RELEASE | AWAITING_PICK | PICKED | PACKED | SHIPPED | DELIVERED | READY (released, not yet in a shipment) | OPEN (still being handled) | DONE (left the warehouse) */
   stage?: string;
   take?: number;
 }
 
 export interface SoldRow {
   purchaseId: string;
-  lotId: string;
-  lotNumber: number;
+  /** a sale from the old system (before AVOT): no lot, no catalog, no price and maybe no buyer */
+  legacy: boolean;
+  lotId: string | null;
+  lotNumber: number | null;
   title: string;
+  /** the (first) book */
+  itemId: string | null;
+  inventoryNumber: string | null;
   thumbAssetId: string | null;
-  house: string;
-  catalogId: string;
-  catalogNumber: string;
+  house: string | null;
+  catalogId: string | null;
+  catalogNumber: string | null;
   saleDate: string | null;
-  customerId: string;
-  customerName: string;
-  customerNumber: number;
+  customerId: string | null;
+  customerName: string | null;
+  customerNumber: number | null;
   startingPrice: string | null;
-  hammerPrice: string;
+  /** null = unknown (a legacy sale), never 0 */
+  hammerPrice: string | null;
   afterAuction: boolean;
-  financial: FinancialStatus;
+  financial: FinancialStatus | "UNKNOWN";
   due: string;
   released: boolean;
   releasedUnpaid: boolean;
@@ -54,25 +60,35 @@ export interface SoldRow {
   shipmentNumber: number | null;
 }
 
+const bookSelect = { id: true, inventoryNumber: true, title: true, physicalStatus: true, primaryAssetId: true, currentLocation: { include: locationInclude } } as const;
+
 export async function listSold(user: UserPrincipal, f: SoldFilters = {}) {
   const q = f.q?.trim();
   const asNumber = q && /^\d+$/.test(q) ? Number(q) : undefined;
+  const catalogOnly = !!(f.houseId || f.catalogId);
+  const bookMatch: Prisma.InventoryItemWhereInput | undefined = q ? { OR: [{ inventoryNumber: { contains: q.toUpperCase() } }, { title: { contains: q, mode: "insensitive" } }] } : undefined;
   const purchases = await db.purchase.findMany({
     where: {
       organizationId: user.organizationId,
       status: "ACTIVE",
-      catalog: { ...catalogScope(user), ...(f.houseId ? { auctionHouseId: f.houseId } : {}) },
+      // a legacy sale has no catalog, so no auction house: it is visible to everyone who may see sales
+      ...(catalogOnly ? { catalog: { ...catalogScope(user), ...(f.houseId ? { auctionHouseId: f.houseId } : {}) } } : user.houseIds === null ? {} : { OR: [{ catalogId: null }, { catalog: catalogScope(user) }] }),
       ...(f.catalogId ? { catalogId: f.catalogId } : {}),
       ...(f.customerId ? { customerId: f.customerId } : {}),
       ...(q
         ? {
-            OR: [
-              { lot: { title: { contains: q, mode: "insensitive" } } },
-              { customer: { name: { contains: q, mode: "insensitive" } } },
-              { customer: { email: { contains: q, mode: "insensitive" } } },
-              { catalog: { OR: [{ number: { contains: q, mode: "insensitive" } }, { name: { contains: q, mode: "insensitive" } }] } },
-              { lot: { members: { some: { removedAt: null, item: { OR: [{ inventoryNumber: { contains: q.toUpperCase() } }, { title: { contains: q, mode: "insensitive" } }] } } } } },
-              ...(asNumber !== undefined ? [{ lot: { lotNumber: asNumber } }, { customer: { number: asNumber } }] : []),
+            AND: [
+              {
+                OR: [
+                  { lot: { title: { contains: q, mode: "insensitive" } } },
+                  { customer: { name: { contains: q, mode: "insensitive" } } },
+                  { customer: { email: { contains: q, mode: "insensitive" } } },
+                  { catalog: { OR: [{ number: { contains: q, mode: "insensitive" } }, { name: { contains: q, mode: "insensitive" } }] } },
+                  { lot: { members: { some: { removedAt: null, item: bookMatch } } } },
+                  { item: bookMatch },
+                  ...(asNumber !== undefined ? [{ lot: { lotNumber: asNumber } }, { customer: { number: asNumber } }] : []),
+                ],
+              },
             ],
           }
         : {}),
@@ -81,55 +97,56 @@ export async function listSold(user: UserPrincipal, f: SoldFilters = {}) {
       lot: { select: { id: true, lotNumber: true, title: true, primaryAssetId: true, startingPrice: true } },
       customer: { select: { id: true, name: true, number: true } },
       catalog: { select: { id: true, number: true, saleDate: true, auctionHouse: { select: { name: true } } } },
+      item: { select: bookSelect },
     },
     orderBy: [{ createdAt: "desc" }],
     take: 3000,
   });
-  const orderIds = [...new Set(purchases.map((p) => p.orderId))];
+  const orderIds = [...new Set(purchases.map((p) => p.orderId).filter((x): x is string => !!x))];
+  const lotIds = purchases.map((p) => p.lotId).filter((x): x is string => !!x);
   const [orderPurchases, payments, members, shipLines] = await Promise.all([
     db.purchase.findMany({ where: { orderId: { in: orderIds } }, select: { id: true, orderId: true, status: true, hammerPrice: true, buyerPremium: true, tax: true, createdAt: true, lot: { select: { lotNumber: true } } } }),
     db.payment.findMany({ where: { orderId: { in: orderIds } }, select: { orderId: true, amount: true, status: true } }),
-    db.lotMember.findMany({
-      where: { lotId: { in: purchases.map((p) => p.lotId) }, removedAt: null },
-      orderBy: { sortOrder: "asc" },
-      include: { item: { select: { id: true, inventoryNumber: true, title: true, physicalStatus: true, primaryAssetId: true, currentLocation: { include: locationInclude } } } },
-    }),
+    db.lotMember.findMany({ where: { lotId: { in: lotIds }, removedAt: null }, orderBy: { sortOrder: "asc" }, include: { item: { select: bookSelect } } }),
     db.shipmentItem.findMany({ where: { purchaseId: { in: purchases.map((p) => p.id) }, isActive: true }, include: { shipment: { select: { id: true, number: true, status: true } } } }),
   ]);
   const ledgers = new Map<string, OrderLedger>();
-  for (const o of orderIds)
-    ledgers.set(ledgerKey(o), computeLedger(o, orderPurchases.filter((x) => x.orderId === o), payments.filter((x) => x.orderId === o)));
+  for (const o of orderIds) ledgers.set(ledgerKey(o), computeLedger(o, orderPurchases.filter((x) => x.orderId === o), payments.filter((x) => x.orderId === o)));
 
   let rows: SoldRow[] = purchases.map((p) => {
-    const lg = ledgers.get(ledgerKey(p.orderId))!;
-    const mine = lg.purchases.find((x) => x.id === p.id);
+    const lg = p.orderId ? ledgers.get(ledgerKey(p.orderId)) : undefined;
+    const mine = lg?.purchases.find((x) => x.id === p.id);
     const lines = shipLines.filter((s) => s.purchaseId === p.id);
-    const books = members
-      .filter((m) => m.lotId === p.lotId)
-      .map((m) => {
-        const delivered = lines.some((l) => l.inventoryItemId === m.inventoryItemId && l.shipment.status === "DELIVERED");
-        return { itemId: m.item.id, inventoryNumber: m.item.inventoryNumber, title: m.item.title, location: m.item.currentLocation ? locationLabel(m.item.currentLocation) : null, stage: stageOf([{ physicalStatus: m.item.physicalStatus, delivered }]), thumb: m.item.primaryAssetId };
-      });
-    const stage = stageOf(members.filter((m) => m.lotId === p.lotId).map((m) => ({ physicalStatus: m.item.physicalStatus, delivered: lines.some((l) => l.inventoryItemId === m.inventoryItemId && l.shipment.status === "DELIVERED") })));
+    // the physical books of the sale: the members of the lot, or the one book a legacy sale hangs on
+    const bookRows = p.lotId ? members.filter((m) => m.lotId === p.lotId).map((m) => m.item) : p.item ? [p.item] : [];
+    const books = bookRows.map((it) => {
+      const delivered = lines.some((l) => l.inventoryItemId === it.id && l.shipment.status === "DELIVERED");
+      return { itemId: it.id, inventoryNumber: it.inventoryNumber, title: it.title, location: it.currentLocation ? locationLabel(it.currentLocation) : null, stage: stageOf([{ physicalStatus: it.physicalStatus, delivered }]), thumb: it.primaryAssetId };
+    });
+    const stage = stageOf(bookRows.map((it) => ({ physicalStatus: it.physicalStatus, delivered: lines.some((l) => l.inventoryItemId === it.id && l.shipment.status === "DELIVERED") })));
     const ship = lines[0]?.shipment ?? null;
+    const legacy = !p.lotId;
     return {
       purchaseId: p.id,
+      legacy,
       lotId: p.lotId,
-      lotNumber: p.lot.lotNumber,
-      title: p.lot.title,
-      thumbAssetId: p.lot.primaryAssetId ?? books.find((b) => b.thumb)?.thumb ?? null,
-      house: p.catalog.auctionHouse.name,
+      lotNumber: p.lot?.lotNumber ?? null,
+      title: p.lot?.title ?? p.item?.title ?? "",
+      itemId: books[0]?.itemId ?? null,
+      inventoryNumber: books[0]?.inventoryNumber ?? null,
+      thumbAssetId: p.lot?.primaryAssetId ?? books.find((b) => b.thumb)?.thumb ?? null,
+      house: p.catalog?.auctionHouse.name ?? null,
       catalogId: p.catalogId,
-      catalogNumber: p.catalog.number,
-      saleDate: p.catalog.saleDate?.toISOString() ?? null,
+      catalogNumber: p.catalog?.number ?? null,
+      saleDate: p.catalog?.saleDate?.toISOString() ?? null,
       customerId: p.customerId,
-      customerName: p.customer.name,
-      customerNumber: p.customer.number,
-      startingPrice: (p.startingPriceAtSale ?? p.lot.startingPrice)?.toFixed(2) ?? null,
-      hammerPrice: p.hammerPrice.toFixed(2),
+      customerName: p.customer?.name ?? null,
+      customerNumber: p.customer?.number ?? null,
+      startingPrice: (p.startingPriceAtSale ?? p.lot?.startingPrice)?.toFixed(2) ?? null,
+      hammerPrice: p.hammerPrice?.toFixed(2) ?? null,
       afterAuction: p.afterAuction,
-      financial: mine?.status ?? "NONE",
-      due: lg.due,
+      financial: legacy ? "UNKNOWN" : (mine?.status ?? "NONE"),
+      due: lg?.due ?? "0.00",
       released: !!p.releasedAt,
       releasedUnpaid: p.releasedUnpaid,
       stage,
@@ -144,15 +161,22 @@ export async function listSold(user: UserPrincipal, f: SoldFilters = {}) {
     rows = rows.filter((r) => {
       if (f.stage === "AWAITING_RELEASE") return !r.released && r.stage === "IN_WAREHOUSE";
       if (f.stage === "READY") return r.released && !r.shipmentId && ["AWAITING_PICK", "PICKED", "PACKED", "IN_WAREHOUSE"].includes(r.stage);
+      // still being handled = not shipped / delivered yet; done = left the warehouse
+      if (f.stage === "OPEN") return r.stage !== "SHIPPED" && r.stage !== "DELIVERED";
+      if (f.stage === "DONE") return r.stage === "SHIPPED" || r.stage === "DELIVERED";
       return r.stage === f.stage;
     });
   }
   const take = f.take ?? 1000;
+  const priced = rows.filter((r) => r.hammerPrice !== null);
   const summary = {
     soldLots: rows.length,
     soldBooks: rows.reduce((a, r) => a + Math.max(1, r.books.length), 0),
-    hammerTotal: addMoney(...rows.map((r) => r.hammerPrice)),
-    customers: new Set(rows.map((r) => r.customerId)).size,
+    /** only sales with a known price; a legacy sale adds nothing here (it is not 0) */
+    hammerTotal: addMoney(...priced.map((r) => r.hammerPrice!)),
+    unknownPrice: rows.length - priced.length,
+    legacy: rows.filter((r) => r.legacy).length,
+    customers: new Set(rows.map((r) => r.customerId).filter(Boolean)).size,
     awaitingPayment: rows.filter((r) => r.financial === "UNPAID" || r.financial === "PARTIAL").length,
     awaitingShipment: rows.filter((r) => r.stage !== "SHIPPED" && r.stage !== "DELIVERED").length,
     shipped: rows.filter((r) => r.stage === "SHIPPED" || r.stage === "DELIVERED").length,
@@ -188,11 +212,12 @@ export async function listCustomers(user: UserPrincipal, opts: { q?: string; fil
   });
   const ids = customers.map((c) => c.id);
   const [purchases, orders, payments] = await Promise.all([
-    db.purchase.findMany({ where: { customerId: { in: ids }, status: "ACTIVE" }, select: { id: true, customerId: true, orderId: true, catalogId: true, lotId: true, hammerPrice: true, buyerPremium: true, tax: true, createdAt: true, lot: { select: { lotNumber: true } } } }),
+    db.purchase.findMany({ where: { customerId: { in: ids }, status: "ACTIVE" }, select: { id: true, customerId: true, orderId: true, catalogId: true, lotId: true, inventoryItemId: true, hammerPrice: true, buyerPremium: true, tax: true, createdAt: true, lot: { select: { lotNumber: true } } } }),
     db.buyerOrder.findMany({ where: { customerId: { in: ids } }, select: { id: true, customerId: true } }),
     db.payment.findMany({ where: { order: { customerId: { in: ids } } }, select: { orderId: true, amount: true, status: true } }),
   ]);
-  const members = await db.lotMember.findMany({ where: { lotId: { in: purchases.map((p) => p.lotId) }, removedAt: null }, select: { lotId: true, item: { select: { physicalStatus: true } } } });
+  const members = await db.lotMember.findMany({ where: { lotId: { in: purchases.map((p) => p.lotId).filter((x): x is string => !!x) }, removedAt: null }, select: { lotId: true, item: { select: { physicalStatus: true } } } });
+  const legacyItems = await db.inventoryItem.findMany({ where: { id: { in: purchases.map((p) => p.inventoryItemId).filter((x): x is string => !!x) } }, select: { id: true, physicalStatus: true } });
   const rows = customers.map((c) => {
     const ps = purchases.filter((p) => p.customerId === c.id);
     let open = "0.00";
@@ -203,7 +228,7 @@ export async function listCustomers(user: UserPrincipal, opts: { q?: string; fil
       open = addMoney(open, lg.due);
       paid = addMoney(paid, lg.paid);
     }
-    for (const p of ps) if (members.filter((m) => m.lotId === p.lotId).some((m) => m.item.physicalStatus !== "SHIPPED")) waitingLots += 1;
+    for (const p of ps) if (p.lotId ? members.filter((m) => m.lotId === p.lotId).some((m) => m.item.physicalStatus !== "SHIPPED") : legacyItems.some((i) => i.id === p.inventoryItemId && i.physicalStatus !== "SHIPPED")) waitingLots += 1;
     return {
       id: c.id,
       number: c.number,
@@ -212,9 +237,9 @@ export async function listCustomers(user: UserPrincipal, opts: { q?: string; fil
       phone: c.phone,
       needsDetails: c.needsDetails,
       external: c.identities.filter((i) => i.kind === "BUYER_ID").map((i) => `${i.system}: ${i.externalId}`),
-      sales: new Set(ps.map((p) => p.catalogId)).size,
+      sales: new Set(ps.map((p) => p.catalogId).filter(Boolean)).size,
       lots: ps.length,
-      hammerTotal: addMoney(...ps.map((p) => p.hammerPrice.toFixed(2))),
+      hammerTotal: addMoney(...ps.map((p) => p.hammerPrice?.toFixed(2))),
       paid,
       open,
       waitingLots,
@@ -285,38 +310,51 @@ export async function customerDetail(user: UserPrincipal, id: string) {
 
 /* ───────────────────────── one book / lot / the handheld ───────────────────────── */
 
-/** the sale of a book (when it has an active purchase): buyer, price, states and the customer's other waiting books */
+/**
+ * the sale of a book (when it has an active purchase): buyer, price, states and the customer's other waiting books.
+ * A sale from the old system hangs on the book itself (no lot, no catalog, price and buyer may be unknown).
+ */
 export async function saleOfItem(user: UserPrincipal, itemId: string, opts: { forHandheld?: boolean } = {}) {
   const m = await db.lotMember.findFirst({ where: { organizationId: user.organizationId, inventoryItemId: itemId, removedAt: null, lot: { purchases: { some: { status: "ACTIVE" } } } }, select: { lotId: true } });
-  if (!m) return null;
   const p = await db.purchase.findFirst({
-    where: { lotId: m.lotId, status: "ACTIVE" },
+    where: m ? { lotId: m.lotId, status: "ACTIVE" } : { inventoryItemId: itemId, lotId: null, status: "ACTIVE" },
     include: { customer: { select: { id: true, name: true, number: true } }, lot: { select: { id: true, lotNumber: true } }, catalog: { select: { id: true, number: true, auctionHouse: { select: { name: true } } } } },
   });
   if (!p) return null;
-  const books = await customerBooks(db, user.organizationId, p.customerId);
+  const books = p.customerId ? await customerBooks(db, user.organizationId, p.customerId) : [];
   const others = books.filter((b) => b.purchaseId !== p.id);
   const mine = books.find((b) => b.itemId === itemId);
-  const lg = await db.purchase.findMany({ where: { orderId: p.orderId }, select: { id: true, orderId: true, status: true, hammerPrice: true, buyerPremium: true, tax: true, createdAt: true, lot: { select: { lotNumber: true } } } });
-  const pay = await db.payment.findMany({ where: { orderId: p.orderId }, select: { amount: true, status: true } });
-  const ledger = computeLedger(p.orderId, lg, pay);
-  const fin = ledger.purchases.find((x) => x.id === p.id)?.status ?? "NONE";
+  let fin: FinancialStatus | "UNKNOWN" = "UNKNOWN";
+  let due = "0.00";
+  if (p.orderId) {
+    const lg = await db.purchase.findMany({ where: { orderId: p.orderId }, select: { id: true, orderId: true, status: true, hammerPrice: true, buyerPremium: true, tax: true, createdAt: true, lot: { select: { lotNumber: true } } } });
+    const pay = await db.payment.findMany({ where: { orderId: p.orderId }, select: { amount: true, status: true } });
+    const ledger = computeLedger(p.orderId, lg, pay);
+    fin = ledger.purchases.find((x) => x.id === p.id)?.status ?? "NONE";
+    due = ledger.due;
+  }
+  let stage = mine?.stage;
+  if (!stage) {
+    const it = await db.inventoryItem.findUnique({ where: { id: itemId }, select: { physicalStatus: true } });
+    stage = stageOf([{ physicalStatus: it?.physicalStatus ?? "IN_STORAGE" }]);
+  }
   const base = {
     purchaseId: p.id,
-    customerName: p.customer.name,
-    lot: p.lot.lotNumber,
-    house: p.catalog.auctionHouse.name,
-    catalogNumber: p.catalog.number,
+    legacy: !p.lotId,
+    customerName: p.customer?.name ?? null,
+    lot: p.lot?.lotNumber ?? null,
+    house: p.catalog?.auctionHouse.name ?? null,
+    catalogNumber: p.catalog?.number ?? null,
     financial: fin,
     released: !!p.releasedAt,
-    stage: mine?.stage ?? "IN_WAREHOUSE",
+    stage,
     shipmentId: mine?.shipmentId ?? null,
     otherWaitingBooks: others.filter((b) => b.stage !== "SHIPPED" && b.stage !== "DELIVERED").length,
     otherPickableBooks: others.filter((b) => b.released && ["AWAITING_PICK"].includes(b.stage)).length,
   };
   // the handheld gets what the task needs - no customer id, no money amounts, no contact details
   if (opts.forHandheld) return base;
-  return { ...base, customerId: p.customer.id, customerNumber: p.customer.number, hammerPrice: p.hammerPrice.toFixed(2), catalogId: p.catalogId, lotId: p.lotId, due: ledger.due };
+  return { ...base, customerId: p.customer?.id ?? null, customerNumber: p.customer?.number ?? null, hammerPrice: p.hammerPrice?.toFixed(2) ?? null, catalogId: p.catalogId, lotId: p.lotId, due };
 }
 
 /** how many sold lots / books of a catalog are in each state - the numbers on the catalog page */

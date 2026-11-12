@@ -101,9 +101,9 @@ describe.skipIf(!hasDb)("finishing a sale (real database)", () => {
     await archiveCatalog(ctx.admin, catalog.id);
     expect((await db.catalog.findUniqueOrThrow({ where: { id: catalog.id } })).status).toBe("ARCHIVED");
     const p = await db.purchase.findFirstOrThrow({ where: { lotId: lots[0]!.lot.id } });
-    await recordPayment(ctx.editor, p.orderId, { amount: "100" });
+    await recordPayment(ctx.editor, p.orderId!, { amount: "100" });
     await releasePurchase(ctx.editor, p.id);
-    const s = await createShipment(ctx.editor, { customerId: p.customerId, purchaseIds: [p.id] });
+    const s = await createShipment(ctx.editor, { customerId: p.customerId!, purchaseIds: [p.id] });
     await db.$transaction((tx) => pickItemTx(tx, ctx.warehouse, lots[0]!.item.id));
     await packShipment(ctx.editor, s.id);
     await expect(shipShipment(ctx.editor, s.id)).resolves.toMatchObject({ status: "SHIPPED" });

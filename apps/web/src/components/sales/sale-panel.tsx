@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { formatUsd } from "@/lib/money";
 import { FinancialBadge, ShipmentBadge, StageBadge } from "./status";
 import { RecordSaleButton } from "./record-sale-button";
+import { LegacySaleControls } from "./legacy-sale-dialog";
 
 /**
  * The sale of a book or lot on its own page: who bought it, for how much, the three states, the customer's other waiting
@@ -22,24 +23,32 @@ export async function SalePanel({ user, itemId, lotId, lotNumber, commercialStat
   return (
     <Panel title="מכירה">
       <div className="space-y-2 px-4 py-3 text-[13.5px]">
+        {sale && "customerId" in sale && sale.legacy && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge tone="neutral" dot={false}>מכירה ישנה</Badge>
+            <span className="text-[12.5px] text-muted">נמכר לפני המעבר ל-AVOT</span>
+          </div>
+        )}
         {sale && "customerId" in sale ? (
           <>
             <div>
               קונה:{" "}
-              {canUser(user, "customer.view") ? (
+              {!sale.customerId ? (
+                <span className="text-muted">לא ידוע</span>
+              ) : canUser(user, "customer.view") ? (
                 <Link href={`/customers/${sale.customerId}`} className="font-medium hover:underline">
                   {sale.customerName}
                 </Link>
               ) : (
                 <b>{sale.customerName}</b>
               )}
-              <span className="num ms-1 text-muted">#{sale.customerNumber}</span>
+              {sale.customerNumber !== null && <span className="num ms-1 text-muted">#{sale.customerNumber}</span>}
             </div>
             <div className="num">
-              מחיר פטיש: <b>{formatUsd(sale.hammerPrice)}</b>
+              מחיר פטיש: {sale.hammerPrice === null ? <span className="text-muted">לא ידוע</span> : <b>{formatUsd(sale.hammerPrice)}</b>}
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
-              <FinancialBadge status={sale.financial} />
+              {!sale.legacy && <FinancialBadge status={sale.financial} />}
               <StageBadge stage={sale.stage} released={sale.released} />
             </div>
             {ship && (
@@ -50,6 +59,9 @@ export async function SalePanel({ user, itemId, lotId, lotNumber, commercialStat
                 <ShipmentBadge status={ship.status} />
                 {ship.others.length > 0 && <span className="text-muted"> · עוד {ship.others.length} ספרים באותו משלוח</span>}
               </div>
+            )}
+            {sale.legacy && (canUser(user, "sale.legacy") || canUser(user, "customer.edit")) && (
+              <LegacySaleControls purchaseId={sale.purchaseId} canAttach={canUser(user, "sale.legacy")} canUnmark={canUser(user, "sale.legacy") && sale.stage !== "SHIPPED" && sale.stage !== "DELIVERED"} hasBuyer={!!sale.customerId} />
             )}
             {sale.otherWaitingBooks > 0 && (
               <Badge tone="warn" dot={false} className="h-auto whitespace-normal py-1 text-[12.5px]">

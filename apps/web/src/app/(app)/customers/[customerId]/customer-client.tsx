@@ -54,7 +54,7 @@ export function CustomerClient({ data, perms }: { data: Data; perms: Perms }) {
   const [cancelFor, setCancelFor] = useState<string | null>(null);
   const [merge, setMerge] = useState(false);
 
-  const catalogs = useMemo(() => [...new Map(data.purchases.map((p) => [p.catalogId, `${p.house} · ${p.catalogNumber}`])).entries()], [data.purchases]);
+  const catalogs = useMemo(() => [...new Map(data.purchases.filter((p) => p.catalogId).map((p) => [p.catalogId as string, `${p.house} · ${p.catalogNumber}`] as const)).entries()], [data.purchases]);
   const rows = data.purchases.filter((p) => (!catalog || p.catalogId === catalog) && (!fin || p.financial === fin) && (!stage || (stage === "WAITING" ? p.stage !== "SHIPPED" && p.stage !== "DELIVERED" : p.stage === stage)));
 
   async function release(purchaseId: string, financial: string) {

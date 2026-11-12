@@ -59,7 +59,7 @@ describe.skipIf(!hasDb)("customer shipments (real database)", () => {
     const { c, lots } = await buyer(6);
     const hint = await shippingHint(ctx.editor, { itemId: lots[0]!.item.id });
     expect(hint).toMatchObject({ otherLots: 5, otherBooks: 5, availableLots: 5, inOtherShipments: 0 });
-    expect(hint!.customer.id).toBe(c.id);
+    expect(hint!.customer!.id).toBe(c.id);
 
     const one = [lots[0]!.purchase.id];
     expect(await codeOf(createShipment(ctx.editor, { customerId: c.id, purchaseIds: one }))).toBe("PARTIAL_SHIPMENT");
@@ -125,7 +125,7 @@ describe.skipIf(!hasDb)("customer shipments (real database)", () => {
     const books = await customerBooks(db, ctx.org.id, c.id);
     expect(books.every((b) => !b.available && b.blockedReason?.includes("טרם"))).toBe(true);
     // paying releases nothing by itself; releasing after payment is a normal action
-    await recordPayment(ctx.editor, lots[0]!.purchase.orderId, { amount: "300" });
+    await recordPayment(ctx.editor, lots[0]!.purchase.orderId!, { amount: "300" });
     await releasePurchase(ctx.editor, lots[0]!.purchase.id);
     expect((await customerBooks(db, ctx.org.id, c.id)).filter((b) => b.available)).toHaveLength(1);
     await releasePurchase(ctx.editor, lots[1]!.purchase.id);

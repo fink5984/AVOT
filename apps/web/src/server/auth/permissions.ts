@@ -107,6 +107,8 @@ export const PERMISSIONS = {
   "sale.cancel": ["ADMIN"],
   /** end a sale: decide the unsold lots, close results */
   "sale.finish": ["ADMIN", "EDITOR"],
+  /** mark a book as sold in the old system (before AVOT), take the mark back, attach its buyer later */
+  "sale.legacy": ["ADMIN", "EDITOR"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
