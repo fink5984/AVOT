@@ -21,6 +21,7 @@ import { cn } from "@/lib/cn";
 import { Gallery } from "./gallery/gallery-client";
 import { LotControls, LotDetails, LotMenu, LotNotes } from "./lot-client";
 import { LotDisplayPanel } from "./lot-display";
+import { LotPricePanel } from "@/components/lot-price-panel";
 import { locationInclude, locationLabel } from "@/server/services/location-label";
 import { readTextFormat } from "@/lib/rich-text";
 
@@ -179,6 +180,7 @@ export default async function LotPage({ params, searchParams }: { params: Promis
         />
 
         <div className="space-y-4">
+          <LotPricePanel lotId={lot.id} price={lot.startingPrice?.toFixed(2) ?? null} version={lot.priceVersion} canEdit={can(user.role, "lot.price.edit")} ended={lot.assignmentStatus === "ENDED"} />
           <LotDetails lot={formValue} catalogId={lot.catalogId} canEdit={canEdit} />
           <LotNotes lotId={lot.id} initial={lot.internalNotes ?? ""} canEdit={canEdit} />
           <PhotographerNotes

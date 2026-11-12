@@ -727,6 +727,14 @@ model Lot {
   endReason        String?
   /// reference to a designed catalog page (future layout module)
   pageRef          Json?
+  /// Starting price in USD. The price belongs to the LOT (a book only in stock has none). null = not set — never 0.
+  startingPrice    Decimal?            @db.Decimal(12, 2)
+  /// grows on every change of the starting price: two people editing the same price are detected (optimistic concurrency)
+  priceVersion     Int                 @default(0)
+  /// what happens to the lot after an auction in which it did not sell
+  unsoldDisposition UnsoldDisposition  @default(NONE)
+  /// id of the lot in an external system (Bidspirit), when known
+  externalRef      String?
   /// set on a lot that was merged into another lot: it stays as ENDED history, is never shown as a separate lot and
   /// its number is never reused; cleared when its book leaves the combined lot and the lot is reactivated
   mergedIntoLotId  String?             @db.Uuid
@@ -752,6 +760,7 @@ model Lot {
   members             LotMember[]
   aiRuns              LotAiRun[]
   compositionEvents   LotCompositionEvent[]
+  priceEvents         LotPriceEvent[]
 
   @@unique([catalogId, lotNumber])
   @@index([organizationId])
@@ -854,7 +863,7 @@ model LotAiRun {
   appliedVersion           Int?
   discardedAt              DateTime?
 
-  lot Lot @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  lot Lot? @relation(fields: [lotId], references: [id], onDelete: SetNull)
 
   @@index([lotId, createdAt])
   @@index([organizationId, createdAt])
@@ -1624,4 +1633,39 @@ model AiSettingsVersion {
   createdAt         DateTime @default(now())
 
   @@unique([organizationId, version])
+}
+
+/// What happens to a lot that did not sell at the auction. NONE = not decided (or sold).
+enum UnsoldDisposition {
+  NONE
+  /// still bound to its catalog and available for a sale after the auction
+  HOLD_POST_SALE
+  /// the assignment ended, the book is back in free stock
+  RELEASED_TO_STOCK
+  /// the book goes back to its consignor
+  RETURN_TO_CONSIGNOR
+}
+
+/// Immutable history of a lot's starting price: who set it, who changed it, from what, when. It stays when the lot is
+/// sold, the book leaves the catalog, or the lot is merged / dissolved (the lot row itself is never deleted).
+model LotPriceEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  /// null only after the lot row itself was deleted (a mistaken assignment): the event stays
+  lotId          String?  @db.Uuid
+  catalogId      String   @db.Uuid
+  lotNumber      Int?
+  /// SET | CHANGE | CLEAR | MERGED_INTO | MERGED_FROM | DISSOLVED | ENDED | DELETED
+  kind           String
+  previous       Decimal? @db.Decimal(12, 2)
+  next           Decimal? @db.Decimal(12, 2)
+  note           String?
+  data           Json?
+  userId         String?  @db.Uuid
+  createdAt      DateTime @default(now())
+
+  lot Lot? @relation(fields: [lotId], references: [id], onDelete: SetNull)
+
+  @@index([lotId, createdAt])
+  @@index([organizationId, createdAt])
 }

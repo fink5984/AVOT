@@ -54,6 +54,8 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
     assignmentStatus: l.assignmentStatus,
     commercialStatus: l.commercialStatus,
     locationLabel: l.locationLabel,
+    startingPrice: l.startingPrice,
+    priceVersion: l.priceVersion,
     bookCount: l.bookCount,
     books: l.books.map((b) => ({ itemId: b.itemId, inventoryNumber: b.inventoryNumber, title: b.title, locationLabel: b.locationLabel, consignorId: b.consignorId, ai: b.ai })),
     consignorId: l.consignorId,
@@ -89,6 +91,7 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
             catalogNumber={catalog.number}
             canImport={can(user.role, "lot.create")}
             canExport={can(user.role, "export.create")}
+            missingPrices={lots.filter((l) => l.assignmentStatus === "ACTIVE" && l.startingPrice === null).length}
             canClose={can(user.role, "commercial.edit") && catalog.status !== "ARCHIVED"}
             activeLots={activeLots}
           />
@@ -118,6 +121,7 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
           commercial: can(user.role, "commercial.edit"),
           assign: can(user.role, "catalog.assign"),
           ai: can(user.role, "ai.analyze"),
+          price: can(user.role, "lot.price.edit"),
         }}
       />
     </>

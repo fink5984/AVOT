@@ -10,6 +10,7 @@ import { asJson } from "../json";
 import { changeStatus } from "./item-status";
 import { getItemOrThrow } from "./inventory";
 import { createPickTaskTx } from "./picking";
+import { recordPriceEvent } from "./lot-pricing";
 import { activeLotOfItem, addFounderMember, memberItemIds, setMembersActive } from "./lot-members";
 import { ITEM_FORMAT_FIELDS, formatToStore, readTextFormat, textFormatSchema, type Segment, type TextFormat } from "@/lib/rich-text";
 
@@ -79,6 +80,8 @@ async function endLotTx(tx: Tx, principal: Principal, lotId: string, outcome: "S
     data: { assignmentStatus: "ENDED", commercialStatus: outcome, endedAt: new Date(), endReason: reason },
   });
   await setMembersActive(tx, lotId, false);
+  // the starting price stays on the ended lot; the event makes the ending visible in the price history
+  if (lot.startingPrice) await recordPriceEvent(tx, principal, lot, "ENDED", lot.startingPrice, null, { note: reason, data: { outcome } });
   for (const itemId of await memberItemIds(lotId, tx)) await syncItemCommercial(tx, principal, itemId, { reason: reason ?? undefined, refId: lotId });
   return lot;
 }

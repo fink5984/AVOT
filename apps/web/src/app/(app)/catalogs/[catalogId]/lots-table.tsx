@@ -25,6 +25,7 @@ import { AiAnalyzeButton, type AiButtonState } from "@/components/ai/ai-button";
 import { fmt, t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { LotPriceCell } from "@/components/lot-price";
 
 export interface LotRow {
   id: string;
@@ -43,6 +44,9 @@ export interface LotRow {
   assignmentStatus: "ACTIVE" | "ENDED";
   commercialStatus: CommercialStatus;
   locationLabel: string | null;
+  /** starting price in USD ("150.00"), null = not set */
+  startingPrice: string | null;
+  priceVersion: number;
   /** 1 for an ordinary lot, 2+ for a combined lot */
   bookCount: number;
   books: { itemId: string; inventoryNumber: string; title: string; locationLabel: string | null; consignorId: string | null; ai: AiButtonState }[];
@@ -96,7 +100,7 @@ export function LotsTable({
   lots: LotRow[];
   initialStatus: string;
   otherCatalogs: { id: string; number: string; name: string; house?: string }[];
-  perms: { create: boolean; edit: boolean; status: boolean; capture: boolean; commercial?: boolean; assign?: boolean; ai?: boolean };
+  perms: { create: boolean; edit: boolean; status: boolean; capture: boolean; commercial?: boolean; assign?: boolean; ai?: boolean; price?: boolean };
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -104,6 +108,8 @@ export function LotsTable({
   const [status, setStatus] = useState(initialStatus);
   const [sort, setSort] = useState<Sort>("number");
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("ALL");
+  /** show only the active lots that still have no starting price */
+  const [missingPrice, setMissingPrice] = useState(false);
   /** phones: the status / review / sort controls live behind one button */
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -121,7 +127,7 @@ export function LotsTable({
 
   const visible = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    let rows = lots.filter((l) => (status === "ALL" || l.status === status) && (reviewFilter === "ALL" || l.review.status === reviewFilter));
+    let rows = lots.filter((l) => (status === "ALL" || l.status === status) && (reviewFilter === "ALL" || l.review.status === reviewFilter) && (!missingPrice || (l.assignmentStatus === "ACTIVE" && l.startingPrice === null)));
     if (needle) {
       rows = rows.filter(
         (l) =>
@@ -140,7 +146,14 @@ export function LotsTable({
     if (sort === "review") sorted.sort((a, b) => REVIEW_ORDER.indexOf(a.review.status) - REVIEW_ORDER.indexOf(b.review.status) || a.lotNumber - b.lotNumber);
     if (sort === "status") sorted.sort((a, b) => LOT_STATUSES.indexOf(a.status) - LOT_STATUSES.indexOf(b.status) || a.lotNumber - b.lotNumber);
     return sorted;
-  }, [lots, q, status, sort, reviewFilter]);
+  }, [lots, q, status, sort, reviewFilter, missingPrice]);
+
+  /** "200 לוטים · 180 עם מחיר · 20 ללא מחיר" (active lots only; a combined lot is one lot) */
+  const priceSummary = useMemo(() => {
+    const active = lots.filter((l) => l.assignmentStatus === "ACTIVE");
+    const withPrice = active.filter((l) => l.startingPrice !== null).length;
+    return { total: active.length, withPrice, without: active.length - withPrice };
+  }, [lots]);
 
   const statusCounts = useMemo(() => {
     const m = new Map<string, number>();
@@ -303,6 +316,21 @@ export function LotsTable({
         </form>
       )}
 
+      {priceSummary.total > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13.5px]" data-testid="price-summary">
+          <span>
+            <span className="num font-semibold">{priceSummary.total}</span> לוטים · <span className="num font-semibold">{priceSummary.withPrice}</span> עם מחיר ·{" "}
+            <span className={cn("num font-semibold", priceSummary.without > 0 && "text-warn")}>{priceSummary.without}</span> ללא מחיר
+          </span>
+          {priceSummary.without > 0 && (
+            <label className="flex cursor-pointer items-center gap-1.5 text-[13px]">
+              <input type="checkbox" checked={missingPrice} onChange={(e) => setMissingPrice(e.target.checked)} className="size-4 accent-[var(--color-ink)]" />
+              הצג רק לוטים ללא מחיר
+            </label>
+          )}
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-0 flex-1 sm:order-3 sm:ms-auto sm:flex-none sm:w-60">
           <Search className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-faint" />
@@ -397,6 +425,10 @@ export function LotsTable({
                     </div>
                     <div className="mt-2 grid grid-cols-1 gap-1.5">
                       <ReviewCell review={l.review} />
+                      <div className="relative z-10 flex items-center gap-2 text-[13px]">
+                        <span className="text-muted">מחיר פתיחה:</span>
+                        <LotPriceCell lotId={l.id} price={l.startingPrice} version={l.priceVersion} canEdit={!!perms.price && l.assignmentStatus === "ACTIVE"} />
+                      </div>
                       <div className="flex flex-wrap items-center gap-1.5">
                         <LotStatusBadge status={l.status} />
                         <CommercialStatusBadge status={l.commercialStatus} className={cn(l.assignmentStatus === "ENDED" && "opacity-70")} />
@@ -427,6 +459,7 @@ export function LotsTable({
                   <th className="px-3 py-3 text-start font-medium">ספר</th>
                   <th className="w-52 px-3 py-3 text-start font-medium">בדיקת פרטים</th>
                   <th className="w-32 px-3 py-3 text-start font-medium">צילום</th>
+                  <th className="w-28 px-3 py-3 text-start font-medium">מחיר פתיחה</th>
                   <th className="w-32 px-3 py-3 text-start font-medium">מסחרי</th>
                   <th className="w-28 pe-4 ps-2 py-3" aria-label="פעולות" />
                 </tr>
@@ -482,6 +515,9 @@ export function LotsTable({
                       >
                         <span className="num">{l.photoCount}</span> תמונות
                       </div>
+                    </td>
+                    <td className="relative z-10 px-1 py-2.5">
+                      <LotPriceCell lotId={l.id} price={l.startingPrice} version={l.priceVersion} canEdit={!!perms.price && l.assignmentStatus === "ACTIVE"} />
                     </td>
                     <td className="px-3 py-3">
                       <CommercialStatusBadge status={l.commercialStatus} className={cn(l.assignmentStatus === "ENDED" && "opacity-70")} />

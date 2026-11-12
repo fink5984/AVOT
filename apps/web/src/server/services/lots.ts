@@ -9,6 +9,7 @@ import { audit } from "../audit";
 import type { UserPrincipal } from "../auth/principal";
 import { assertHouse } from "../auth/houses";
 import { requirementsSchema } from "./catalogs";
+import { recordPriceEvent } from "./lot-pricing";
 import { changeStatus } from "./item-status";
 import { assignToCatalog, syncItemCommercial } from "./assignments";
 import { createItemTx, findItemByOpId, itemProgress, setItemCategoryNote, type CategoryProgress } from "./inventory";
@@ -290,6 +291,8 @@ export async function deleteLot(user: UserPrincipal, lotId: string) {
   const picks = await db.pickTask.count({ where: { lotId } });
   if (picks) throw new AppError("CONFLICT", "לפריט קיימות משימות ליקוט");
   await db.$transaction(async (tx) => {
+    // a mistaken assignment disappears, but what its price was stays in the history
+    if (lot.startingPrice) await recordPriceEvent(tx, user, lot, "DELETED", lot.startingPrice, null, { note: "השיוך לקטלוג נמחק" });
     await tx.lot.delete({ where: { id: lotId } });
     await syncItemCommercial(tx, user, lot.inventoryItemId, { reason: `השיוך לקטלוג ${lot.catalog.number} נמחק` });
     await compactLotNumbers(tx, lot.catalogId);
@@ -464,6 +467,7 @@ export async function listLots(
     const statuses = new Set(members.map((m) => m.item.physicalStatus));
     return {
       ...l,
+      startingPrice: l.startingPrice === null ? null : l.startingPrice.toFixed(2),
       bookCount: Math.max(1, members.length),
       books,
       review,

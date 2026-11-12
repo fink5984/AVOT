@@ -19,6 +19,7 @@ import { CombinedGallery, type GalleryAsset } from "./combined-gallery";
 import { LotAiPanel } from "./lot-ai-panel";
 import { SharedTextCard } from "./shared-text";
 import { FulfilmentCard } from "./fulfilment-card";
+import { LotPricePanel } from "@/components/lot-price-panel";
 
 const EVENT_LABEL: Record<string, string> = { MERGE: "איחוד ללוט", ADD: "הוספת ספרים", REMOVE: "הסרת ספר", DISSOLVE: "פירוק הלוט", REORDER: "שינוי סדר הספרים" };
 
@@ -178,6 +179,7 @@ export async function CombinedLotView({ lot, user }: { lot: Lot; user: Awaited<R
             canViewConsignor={can(user.role, "consignor.view")}
             canEdit={canEdit}
           />
+          <LotPricePanel lotId={lot.id} price={lot.startingPrice?.toFixed(2) ?? null} version={lot.priceVersion} canEdit={can(user.role, "lot.price.edit")} ended={lot.assignmentStatus === "ENDED"} />
           {sold && <FulfilmentCard lotId={lot.id} />}
           <LotNotes lotId={lot.id} initial={lot.internalNotes ?? ""} canEdit={canEdit} />
           <Panel title="היסטוריית הרכב הלוט">

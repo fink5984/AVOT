@@ -24,6 +24,7 @@ export function CatalogHeaderActions({
   canExport,
   canClose = false,
   activeLots = 0,
+  missingPrices = 0,
 }: {
   catalogId: string;
   catalogNumber: string;
@@ -32,6 +33,8 @@ export function CatalogHeaderActions({
   /** end the sale event: active lots → unsold, catalog archived */
   canClose?: boolean;
   activeLots?: number;
+  /** active lots without a starting price (the Excel export warns, never blocks) */
+  missingPrices?: number;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -51,6 +54,12 @@ export function CatalogHeaderActions({
     } catch (err) {
       toast.error(errorMessage(err));
     }
+  }
+
+  async function downloadXlsx() {
+    if (missingPrices > 0 && !window.confirm(`ל-${missingPrices} לוטים עדיין אין מחיר פתיחה. הם ייוצאו עם תא ריק (לא 0). להוריד את הקובץ בכל זאת?`)) return;
+    window.location.href = `/api/catalogs/${catalogId}/export-xlsx`;
+    toast.info("הקובץ מכיל את כל הלוטים הפעילים בקטלוג, ללא תלות בסינון שמוצג", { detail: "תבנית העמודות טרם אומתה מול Bidspirit" });
   }
 
   async function onFile(file: File) {
@@ -105,6 +114,7 @@ export function CatalogHeaderActions({
           { label: "הדפסת תוויות לפריטים", icon: <Printer />, onSelect: () => router.push(`/catalogs/${catalogId}/labels`) },
           "separator",
           ...(canImport ? [{ label: "ייבוא פריטים מ-CSV", icon: <FileUp />, onSelect: () => setImportOpen(true) }] : []),
+          ...(canExport ? [{ label: "ייצוא קטלוג ל-Excel", icon: <FileDown />, onSelect: () => void downloadXlsx() }] : []),
           { label: "ייצוא נתוני פריטים ל-CSV", icon: <FileDown />, onSelect: () => (window.location.href = `/api/catalogs/${catalogId}/lots-csv`) },
           ...(canClose ? (["separator", { label: "סיום הקטלוג (לא נמכרו → זמינים)", icon: <Archive />, onSelect: () => void closeCatalog() }] as const) : []),
         ]}

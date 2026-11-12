@@ -9,6 +9,7 @@ import { Field, Input } from "@/components/ui/field";
 import { useToast } from "@/components/ui/toast";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { formatUsd, parseUsd } from "@/lib/money";
 import type { LotRow } from "./lots-table";
 
 /** Same text as the server (DIFFERENT_CONSIGNORS_MESSAGE): the server repeats every check, this only tells the user earlier. */
@@ -26,11 +27,17 @@ export function MergeLotsDialog({ open, onClose, catalogId, lots, onDone }: { op
   const [keep, setKeep] = useState<string>("");
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
+  /** the combined lot is one sale unit: its starting price is set by the person, never added up from the books */
+  const [price, setPrice] = useState("");
+  const [priceMode, setPriceMode] = useState<"new" | "keep">("new");
+  const anyPrice = sorted.some((l) => l.startingPrice);
 
   useEffect(() => {
     if (open) {
       setKeep(sorted[0]?.id ?? "");
       setTitle("");
+      setPrice("");
+      setPriceMode("new");
     }
   }, [open, sorted]);
 
@@ -49,11 +56,18 @@ export function MergeLotsDialog({ open, onClose, catalogId, lots, onDone }: { op
   }, [sorted]);
 
   async function run() {
+    let priceJson: { startingPrice?: string | null; keepPrice?: boolean } = {};
+    try {
+      if (anyPrice) priceJson = priceMode === "keep" ? { keepPrice: true } : { startingPrice: parseUsd(price) };
+    } catch (e) {
+      toast.error((e as Error).message);
+      return;
+    }
     setBusy(true);
     try {
       const r = await api<{ lotNumber: number; itemIds: string[]; absorbed: number[] }>(`/api/catalogs/${catalogId}/lots/merge`, {
         method: "POST",
-        json: { lotIds: sorted.map((l) => l.id), keepLotId: keep, title: title.trim() || undefined },
+        json: { lotIds: sorted.map((l) => l.id), keepLotId: keep, title: title.trim() || undefined, ...priceJson },
       });
       toast.success(`נוצר לוט משולב: פריט ${r.lotNumber} · ${r.itemIds.length} ספרים`, {
         detail: `המספרים בקטלוג הסתדרו מחדש ברצף. הפריטים שאוחדו נשמרו בהיסטוריה.`,
@@ -110,6 +124,24 @@ export function MergeLotsDialog({ open, onClose, catalogId, lots, onDone }: { op
             הפריטים האחרים ייסגרו כפריטים נפרדים אך יישמרו בהיסטוריה. אחרי האיחוד מספרי הפריטים בקטלוג יסתדרו מחדש ברצף, בלי חוסרים.
           </p>
         </fieldset>
+
+        {anyPrice && (
+          <fieldset className="rounded-lg border border-rule p-3.5">
+            <legend className="px-1 text-[13px] font-medium text-ink-2">מחיר פתיחה ללוט המשולב</legend>
+            <p className="mb-2 text-[12.5px] leading-relaxed text-muted">
+              המחירים הקודמים: {sorted.map((l) => `פריט ${l.lotNumber} ${formatUsd(l.startingPrice)}`).join(" · ")}. הלוט נמכר כיחידה אחת, לכן המחירים אינם מסוכמים אוטומטית. המחירים הקודמים נשמרים בהיסטוריה.
+            </p>
+            <label className="flex items-center gap-2 py-1 text-[13.5px]">
+              <input type="radio" name="price-mode" checked={priceMode === "new"} onChange={() => setPriceMode("new")} className="size-4 accent-[var(--color-ink)]" />
+              מחיר חדש:
+              <Input dir="ltr" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} onFocus={() => setPriceMode("new")} placeholder="ללא מחיר" aria-label="מחיר פתיחה חדש בדולרים" className="w-32" />
+            </label>
+            <label className="flex items-center gap-2 py-1 text-[13.5px]">
+              <input type="radio" name="price-mode" checked={priceMode === "keep"} onChange={() => setPriceMode("keep")} className="size-4 accent-[var(--color-ink)]" />
+              להשאיר את מחיר הפריט שנשמר ({formatUsd(sorted.find((l) => l.id === keep)?.startingPrice)})
+            </label>
+          </fieldset>
+        )}
 
         <Field label="כותרת משותפת (לא חובה)" hint="אפשר להשאיר ריק ולקבוע אחרי האיחוד, ידנית או ביצירת תיאור משותף ב-AI.">
           {(p) => <Input {...p} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={300} placeholder="למשל: אוסף חידושים של רבי פלוני" />}

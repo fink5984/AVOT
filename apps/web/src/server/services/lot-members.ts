@@ -8,6 +8,9 @@ import { audit } from "../audit";
 import { asJson } from "../json";
 import type { Principal, UserPrincipal } from "../auth/principal";
 import { assertHouse } from "../auth/houses";
+import { money, recordPriceEvent } from "./lot-pricing";
+import { parseUsd } from "@/lib/money";
+import { Prisma as PrismaNs } from "@prisma/client";
 
 /*
  * COMBINED LOTS. A lot is a catalog sale unit; its books are the LotMember rows (one for an ordinary lot, two or more
@@ -200,6 +203,12 @@ export const mergeSchema = z.object({
   keepLotId: z.string().uuid(),
   /** optional shared title set at once (can be edited later) */
   title: z.string().trim().max(300).nullish().transform((v) => v || null),
+  /**
+   * A combined lot is ONE sale unit with ONE starting price; prices of the books are never added up. When any of the
+   * lots has a price the person must decide: a new price here (null = no price), or keepPrice = keep the kept lot's own.
+   */
+  startingPrice: z.union([z.string(), z.number(), z.null()]).optional(),
+  keepPrice: z.boolean().optional(),
 });
 export type MergeInput = z.input<typeof mergeSchema>;
 
@@ -380,7 +389,31 @@ export async function mergeLots(user: UserPrincipal, raw: MergeInput) {
 
       const keeper = lots.find((l) => l.id === input.keepLotId)!;
       const others = lots.filter((l) => l.id !== keeper.id);
+      // price decision (before anything changes): the earlier prices are shown to the person, the new one is theirs to set
+      const earlier = [...lots].sort((a, b) => a.lotNumber - b.lotNumber).map((l) => ({ lotId: l.id, lotNumber: l.lotNumber, price: money(l.startingPrice) }));
+      let newPrice: string | null | undefined;
+      if (input.startingPrice !== undefined) {
+        try {
+          newPrice = parseUsd(input.startingPrice);
+        } catch (e) {
+          throw new AppError("VALIDATION", (e as Error).message);
+        }
+      } else if (!input.keepPrice && earlier.some((p) => p.price)) {
+        throw new AppError("CONFLICT", "לחלק מהפריטים יש מחיר פתיחה. לוט משולב נמכר כיחידה אחת: יש לקבוע לו מחיר, או לאשר במפורש את השארת המחיר של הפריט שנשמר.", { code: "PRICE_DECISION_REQUIRED", prices: earlier });
+      }
       const finalIds = await absorb(tx, user, keeper, catalog, others, [], "MERGE");
+      for (const o of others) {
+        if (o.startingPrice) await recordPriceEvent(tx, user, o, "MERGED_INTO", o.startingPrice, null, { note: `אוחד ללוט ${keeper.lotNumber}`, data: { keeperLotId: keeper.id } });
+      }
+      if (newPrice !== undefined) {
+        const was = money(keeper.startingPrice);
+        if (was !== newPrice) {
+          await tx.lot.update({ where: { id: keeper.id }, data: { startingPrice: newPrice === null ? null : new PrismaNs.Decimal(newPrice), priceVersion: { increment: 1 } } });
+        }
+        await recordPriceEvent(tx, user, keeper, "MERGED_FROM", was, newPrice, { note: "מחיר הלוט המשולב נקבע באיחוד", data: { earlier } });
+      } else if (earlier.some((p) => p.price)) {
+        await recordPriceEvent(tx, user, keeper, "MERGED_FROM", keeper.startingPrice, keeper.startingPrice, { note: "הושאר מחיר הפריט שנשמר (אושר במפורש)", data: { earlier } });
+      }
       if (input.title) await setSharedTitle(tx, user, keeper.id, input.title);
       await compactLotNumbers(tx, catalog.id);
       const after = await tx.lot.findUniqueOrThrow({ where: { id: keeper.id }, select: { lotNumber: true } });
@@ -550,6 +583,14 @@ async function reactivateAbsorbed(tx: Tx, user: UserPrincipal, l: Lot, itemId: s
  * Where a book that leaves a combined lot goes: back to its own lot when that lot is still waiting (absorbed into this
  * lot and ended), otherwise a new lot with a new number. The lot number of the combined lot is never given away.
  */
+/** A lot coming out of a combination starts with NO price; whatever it held is kept in the price history. */
+async function clearLeftoverPrice(tx: Tx, user: UserPrincipal, lotId: string, note: string) {
+  const l = await tx.lot.findUnique({ where: { id: lotId } });
+  if (!l || !l.startingPrice) return;
+  await tx.lot.update({ where: { id: lotId }, data: { startingPrice: null, priceVersion: { increment: 1 } } });
+  await recordPriceEvent(tx, user, l, "DISSOLVED", l.startingPrice, null, { note });
+}
+
 async function placeLeavingBook(tx: Tx, user: UserPrincipal, combined: Lot, catalog: { id: string; number: string }, member: { inventoryItemId: string; originLotId: string | null }, reason: string) {
   const origin = member.originLotId ? await tx.lot.findUnique({ where: { id: member.originLotId } }) : null;
   if (origin && origin.id !== combined.id && origin.mergedIntoLotId === combined.id && origin.assignmentStatus === "ENDED" && origin.catalogId === combined.catalogId) {
@@ -601,6 +642,7 @@ export async function removeBookFromLot(user: UserPrincipal, lotId: string, item
       await refreshLotMirror(tx, lotId);
 
       const placed = await placeLeavingBook(tx, user, lot, head.catalog, member, `הוסר מלוט ${lot.lotNumber}`);
+      await clearLeftoverPrice(tx, user, placed.lotId, "אין חלוקה אוטומטית של מחיר הלוט המשולב");
       const { syncItemCommercial } = await import("./assignments");
       await syncItemCommercial(tx, user, itemId, { reason: `הוסר מלוט משולב ${lot.lotNumber}`, refId: placed.lotId });
       await recordComposition(tx, user, lot, "REMOVE", [itemId], { restoredLotId: placed.lotId, restoredLotNumber: placed.lotNumber, restoredOwnLot: placed.restored });
@@ -650,6 +692,7 @@ export async function dissolveLot(user: UserPrincipal, lotId: string) {
       for (const m of leaving) {
         const p = await placeLeavingBook(tx, user, lot, head.catalog, m, `פירוק לוט ${lot.lotNumber}`);
         placements.push({ itemId: m.inventoryItemId, ...p });
+        await clearLeftoverPrice(tx, user, p.lotId, "מחיר הלוט המשולב אינו מחולק בין הספרים");
         const { syncItemCommercial } = await import("./assignments");
         await syncItemCommercial(tx, user, m.inventoryItemId, { reason: `פירוק הלוט המשולב ${lot.lotNumber}`, refId: p.lotId });
         await audit(user, { action: "lot.book_removed", entityType: "lot", entityId: lotId, lotId, inventoryItemId: m.inventoryItemId, data: asJson({ dissolved: true, lotNumber: lot.lotNumber, newLotId: p.lotId, newLotNumber: p.lotNumber }) }, tx);
@@ -674,6 +717,8 @@ export async function dissolveLot(user: UserPrincipal, lotId: string) {
         await compactOrder(tx, lotId);
         await refreshLotMirror(tx, lotId);
       }
+      // the combined lot's price is not split among the books: the lot that stays loses it (kept in the history), the person sets new prices
+      if (founder) await clearLeftoverPrice(tx, user, lotId, "פירוק הלוט המשולב: מחיר הלוט אינו מחולק, יש לקבוע מחיר לכל פריט");
       await recordComposition(tx, user, lot, "DISSOLVE", members.map((m) => m.inventoryItemId), { placements, lotKeptBy: founder?.inventoryItemId ?? null, sharedTitle: lot.title, sharedDescription: lot.description });
       await audit(user, { action: "lot.dissolved", entityType: "lot", entityId: lotId, lotId, data: asJson({ lotNumber: lot.lotNumber, placements }) }, tx);
       return { lotId, keptBy: founder?.inventoryItemId ?? null, placements };
@@ -744,6 +789,7 @@ export async function moveCombinedLot(user: UserPrincipal, lot: Lot, target: { i
       if (clash) throw new AppError("CONFLICT", `פריט מספר ${number} כבר קיים בקטלוג ${target.number} (${clash.title})`);
       const now = new Date();
       await tx.lot.update({ where: { id: lot.id }, data: { assignmentStatus: "ENDED", commercialStatus: "WITHDRAWN", endedAt: now, endReason: `הועבר לקטלוג ${target.number}` } });
+      if (fresh.startingPrice) await recordPriceEvent(tx, user, fresh, "ENDED", fresh.startingPrice, null, { note: `הועבר לקטלוג ${target.number}`, data: { outcome: "WITHDRAWN" } });
       await tx.lotMember.updateMany({ where: { lotId: lot.id, removedAt: null }, data: { isActive: false } });
       const created = await tx.lot.create({
         data: {

@@ -79,6 +79,34 @@ export const PERMISSIONS = {
   "pick.manage": ["ADMIN", "EDITOR"],
   /** packed / shipped */
   "pick.fulfil": ["ADMIN", "WAREHOUSE"],
+
+  /* starting prices, sales, customers, payments, shipments */
+  /** the lot's starting price (USD) in the catalog table and the lot page */
+  "lot.price.edit": ["ADMIN", "EDITOR"],
+  /** the customers page and a customer's details, addresses and purchases (warehouse staff do not get personal details) */
+  "customer.view": ["ADMIN", "EDITOR"],
+  "customer.edit": ["ADMIN", "EDITOR"],
+  /** the "נמכרו" page: what sold, to whom, prices, payment state */
+  "sales.view": ["ADMIN", "EDITOR", "VIEWER"],
+  /** upload a sale-results file, review the preview, commit it */
+  "sales.import": ["ADMIN", "EDITOR"],
+  /** correct a recorded result (buyer, hammer price), record a late sale */
+  "sales.correct": ["ADMIN", "EDITOR"],
+  /** record, void payments */
+  "payment.manage": ["ADMIN", "EDITOR"],
+  /** release a sold lot to the picking queue. Releasing BEFORE payment is a separate, individually grantable permission */
+  "pick.release": ["ADMIN", "EDITOR"],
+  "pick.release.unpaid": ["ADMIN"],
+  /** build shipments, add / remove books, pack */
+  "shipment.prepare": ["ADMIN", "EDITOR", "WAREHOUSE"],
+  /** send a shipment that leaves part of a customer's books behind */
+  "shipment.partial": ["ADMIN", "EDITOR"],
+  /** shipped / delivered / cancel / return */
+  "shipment.status": ["ADMIN", "EDITOR", "WAREHOUSE"],
+  /** cancel a purchase (the sale is kept as history) */
+  "sale.cancel": ["ADMIN"],
+  /** end a sale: decide the unsold lots, close results */
+  "sale.finish": ["ADMIN", "EDITOR"],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
@@ -88,9 +116,11 @@ export function can(role: Role, permission: Permission): boolean {
 }
 
 /** Permissions an admin may grant to an individual user on top of their role (user management screen). */
-export const GRANTABLE_PERMISSIONS = ["item.review.approve"] as const satisfies readonly Permission[];
+export const GRANTABLE_PERMISSIONS = ["item.review.approve", "pick.release.unpaid", "shipment.partial"] as const satisfies readonly Permission[];
 export const GRANTABLE_LABEL: Record<(typeof GRANTABLE_PERMISSIONS)[number], string> = {
   "item.review.approve": "אישור סופי של פרטי ספרים",
+  "pick.release.unpaid": "שחרור לליקוט לפני תשלום",
+  "shipment.partial": "אישור משלוח חלקי",
 };
 
 /** The role's permissions plus the ones granted to this person. Use it for every check that can be granted individually. */
