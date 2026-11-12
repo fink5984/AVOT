@@ -446,7 +446,7 @@ export function LotsTable({
               ))}
             </ul>
 
-            <table className="hidden w-full text-[13.5px] md:table">
+            <table className="hidden w-full table-fixed text-[13.5px] md:table">
               <thead>
                 <tr className="border-b border-rule text-[12.5px] text-muted">
                   <th className="w-11 ps-5 pe-1 py-3">
@@ -493,7 +493,7 @@ export function LotsTable({
                             {l.title}
                           </Link>
                           {identLine(l) && <div className="truncate text-[12.5px] text-muted">{identLine(l)}</div>}
-                          <div className="truncate text-[12px] text-muted">
+                          <div className="break-words text-[12px] text-muted [overflow-wrap:anywhere]">
                             {l.bookCount > 1 && (
                               <span className="me-2 inline-flex items-center gap-1 rounded-md bg-accent-soft px-1.5 py-0.5 text-[11.5px] font-semibold text-accent" title="לוט משולב: כמה ספרים נמכרים יחד">
                                 <Layers className="size-3" aria-hidden />
