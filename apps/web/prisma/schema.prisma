@@ -1460,6 +1460,9 @@ model PrintJob {
   attempts       Int            @default(0)
   /// request key of the click that created the job: a double click never prints twice
   idemKey        String?
+  /// labels of the whole click (a big click is split into several jobs), and the number the person confirmed (null: no confirmation was needed)
+  batchLabelCount Int?
+  confirmedCount  Int?
   /// human summary for the queue ("ITM-000184 · שם הספר")
   summary        String?
   createdById    String?        @db.Uuid

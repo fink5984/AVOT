@@ -26,6 +26,21 @@ import { isOnline } from "./devices";
  */
 
 export const MAX_LABELS_PER_JOB = 40;
+/**
+ * Print safety. Up to SAFE_LABELS a click prints at once (no dialog, no delay — workers click the book's printer
+ * button again and again on purpose). More than that needs a confirmation; TYPED_LABELS and above needs the final
+ * number typed. Checked HERE, so a direct API call cannot skip it.
+ */
+export const SAFE_LABELS = 5;
+export const TYPED_LABELS = 50;
+export type PrintConfirmation = {
+  level: "confirm" | "typed";
+  labels: number;
+  items: number;
+  copies: number;
+  printerName: string;
+  kindLabel: string;
+};
 /** a claimed job nobody reported on within this window is handed out again (the agent is gone) */
 const CLAIM_TIMEOUT_MS = 2 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
@@ -43,6 +58,10 @@ export const printRequestSchema = z.object({
   printerId: z.string().uuid().optional(),
   /** key of the click: the same key never creates (or prints) the batch twice */
   idemKey: z.string().min(8).max(100).optional(),
+  /** the person saw the confirmation window (6+ labels) */
+  confirmed: z.boolean().optional(),
+  /** the final number of labels, typed by the person (50+ labels) */
+  confirmCount: z.number().int().min(1).optional(),
 });
 export type PrintRequest = z.input<typeof printRequestSchema>;
 
@@ -209,6 +228,22 @@ export async function createPrintJobs(user: UserPrincipal, input: z.input<typeof
   ]);
   if (books.length !== bookIds.length || locs !== locIds.length || zones !== zoneIds.length) throw new AppError("NOT_FOUND", "חלק מהפריטים להדפסה לא נמצאו");
 
+  // safety: the count is the real number of labels that will leave the printer (items × copies), never the number of books
+  const totalLabels = items.length * req.copies;
+  const needs = totalLabels >= TYPED_LABELS ? "typed" : totalLabels > SAFE_LABELS ? "confirm" : null;
+  if (needs) {
+    // a retry of a request that was already accepted is not a new print: it returns what exists
+    const first = req.idemKey ? await db.printJob.findUnique({ where: { organizationId_idemKey: { organizationId: user.organizationId, idemKey: `${req.idemKey}:0` } } }) : null;
+    const ok = needs === "typed" ? req.confirmed === true && req.confirmCount === totalLabels : req.confirmed === true;
+    if (!first && !ok) {
+      const kinds = new Set(items.map((i) => i.type));
+      const kindLabel = kinds.size > 1 ? "מדבקות מעורבות" : kinds.has("BOOK") ? "מדבקות ספרים" : kinds.has("LOCATION") ? "מדבקות מדפים" : "מדבקות עמודות";
+      const details: PrintConfirmation = { level: needs, labels: totalLabels, items: items.length, copies: req.copies, printerName: printer?.name ?? "המדפסת הראשית", kindLabel };
+      const wrongCount = needs === "typed" && req.confirmed === true && req.confirmCount !== undefined;
+      throw new AppError("CONFIRMATION_REQUIRED", wrongCount ? "המספר שהוקלד אינו כמות המדבקות" : `נדרש אישור להדפסת ${totalLabels} מדבקות`, details);
+    }
+  }
+
   const chunks: PrintItemRef[][] = [];
   for (let i = 0; i < items.length; i += MAX_LABELS_PER_JOB) chunks.push(items.slice(i, i + MAX_LABELS_PER_JOB));
   const bookInfo = new Map(books.map((b) => [b.id, b]));
@@ -241,6 +276,8 @@ export async function createPrintJobs(user: UserPrincipal, input: z.input<typeof
           copies: req.copies,
           labelCount: chunk.length * req.copies,
           idemKey,
+          batchLabelCount: totalLabels,
+          confirmedCount: needs ? (needs === "typed" ? req.confirmCount : totalLabels) : null,
           summary: chunk.length > 1 ? `${summary} ועוד ${chunk.length - 1}` : summary,
           createdById: user.userId,
         },
@@ -253,7 +290,7 @@ export async function createPrintJobs(user: UserPrincipal, input: z.input<typeof
       jobs.push(prior);
     }
   }
-  await audit(user, { action: "print.requested", entityType: "settings", entityId: jobs[0]?.id, data: { labels: items.length, copies: req.copies, jobs: jobs.length } });
+  await audit(user, { action: "print.requested", entityType: "settings", entityId: jobs[0]?.id, data: { labels: totalLabels, items: items.length, copies: req.copies, jobs: jobs.length, confirmed: needs ?? "none", printer: printer?.name ?? null } });
   return jobs;
 }
 
@@ -308,9 +345,16 @@ export async function getPrintJob(orgId: string, id: string) {
 }
 
 /** New job with the same content (the old one stays in the log). */
-export async function reprintJob(user: UserPrincipal, id: string) {
+export async function reprintJob(user: UserPrincipal, id: string, confirm: { confirmed?: boolean; confirmCount?: number } = {}) {
   const old = await getPrintJob(user.organizationId, id);
   const printer = await resolvePrinter(user.organizationId, old.printerId ?? undefined);
+  // a reprint is a new print: the same safety rules as a first click
+  const total = old.labelCount;
+  const needs = total >= TYPED_LABELS ? "typed" : total > SAFE_LABELS ? "confirm" : null;
+  if (needs && !(needs === "typed" ? confirm.confirmed === true && confirm.confirmCount === total : confirm.confirmed === true)) {
+    const details: PrintConfirmation = { level: needs, labels: total, items: Math.max(1, Math.round(total / Math.max(1, old.copies))), copies: old.copies, printerName: printer.name, kindLabel: old.kind === "BOOK" ? "מדבקות ספרים" : "מדבקות מדפים ועמודות" };
+    throw new AppError("CONFIRMATION_REQUIRED", `נדרש אישור להדפסת ${total} מדבקות`, details);
+  }
   const job = await db.printJob.create({
     data: {
       organizationId: user.organizationId,
@@ -319,6 +363,8 @@ export async function reprintJob(user: UserPrincipal, id: string) {
       items: old.items as Prisma.InputJsonValue,
       copies: old.copies,
       labelCount: old.labelCount,
+      batchLabelCount: old.labelCount,
+      confirmedCount: needs ? total : null,
       summary: old.summary,
       createdById: user.userId,
     },

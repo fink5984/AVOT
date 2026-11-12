@@ -248,7 +248,7 @@ describe.skipIf(!hasDb)("quick add, catalog assignment, bulk location, print que
     it("big batches are split into jobs of at most 40 labels, in order", async () => {
       const books = [];
       for (let i = 0; i < 85; i++) books.push((await createBook(ctx.editor, { title: `אצווה ${i}` })).item.id);
-      const jobs = await createPrintJobs(ctx.editor, { items: books.map((id) => ({ type: "BOOK" as const, id })), idemKey: randomUUID() });
+      const jobs = await createPrintJobs(ctx.editor, { items: books.map((id) => ({ type: "BOOK" as const, id })), idemKey: randomUUID(), confirmed: true, confirmCount: 85 });
       expect(jobs.map((j) => j.labelCount)).toEqual([40, 40, 5]);
     });
 

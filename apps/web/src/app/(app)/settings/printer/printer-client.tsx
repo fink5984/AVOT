@@ -11,6 +11,7 @@ import { EmptyState, Panel } from "@/components/ui/misc";
 import { useToast } from "@/components/ui/toast";
 import { fmt } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
+import { withPrintConfirmation } from "@/lib/print";
 import { LabelCalibration } from "@/components/print/label-calibration";
 
 export interface PrinterDto {
@@ -260,7 +261,7 @@ export function PrinterAdmin({ printers, agents, jobs, serverUrl, queue }: { pri
                           </IconButton>
                         )}
                         {(j.status === "FAILED" || j.status === "SENT" || j.status === "DONE" || j.status === "CANCELLED") && (
-                          <IconButton label="הדפסה מחדש" size="sm" onClick={() => act(() => api(`/api/print/jobs/${j.id}/reprint`, { method: "POST" }), "נשלחה הדפסה חוזרת")}>
+                          <IconButton label="הדפסה מחדש" size="sm" onClick={() => act(async () => { const r = await withPrintConfirmation((c) => api(`/api/print/jobs/${j.id}/reprint`, { method: "POST", json: c })); if (r) toast.success("נשלחה הדפסה חוזרת"); })}>
                             <RotateCcw />
                           </IconButton>
                         )}

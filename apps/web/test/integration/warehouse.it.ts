@@ -225,9 +225,9 @@ describe.skipIf(!hasDb)("warehouse wizard, structure, phone scanner flows (real 
 
       const [single] = await createPrintJobs(ctx.warehouse, { items: [{ type: "LOCATION", id: shelf.locations[0]!.id }] });
       expect(single!.labelCount).toBe(1);
-      const [column] = await createPrintJobs(ctx.warehouse, { zoneId: zone.id });
+      const [column] = await createPrintJobs(ctx.warehouse, { zoneId: zone.id, confirmed: true });
       expect(column!.labelCount).toBe(6); // column label + 5 shelves
-      const all = await createPrintJobs(ctx.warehouse, { warehouseId: wh.id });
+      const all = await createPrintJobs(ctx.warehouse, { warehouseId: wh.id, confirmed: true, confirmCount: 52 });
       expect(all.reduce((a, j) => a + j.labelCount, 0)).toBe(9 /* columns */ + 43 /* shelves: the disabled one is skipped */);
 
       const claimed = await claimNextPrintJob(agent);

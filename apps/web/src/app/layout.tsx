@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Frank_Ruhl_Libre, IBM_Plex_Sans_Hebrew } from "next/font/google";
 import { ToastProvider } from "@/components/ui/toast";
+import { PrintConfirmHost } from "@/components/print/print-confirm";
 import "./globals.css";
 
 const plex = IBM_Plex_Sans_Hebrew({
@@ -28,7 +29,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="he" dir="rtl" className={`${plex.variable} ${frank.variable}`}>
       <body>
-        <ToastProvider>{children}</ToastProvider>
+        <ToastProvider>
+          {children}
+          <PrintConfirmHost />
+        </ToastProvider>
       </body>
     </html>
   );
