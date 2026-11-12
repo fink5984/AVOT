@@ -6,6 +6,7 @@ import type { Principal, UserPrincipal } from "../auth/principal";
 import { changeStatus } from "./item-status";
 import { locationInclude, locationLabel } from "./location-label";
 import { moveItemTx } from "./warehouse";
+import { syncShipmentsOfItem } from "./shipments";
 
 /*
  * Pick → pack → ship are three separate steps. A pick task is created when a
@@ -144,6 +145,8 @@ export async function shipItemTx(tx: Tx, principal: Principal, itemId: string, o
     data: { status: "SHIPPED", pickedAt: task.pickedAt ?? when, pickedById: task.pickedById ?? by, packedAt: task.packedAt ?? when, packedById: task.packedById ?? by, shippedAt: when, shippedById: by },
   });
   await changeStatus(tx, principal, itemId, "PHYSICAL", "SHIPPED", { refType: "pick", refId: task.id, reason: "הוצאה סופית" });
+  // a shipment that holds this book follows what physically happened
+  await syncShipmentsOfItem(tx, principal, itemId);
   await audit(principal, { action: "pick.shipped", entityType: "pick", entityId: task.id, inventoryItemId: itemId }, tx);
   return { kind: "shipped" as const, task };
 }
@@ -164,6 +167,7 @@ export async function markPacked(user: UserPrincipal, id: string) {
   await db.$transaction(async (tx) => {
     await tx.pickTask.update({ where: { id }, data: { status: "PACKED", packedAt: new Date(), packedById: user.userId } });
     await changeStatus(tx, user, task.inventoryItemId, "PHYSICAL", "PACKED", { refType: "pick", refId: id });
+    await syncShipmentsOfItem(tx, user, task.inventoryItemId);
     await audit(user, { action: "pick.packed", entityType: "pick", entityId: id, inventoryItemId: task.inventoryItemId }, tx);
   });
 }
@@ -174,6 +178,7 @@ export async function markShipped(user: UserPrincipal, id: string) {
   await db.$transaction(async (tx) => {
     await tx.pickTask.update({ where: { id }, data: { status: "SHIPPED", shippedAt: new Date(), shippedById: user.userId } });
     await changeStatus(tx, user, task.inventoryItemId, "PHYSICAL", "SHIPPED", { refType: "pick", refId: id });
+    await syncShipmentsOfItem(tx, user, task.inventoryItemId);
     await audit(user, { action: "pick.shipped", entityType: "pick", entityId: id, inventoryItemId: task.inventoryItemId }, tx);
   });
 }

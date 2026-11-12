@@ -9,7 +9,6 @@ import { assertHouse } from "../auth/houses";
 import { asJson } from "../json";
 import { changeStatus } from "./item-status";
 import { getItemOrThrow } from "./inventory";
-import { createPickTaskTx } from "./picking";
 import { recordPriceEvent } from "./lot-pricing";
 import { activeLotOfItem, addFounderMember, memberItemIds, setMembersActive } from "./lot-members";
 import { ITEM_FORMAT_FIELDS, formatToStore, readTextFormat, textFormatSchema, type Segment, type TextFormat } from "@/lib/rich-text";
@@ -74,7 +73,7 @@ export async function syncItemCommercial(tx: Tx, principal: Principal, itemId: s
 }
 
 /** Ends a lot (ordinary or combined): every one of its books gets the outcome in the same transaction. */
-async function endLotTx(tx: Tx, principal: Principal, lotId: string, outcome: "SOLD" | "UNSOLD" | "WITHDRAWN", reason: string | null) {
+export async function endLotTx(tx: Tx, principal: Principal, lotId: string, outcome: "SOLD" | "UNSOLD" | "WITHDRAWN", reason: string | null) {
   const lot = await tx.lot.update({
     where: { id: lotId },
     data: { assignmentStatus: "ENDED", commercialStatus: outcome, endedAt: new Date(), endReason: reason },
@@ -218,8 +217,7 @@ export async function setLotCommercialStatus(user: UserPrincipal, lotId: string,
     let row;
     if (input.status === "SOLD" || input.status === "UNSOLD" || input.status === "WITHDRAWN") {
       row = await endLotTx(tx, user, lot.id, input.status, input.reason ?? null);
-      // a pick task for EVERY book of the lot, all tied to the lot (progress "2 of 3" is read from them)
-      if (input.status === "SOLD") for (const itemId of itemIds) await createPickTaskTx(tx, user, itemId, { lotId: lot.id, reason: `נמכר — קטלוג ${lot.catalog.number}, פריט ${lot.lotNumber}` });
+      // SOLD no longer creates pick tasks: a sold lot waits until it is RELEASED to picking (see services/sales.ts releasePurchase)
     } else {
       row = await tx.lot.update({ where: { id: lot.id }, data: { commercialStatus: input.status, assignmentStatus: "ACTIVE", endedAt: null, endReason: null } });
       await setMembersActive(tx, lot.id, true);

@@ -297,18 +297,18 @@ model Organization {
 }
 
 model User {
-  id             String     @id @default(uuid()) @db.Uuid
-  organizationId String     @db.Uuid
-  email          String     @unique
-  name           String
-  passwordHash   String?
-  role           Role       @default(VIEWER)
-  status         UserStatus @default(ACTIVE)
+  id               String     @id @default(uuid()) @db.Uuid
+  organizationId   String     @db.Uuid
+  email            String     @unique
+  name             String
+  passwordHash     String?
+  role             Role       @default(VIEWER)
+  status           UserStatus @default(ACTIVE)
   /// permissions granted to this person on top of the role's (only those listed in GRANTABLE_PERMISSIONS, e.g. item.review.approve)
-  extraPermissions String[] @default([])
-  lastActiveAt   DateTime?
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  extraPermissions String[]   @default([])
+  lastActiveAt     DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
   organization    Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   sessions        Session[]
@@ -462,6 +462,7 @@ model InventoryItem {
   pickTasks       PickTask[]
   aliases         InventoryNumberAlias[]
   lotMemberships  LotMember[]
+  shipmentItems   ShipmentItem[]
 
   @@unique([organizationId, serial])
   @@unique([organizationId, inventoryNumber])
@@ -535,62 +536,62 @@ model InventoryStatusEvent {
 /// One AI analysis run of an item (kind "catalog_ai"): what was sent, what came back, what was written, what it cost.
 /// At most one QUEUED/RUNNING run per item — partial unique index "InventoryAnalysis_item_active_key" (raw SQL).
 model InventoryAnalysis {
-  id                String           @id @default(uuid()) @db.Uuid
-  organizationId    String           @db.Uuid
-  inventoryItemId   String           @db.Uuid
-  kind              String
-  status            AiAnalysisStatus @default(QUEUED)
-  provider          String?
-  model             String?
+  id                 String           @id @default(uuid()) @db.Uuid
+  organizationId     String           @db.Uuid
+  inventoryItemId    String           @db.Uuid
+  kind               String
+  status             AiAnalysisStatus @default(QUEUED)
+  provider           String?
+  model              String?
   /// item context + image manifest that was sent (no image bytes)
-  input             Json?
+  input              Json?
   /// the validated model answer (null until it succeeded)
-  result            Json?
-  promptVersion     String?
-  examplesVersion   String?
-  examplesHash      String?
-  examplesCount     Int?
+  result             Json?
+  promptVersion      String?
+  examplesVersion    String?
+  examplesHash       String?
+  examplesCount      Int?
   /// client key of the click that requested the run: a double click never queues two runs
-  requestKey        String?          @db.Uuid
-  jobId             String?          @db.Uuid
+  requestKey         String?          @db.Uuid
+  jobId              String?          @db.Uuid
   /// a run over an item that already had a successful analysis (needs a manager's approval)
-  isReanalysis      Boolean          @default(false)
-  approvedById      String?          @db.Uuid
-  imageCount        Int              @default(0)
-  requestCount      Int              @default(0)
-  inputTokens       Int?
-  cachedInputTokens Int?
-  outputTokens      Int?
+  isReanalysis       Boolean          @default(false)
+  approvedById       String?          @db.Uuid
+  imageCount         Int              @default(0)
+  requestCount       Int              @default(0)
+  inputTokens        Int?
+  cachedInputTokens  Int?
+  outputTokens       Int?
   /// thinking tokens (OpenAI: included in outputTokens; Gemini: billed in addition)
-  reasoningTokens   Int?
-  costUsd           Decimal?         @db.Decimal(12, 6)
+  reasoningTokens    Int?
+  costUsd            Decimal?         @db.Decimal(12, 6)
   /// true when the cost is not computed from provider-reported usage with a known price
-  costEstimated     Boolean          @default(true)
+  costEstimated      Boolean          @default(true)
   /// provider calls, per-call usage, image preparation report, warnings
-  usage             Json?
-  durationMs        Int?
-  startedAt         DateTime?
-  finishedAt        DateTime?
-  error             String?
+  usage              Json?
+  durationMs         Int?
+  startedAt          DateTime?
+  finishedAt         DateTime?
+  error              String?
   /// AI-writable values when the run started (to detect human edits made during the run)
-  baseValues        Json?
+  baseValues         Json?
   /// every AI-writable value just before the result was written (restore point)
-  snapshot          Json?
+  snapshot           Json?
   /// fields actually written, kept, or flagged, with the values written
-  applied           Json?
+  applied            Json?
   /// filled when a person approves the item: which AI values they changed (provider comparison)
-  reviewOutcome     Json?
-  restoredAt        DateTime?
-  restoredById      String?          @db.Uuid
+  reviewOutcome      Json?
+  restoredAt         DateTime?
+  restoredById       String?          @db.Uuid
   /// AiSettingsVersion.version the run was started with (null = the built-in defaults)
-  settingsVersion   Int?
+  settingsVersion    Int?
   /// external research of the run: queries, the sources found (url, kind, relevance, what was learned), limits, cost
-  research          Json?
+  research           Json?
   /// the item's detailsVersion when the run was requested (a rewrite is applied only if it is still current)
   baseDetailsVersion Int?
-  createdById       String?          @db.Uuid
-  createdAt         DateTime         @default(now())
-  updatedAt         DateTime         @default(now()) @updatedAt
+  createdById        String?          @db.Uuid
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @default(now()) @updatedAt
 
   item InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
 
@@ -669,13 +670,21 @@ model Catalog {
   /// default CategoryRequirements applied to new lots
   defaultRequirements Json
   archivedAt          DateTime?
+  /// id of the sale in an external system (Bidspirit), when known
+  externalRef         String?
+  /// "סיום מכירה": the auction itself is over. Independent of archiving and of payments / shipments, which go on
+  saleFinishedAt      DateTime?
+  saleFinishedById    String?       @db.Uuid
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  auctionHouse AuctionHouse @relation(fields: [auctionHouseId], references: [id], onDelete: Restrict)
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  auctionHouse AuctionHouse       @relation(fields: [auctionHouseId], references: [id], onDelete: Restrict)
   lots         Lot[]
   assets       PhotoAsset[]
+  orders       BuyerOrder[]
+  purchases    Purchase[]
+  saleImports  SaleResultImport[]
 
   @@unique([auctionHouseId, number])
   @@index([organizationId, status])
@@ -692,60 +701,60 @@ model Catalog {
 /// more for a combined lot). Lot.inventoryItemId is only the "anchor" kept for older code and for the unique index:
 /// always a present member (the first one); it never means "the book of this lot" when the lot has several.
 model Lot {
-  id               String              @id @default(uuid()) @db.Uuid
-  organizationId   String              @db.Uuid
-  catalogId        String              @db.Uuid
-  inventoryItemId  String              @db.Uuid
-  lotNumber        Int
-  sortOrder        Int
-  title            String
-  subtitle         String?
-  shortDescription String?
+  id                     String              @id @default(uuid()) @db.Uuid
+  organizationId         String              @db.Uuid
+  catalogId              String              @db.Uuid
+  inventoryItemId        String              @db.Uuid
+  lotNumber              Int
+  sortOrder              Int
+  title                  String
+  subtitle               String?
+  shortDescription       String?
   /// long catalog description (versioned in LotDescriptionVersion)
-  description      String?
+  description            String?
   /// character formatting (bold / underline / color) of shortDescription and description, as text segments; shown only
   /// while the segments spell exactly the stored text (see src/lib/rich-text.ts) - the plain columns stay the source of truth
-  textFormat       Json?
-  internalNotes    String?
-  author           String?
-  printYear        String?
-  printPlace       String?
+  textFormat             Json?
+  internalNotes          String?
+  author                 String?
+  printYear              String?
+  printPlace             String?
   /// mirror of InventoryItem.photoStatus, kept in the same transaction
-  status           LotStatus           @default(NOT_STARTED)
+  status                 LotStatus           @default(NOT_STARTED)
   /// legacy per-lot requirements; photography requirements now live on the item
-  requirements     Json
+  requirements           Json
   /// mirror of the item's photo count
-  photoCount       Int                 @default(0)
+  photoCount             Int                 @default(0)
   /// catalog-specific primary photo (null → the item's primary photo)
-  primaryAssetId   String?             @db.Uuid
-  completedAt      DateTime?
-  assignmentStatus LotAssignmentStatus @default(ACTIVE)
-  commercialStatus CommercialStatus    @default(ASSIGNED)
-  assignedAt       DateTime            @default(now())
-  assignedById     String?             @db.Uuid
-  endedAt          DateTime?
-  endReason        String?
+  primaryAssetId         String?             @db.Uuid
+  completedAt            DateTime?
+  assignmentStatus       LotAssignmentStatus @default(ACTIVE)
+  commercialStatus       CommercialStatus    @default(ASSIGNED)
+  assignedAt             DateTime            @default(now())
+  assignedById           String?             @db.Uuid
+  endedAt                DateTime?
+  endReason              String?
   /// reference to a designed catalog page (future layout module)
-  pageRef          Json?
+  pageRef                Json?
   /// Starting price in USD. The price belongs to the LOT (a book only in stock has none). null = not set — never 0.
-  startingPrice    Decimal?            @db.Decimal(12, 2)
+  startingPrice          Decimal?            @db.Decimal(12, 2)
   /// grows on every change of the starting price: two people editing the same price are detected (optimistic concurrency)
-  priceVersion     Int                 @default(0)
+  priceVersion           Int                 @default(0)
   /// what happens to the lot after an auction in which it did not sell
-  unsoldDisposition UnsoldDisposition  @default(NONE)
+  unsoldDisposition      UnsoldDisposition   @default(NONE)
   /// id of the lot in an external system (Bidspirit), when known
-  externalRef      String?
+  externalRef            String?
   /// set on a lot that was merged into another lot: it stays as ENDED history, is never shown as a separate lot and
   /// its number is never reused; cleared when its book leaves the combined lot and the lot is reactivated
-  mergedIntoLotId  String?             @db.Uuid
+  mergedIntoLotId        String?             @db.Uuid
   /// grows on every change of the lot's books (merge, add, remove): an AI description written for an older composition is stale
-  compositionVersion Int               @default(1)
+  compositionVersion     Int                 @default(1)
   /// the lot holds an applied AI description that was written for a previous composition
-  descriptionNeedsUpdate Boolean       @default(false)
+  descriptionNeedsUpdate Boolean             @default(false)
   /// the LotAiRun whose text is the lot's current description (null = written by hand)
-  aiDescriptionRunId String?           @db.Uuid
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
+  aiDescriptionRunId     String?             @db.Uuid
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
 
   organization        Organization            @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   catalog             Catalog                 @relation(fields: [catalogId], references: [id], onDelete: Restrict)
@@ -761,6 +770,7 @@ model Lot {
   aiRuns              LotAiRun[]
   compositionEvents   LotCompositionEvent[]
   priceEvents         LotPriceEvent[]
+  purchases           Purchase[]
 
   @@unique([catalogId, lotNumber])
   @@index([organizationId])
@@ -1396,6 +1406,8 @@ model PickTask {
   lotId            String?    @db.Uuid
   reason           String
   status           PickStatus @default(OPEN)
+  /// the purchase this task fulfils (a sold lot is released to picking explicitly, see Purchase.releasedAt)
+  purchaseId       String?    @db.Uuid
   note             String?
   /// location when the task was created (the item may move later)
   sourceLocationId String?    @db.Uuid
@@ -1457,31 +1469,31 @@ model Printer {
 }
 
 model PrintJob {
-  id             String         @id @default(uuid()) @db.Uuid
-  organizationId String         @db.Uuid
-  printerId      String?        @db.Uuid
-  kind           PrintJobKind
+  id              String         @id @default(uuid()) @db.Uuid
+  organizationId  String         @db.Uuid
+  printerId       String?        @db.Uuid
+  kind            PrintJobKind
   /// [{ "type": "BOOK" | "LOCATION", "id": uuid }]  — rendered by the server when an agent claims the job
-  items          Json
-  copies         Int            @default(1)
-  labelCount     Int            @default(1)
-  status         PrintJobStatus @default(PENDING)
-  attempts       Int            @default(0)
+  items           Json
+  copies          Int            @default(1)
+  labelCount      Int            @default(1)
+  status          PrintJobStatus @default(PENDING)
+  attempts        Int            @default(0)
   /// request key of the click that created the job: a double click never prints twice
-  idemKey        String?
+  idemKey         String?
   /// labels of the whole click (a big click is split into several jobs), and the number the person confirmed (null: no confirmation was needed)
   batchLabelCount Int?
   confirmedCount  Int?
   /// human summary for the queue ("ITM-000184 · שם הספר")
-  summary        String?
-  createdById    String?        @db.Uuid
-  claimedById    String?        @db.Uuid
-  claimedAt      DateTime?
-  sentAt         DateTime?
-  doneAt         DateTime?
-  error          String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  summary         String?
+  createdById     String?        @db.Uuid
+  claimedById     String?        @db.Uuid
+  claimedAt       DateTime?
+  sentAt          DateTime?
+  doneAt          DateTime?
+  error           String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   printer      Printer?     @relation(fields: [printerId], references: [id], onDelete: SetNull)
@@ -1581,19 +1593,19 @@ model DeskewBatchItem {
 /// The organization's AI configuration (the "הגדרות AI" tab). One current row; every save also writes an immutable
 /// AiSettingsVersion, and a run keeps the version it started with. Null prompt / examples = the built-in default.
 model AiSettings {
-  organizationId    String   @id @db.Uuid
+  organizationId         String   @id @db.Uuid
   /// current version number (AiSettingsVersion.version)
-  version           Int      @default(0)
-  provider          String?
-  model             String?
+  version                Int      @default(0)
+  provider               String?
+  model                  String?
   /// OpenAI reasoning effort / Gemini thinking level (null = the model's default)
-  reasoning         String?
-  analysisPrompt    String?
-  manuscriptPrompt  String?
-  rewritePrompt     String?
-  fullRewritePrompt String?
+  reasoning              String?
+  analysisPrompt         String?
+  manuscriptPrompt       String?
+  rewritePrompt          String?
+  fullRewritePrompt      String?
   /// style examples (same JSON as catalog-style-examples.json); null = the file in the code
-  examples          Json?
+  examples               Json?
   /// external research (web search) of the analysis; null = the built-in defaults (on, 6 sources, 150 s, 4 searches)
   researchEnabled        Boolean?
   researchMaxSources     Int?
@@ -1603,22 +1615,22 @@ model AiSettings {
   researchMaxCostUsd     Decimal? @db.Decimal(8, 4)
   /// auto = the analysis provider's own web search; openai | gemini = that provider's
   researchProvider       String?
-  updatedById       String?  @db.Uuid
-  updatedAt         DateTime @default(now()) @updatedAt
+  updatedById            String?  @db.Uuid
+  updatedAt              DateTime @default(now()) @updatedAt
 }
 
 model AiSettingsVersion {
-  id                String   @id @default(uuid()) @db.Uuid
-  organizationId    String   @db.Uuid
-  version           Int
-  provider          String?
-  model             String?
-  reasoning         String?
-  analysisPrompt    String?
-  manuscriptPrompt  String?
-  rewritePrompt     String?
-  fullRewritePrompt String?
-  examples          Json?
+  id                     String   @id @default(uuid()) @db.Uuid
+  organizationId         String   @db.Uuid
+  version                Int
+  provider               String?
+  model                  String?
+  reasoning              String?
+  analysisPrompt         String?
+  manuscriptPrompt       String?
+  rewritePrompt          String?
+  fullRewritePrompt      String?
+  examples               Json?
   /// external research (web search) of the analysis; null = the built-in defaults (on, 6 sources, 150 s, 4 searches)
   researchEnabled        Boolean?
   researchMaxSources     Int?
@@ -1628,9 +1640,9 @@ model AiSettingsVersion {
   researchMaxCostUsd     Decimal? @db.Decimal(8, 4)
   /// auto = the analysis provider's own web search; openai | gemini = that provider's
   researchProvider       String?
-  note              String?
-  createdById       String?  @db.Uuid
-  createdAt         DateTime @default(now())
+  note                   String?
+  createdById            String?  @db.Uuid
+  createdAt              DateTime @default(now())
 
   @@unique([organizationId, version])
 }
@@ -1668,4 +1680,375 @@ model LotPriceEvent {
 
   @@index([lotId, createdAt])
   @@index([organizationId, createdAt])
+}
+
+/**
+ * ─────────────────────────── Sales, customers, payments, shipments ───────────────────────────
+ * Three independent states, never mixed:
+ * commercial  Lot.commercialStatus / Purchase.status        (offered, sold, unsold, cancelled …)
+ * financial   derived from Purchase + Payment rows          (nothing due yet, unpaid, partial, paid)
+ * physical    InventoryItem.physicalStatus + PickTask + Shipment   (in storage, picked, packed, shipped …)
+ * Money is DECIMAL(12,2) US dollars; unknown commission / tax stay NULL (never invented, never 0).
+ */
+
+enum CustomerStatus {
+  ACTIVE
+  /// merged into another customer: kept as history, never listed
+  MERGED
+}
+
+enum PurchaseStatus {
+  ACTIVE
+  /// the deal was cancelled: kept with the original buyer, price, reason and who cancelled
+  CANCELLED
+}
+
+enum PurchaseSource {
+  IMPORT
+  MANUAL
+  /// sold after the auction (the lot did not sell at the auction itself)
+  POST_SALE
+}
+
+enum PaymentStatus {
+  RECORDED
+  VOIDED
+}
+
+enum ShipmentStatus {
+  /// being prepared; books are reserved, nothing left the warehouse
+  DRAFT
+  PACKED
+  /// physically left (carrier took it / sent)
+  SHIPPED
+  /// handed over / picked up / delivered
+  DELIVERED
+  CANCELLED
+}
+
+enum ShipmentMethod {
+  CARRIER
+  PICKUP
+  HAND_DELIVERY
+}
+
+enum SaleImportStatus {
+  PREVIEW
+  COMMITTED
+  DISCARDED
+}
+
+/// A person or company that buys. NOT a consignor (who deposits books): the same person may be both, as two records.
+model Customer {
+  id             String         @id @default(uuid()) @db.Uuid
+  organizationId String         @db.Uuid
+  /// internal customer number, 1.. per organization
+  number         Int
+  name           String
+  email          String?
+  /// lower-cased / trimmed: the match key
+  emailNorm      String?
+  phone          String?
+  /// digits only, international form when it can be told: the match key
+  phoneNorm      String?
+  /// [{ label?, name?, line1, line2?, city?, state?, zip?, country? }]
+  addresses      Json           @default("[]")
+  notes          String?
+  /// created from a sale file with too little detail to be sure who it is
+  needsDetails   Boolean        @default(false)
+  status         CustomerStatus @default(ACTIVE)
+  mergedIntoId   String?        @db.Uuid
+  createdById    String?        @db.Uuid
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  identities CustomerExternalIdentity[]
+  orders     BuyerOrder[]
+  purchases  Purchase[]
+  shipments  Shipment[]
+
+  @@unique([organizationId, number])
+  @@index([organizationId, emailNorm])
+  @@index([organizationId, phoneNorm])
+  @@index([organizationId, name])
+}
+
+/// How an external system knows the customer. A permanent buyer id is global within its system; a bidder number belongs
+/// to ONE sale (context = the catalog id) and is never a global identifier.
+model CustomerExternalIdentity {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  customerId     String   @db.Uuid
+  /// "bidspirit" | "file" | …
+  system         String
+  /// "" for a permanent id; the catalog id for a per-sale bidder number
+  context        String   @default("")
+  /// BUYER_ID | BIDDER_NUMBER
+  kind           String
+  externalId     String
+  createdAt      DateTime @default(now())
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, system, context, kind, externalId])
+  @@index([customerId])
+}
+
+/// One customer's order in one sale: groups the purchases (and the payments) the customer made in that catalog.
+model BuyerOrder {
+  id              String   @id @default(uuid()) @db.Uuid
+  organizationId  String   @db.Uuid
+  catalogId       String   @db.Uuid
+  customerId      String   @db.Uuid
+  /// order number in an external system, when known
+  externalOrderId String?
+  createdAt       DateTime @default(now())
+
+  catalog   Catalog    @relation(fields: [catalogId], references: [id], onDelete: Restrict)
+  customer  Customer   @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  purchases Purchase[]
+  payments  Payment[]
+
+  @@unique([catalogId, customerId])
+  @@index([customerId])
+  @@index([organizationId, catalogId])
+}
+
+/// The sale of one lot (a combined lot is ONE purchase of several physical books). At most one ACTIVE purchase per lot
+/// (partial unique index in the migration). Cancelled purchases are never deleted.
+model Purchase {
+  id                    String         @id @default(uuid()) @db.Uuid
+  organizationId        String         @db.Uuid
+  orderId               String         @db.Uuid
+  customerId            String         @db.Uuid
+  catalogId             String         @db.Uuid
+  lotId                 String         @db.Uuid
+  status                PurchaseStatus @default(ACTIVE)
+  source                PurchaseSource @default(MANUAL)
+  /// the lot did not sell at the auction; this deal came afterwards
+  afterAuction          Boolean        @default(false)
+  hammerPrice           Decimal        @db.Decimal(12, 2)
+  /// unknown until stated: NULL, never invented
+  buyerPremium          Decimal?       @db.Decimal(12, 2)
+  tax                   Decimal?       @db.Decimal(12, 2)
+  /// the lot's starting price when it sold (the history of the price is kept separately)
+  startingPriceAtSale   Decimal?       @db.Decimal(12, 2)
+  bidderNumber          String?
+  externalTransactionId String?
+  /// the file import that created / last confirmed this purchase
+  importId              String?        @db.Uuid
+  /// fields a person corrected after the import: a re-import never overwrites them
+  manualFields          Json           @default("[]")
+  /// released to the picking queue (sold ≠ released)
+  releasedAt            DateTime?
+  releasedById          String?        @db.Uuid
+  /// released although not paid, by a person with that permission
+  releasedUnpaid        Boolean        @default(false)
+  releaseNote           String?
+  cancelledAt           DateTime?
+  cancelledById         String?        @db.Uuid
+  cancelReason          String?
+  /// refund state when a paid deal is cancelled (free text: the system does not refund)
+  refundNote            String?
+  /// the book may go back to free stock after the cancellation (decided by a person)
+  returnedToStock       Boolean        @default(false)
+  createdById           String?        @db.Uuid
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  order     BuyerOrder     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  customer  Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  catalog   Catalog        @relation(fields: [catalogId], references: [id], onDelete: Restrict)
+  lot       Lot            @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  shipItems ShipmentItem[]
+
+  @@unique([organizationId, externalTransactionId])
+  @@index([organizationId, status])
+  @@index([customerId, status])
+  @@index([orderId])
+  @@index([catalogId, status])
+  @@index([lotId])
+}
+
+/// Money received (or voided) against an order. Partial payments are normal.
+model Payment {
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @db.Uuid
+  orderId        String        @db.Uuid
+  amount         Decimal       @db.Decimal(12, 2)
+  paidAt         DateTime
+  method         String?
+  reference      String?
+  status         PaymentStatus @default(RECORDED)
+  /// MANUAL | IMPORT (a later payments import hangs off the same table)
+  source         String        @default("MANUAL")
+  externalId     String?
+  recordedById   String?       @db.Uuid
+  voidedAt       DateTime?
+  voidedById     String?       @db.Uuid
+  voidReason     String?
+  createdAt      DateTime      @default(now())
+
+  order BuyerOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, externalId])
+  @@index([orderId, status])
+}
+
+/// A delivery to ONE customer: one or several lots, one or several physical books. A book is in at most one ACTIVE
+/// shipment (partial unique index on ShipmentItem). SHIPPED means the books really left.
+model Shipment {
+  id               String         @id @default(uuid()) @db.Uuid
+  organizationId   String         @db.Uuid
+  /// shipment number, 1.. per organization
+  number           Int
+  customerId       String         @db.Uuid
+  status           ShipmentStatus @default(DRAFT)
+  method           ShipmentMethod @default(CARRIER)
+  carrier          String?
+  trackingNumber   String?
+  /// unknown = NULL
+  cost             Decimal?       @db.Decimal(12, 2)
+  /// name / phone / address as they were when the shipment was made (later edits of the customer do not rewrite it)
+  recipient        Json
+  notes            String?
+  /// the person confirmed sending only part of the customer's waiting books
+  partialConfirmed Boolean        @default(false)
+  createdById      String?        @db.Uuid
+  createdAt        DateTime       @default(now())
+  packedAt         DateTime?
+  packedById       String?        @db.Uuid
+  shippedAt        DateTime?
+  shippedById      String?        @db.Uuid
+  deliveredAt      DateTime?
+  deliveredById    String?        @db.Uuid
+  cancelledAt      DateTime?
+  cancelledById    String?        @db.Uuid
+  cancelReason     String?
+  updatedAt        DateTime       @updatedAt
+
+  customer Customer       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  items    ShipmentItem[]
+
+  @@unique([organizationId, number])
+  @@index([customerId, status])
+  @@index([organizationId, status])
+}
+
+/// A physical book inside a shipment. Rows are never deleted: removing or cancelling closes them (isActive = false).
+model ShipmentItem {
+  id               String    @id @default(uuid()) @db.Uuid
+  organizationId   String    @db.Uuid
+  shipmentId       String    @db.Uuid
+  purchaseId       String    @db.Uuid
+  inventoryItemId  String    @db.Uuid
+  isActive         Boolean   @default(true)
+  addedAt          DateTime  @default(now())
+  addedById        String?   @db.Uuid
+  removedAt        DateTime?
+  removedById      String?   @db.Uuid
+  removeReason     String?
+  /// the book came back after being shipped / delivered
+  returnedAt       DateTime?
+  returnedById     String?   @db.Uuid
+  returnReason     String?
+  returnCondition  String?
+  returnLocationId String?   @db.Uuid
+
+  shipment Shipment      @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
+  purchase Purchase      @relation(fields: [purchaseId], references: [id], onDelete: Restrict)
+  item     InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+
+  @@index([shipmentId, isActive])
+  @@index([purchaseId])
+  @@index([inventoryItemId, isActive])
+}
+
+/// Append-only history of every sale-side action (import, sale, correction, payment, release, cancel, shipment steps, merge).
+model SaleEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  purchaseId     String?  @db.Uuid
+  customerId     String?  @db.Uuid
+  shipmentId     String?  @db.Uuid
+  catalogId      String?  @db.Uuid
+  kind           String
+  data           Json?
+  userId         String?  @db.Uuid
+  createdAt      DateTime @default(now())
+
+  @@index([purchaseId, createdAt])
+  @@index([customerId, createdAt])
+  @@index([shipmentId, createdAt])
+  @@index([catalogId, createdAt])
+}
+
+/// An upload of sale results (Excel / CSV today, an API adapter later): the same normalised rows go through the same
+/// matching and commit whatever the source was.
+model SaleResultImport {
+  id               String           @id @default(uuid()) @db.Uuid
+  organizationId   String           @db.Uuid
+  catalogId        String           @db.Uuid
+  /// XLSX | CSV | API
+  source           String
+  fileName         String
+  fileHash         String
+  /// optional second file with the buyers' details
+  buyersFileName   String?
+  buyersFileHash   String?
+  /// storage key of the original file(s)
+  storageKey       String?
+  buyersStorageKey String?
+  mapping          Json
+  status           SaleImportStatus @default(PREVIEW)
+  summary          Json?
+  createdById      String?          @db.Uuid
+  createdAt        DateTime         @default(now())
+  committedAt      DateTime?
+  committedById    String?          @db.Uuid
+
+  catalog Catalog               @relation(fields: [catalogId], references: [id], onDelete: Restrict)
+  rows    SaleResultImportRow[]
+
+  @@index([catalogId, createdAt])
+  @@index([organizationId, fileHash])
+}
+
+model SaleResultImportRow {
+  id            String   @id @default(uuid()) @db.Uuid
+  importId      String   @db.Uuid
+  rowIndex      Int
+  /// the cells as read
+  raw           Json
+  /// the normalised row (lot reference, outcome, price, buyer fields)
+  normalized    Json
+  lotId         String?  @db.Uuid
+  /// SOLD | UNSOLD | UNKNOWN
+  outcome       String
+  hammerPrice   Decimal? @db.Decimal(12, 2)
+  customerId    String?  @db.Uuid
+  /// EXISTING | NEW | NEEDS_DETAILS | AMBIGUOUS | NONE
+  customerMatch String   @default("NONE")
+  /// CREATE | UPDATE | UNCHANGED | CONFLICT | SKIP | ERROR
+  action        String
+  messages      Json     @default("[]")
+  purchaseId    String?  @db.Uuid
+
+  import SaleResultImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@index([importId, rowIndex])
+}
+
+/// A saved column mapping for sale-result files, reused for the next file of the same shape.
+model SaleImportTemplate {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @db.Uuid
+  name           String
+  /// RESULTS | BUYERS
+  kind           String
+  mapping        Json
+  createdById    String?  @db.Uuid
+  createdAt      DateTime @default(now())
+
+  @@unique([organizationId, kind, name])
 }

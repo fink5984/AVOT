@@ -22,6 +22,8 @@ import { globalSearch } from "@/server/services/search";
 import { setProviderOverride } from "@/server/ai/providers";
 import type { AiProvider, ProviderRequest, ProviderResponse } from "@/server/ai/providers/types";
 import { hasForbiddenDash } from "@/server/ai/text";
+import { createCustomer } from "@/server/services/customers";
+import { recordSale, releasePurchase } from "@/server/services/sales";
 import { hasDb, makeOrg } from "./helpers";
 
 /* A fake provider: records every request, never touches the network. */
@@ -129,6 +131,14 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
     return ids;
   }
 
+  /** a sale no longer creates pick tasks by itself: a buyer is recorded and the sale is released to picking (by an admin: unpaid release) */
+  let buyerSeq = 0;
+  async function releaseSold(lotId: string) {
+    const c = await createCustomer(ctx.editor, { name: `קונה ${++buyerSeq}`, email: `rel${buyerSeq}-${Date.now()}@example.com` });
+    const p = await recordSale(ctx.editor, { lotId, customerId: c.id, hammerPrice: "100" });
+    await releasePurchase(ctx.admin, p.id);
+    return p;
+  }
   const approveAll = (lots: { item: { id: string } }[]) => db.inventoryItem.updateMany({ where: { id: { in: lots.map((l) => l.item.id) } }, data: { reviewStatus: "APPROVED" } });
   const members = (lotId: string) => db.lotMember.findMany({ where: { lotId, removedAt: null }, orderBy: { sortOrder: "asc" } });
   const merge = (catalogId: string, lots: { lot: { id: string } }[], keep = 0) => mergeLots(ctx.editor, { catalogId, lotIds: lots.map((l) => l.lot.id), keepLotId: lots[keep]!.lot.id });
@@ -704,6 +714,10 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       const lot = await db.lot.findUniqueOrThrow({ where: { id: lotId } });
       expect(lot.commercialStatus).toBe("SOLD");
       expect(lot.assignmentStatus).toBe("ENDED");
+      // sold is not released: no pick task yet, the books stay where they are
+      expect(await db.pickTask.count({ where: { lotId } })).toBe(0);
+      for (const l of lots) expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: l.item.id } })).physicalStatus).not.toBe("AWAITING_PICK");
+      await releaseSold(lotId);
       for (const l of lots) {
         const i = await db.inventoryItem.findUniqueOrThrow({ where: { id: l.item.id } });
         expect(i.commercialStatus).toBe("SOLD");
@@ -724,14 +738,14 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       const { catalog, lots } = await setup(3);
       await merge(catalog.id, lots);
       const lotId = lots[0]!.lot.id;
-      // one book is already shipped by hand: creating its pick task throws inside the transaction
+      // the sale itself changes every book together
+      await setLotCommercialStatus(ctx.editor, lotId, { status: "SOLD" });
+      for (const l of lots) expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: l.item.id } })).commercialStatus).toBe("SOLD");
+      // one book is already shipped by hand: releasing the lot fails as a whole and leaves every book untouched
       await db.inventoryItem.update({ where: { id: lots[2]!.item.id }, data: { physicalStatus: "SHIPPED" } });
-      await expect(setLotCommercialStatus(ctx.editor, lotId, { status: "SOLD" })).rejects.toThrow();
-      const lot = await db.lot.findUniqueOrThrow({ where: { id: lotId } });
-      expect(lot.commercialStatus).toBe("ASSIGNED");
-      expect(lot.assignmentStatus).toBe("ACTIVE");
-      for (const l of lots) expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: l.item.id } })).commercialStatus).toBe("ASSIGNED");
+      await expect(releaseSold(lotId)).rejects.toThrow();
       expect(await db.pickTask.count({ where: { lotId } })).toBe(0);
+      expect((await db.inventoryItem.findUniqueOrThrow({ where: { id: lots[0]!.item.id } })).physicalStatus).not.toBe("AWAITING_PICK");
     });
 
     it("unsold / withdrawn: every book gets the outcome and can be assigned again, together or apart", async () => {
@@ -755,6 +769,7 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       await merge(catalog.id, lots);
       const lotId = lots[0]!.lot.id;
       await setLotCommercialStatus(ctx.editor, lotId, { status: "SOLD" });
+      await releaseSold(lotId);
 
       await db.$transaction((tx) => pickItemTx(tx, ctx.warehouse, lots[0]!.item.id));
       let f = await lotFulfilment(lotId);
@@ -831,6 +846,8 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       await db.$transaction((tx) => changeStatus(tx, ctx.editor, lot.inventoryItemId, "PHOTO", "COMPLETED"));
       expect((await db.lot.findUniqueOrThrow({ where: { id: lot.id } })).status).toBe("COMPLETED");
       await setLotCommercialStatus(ctx.editor, lot.id, { status: "SOLD" });
+      expect(await db.pickTask.count({ where: { lotId: lot.id } })).toBe(0);
+      await releaseSold(lot.id);
       expect(await db.pickTask.count({ where: { lotId: lot.id } })).toBe(1);
       expect((await lotsCsv(ctx.org.id, catalog.id)).body).toContain(",1,");
       // a single-book lot rejects the combined-only AI action
