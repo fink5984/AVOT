@@ -232,24 +232,3 @@ export async function setLotCommercialStatus(user: UserPrincipal, lotId: string,
   });
   return updated;
 }
-
-/**
- * Ends a sale event: every lot still active is marked UNSOLD (lots marked SOLD
- * before stay sold) and the catalog is archived. Books become available for a
- * new catalog with their photos, location and history intact.
- */
-export async function closeCatalog(user: UserPrincipal, catalogId: string) {
-  const catalog = await db.catalog.findFirst({ where: { id: catalogId, organizationId: user.organizationId } });
-  if (!catalog) throw notFound("הקטלוג");
-  assertHouse(user, catalog.auctionHouseId);
-  const active = await db.lot.findMany({ where: { catalogId, assignmentStatus: "ACTIVE" }, select: { id: true } });
-  await db.$transaction(
-    async (tx) => {
-      for (const l of active) await endLotTx(tx, user, l.id, "UNSOLD", `קטלוג ${catalog.number} הסתיים`);
-      await tx.catalog.update({ where: { id: catalogId }, data: { status: "ARCHIVED", archivedAt: new Date() } });
-    },
-    { timeout: 60_000 },
-  );
-  await audit(user, { action: "catalog.closed", entityType: "catalog", entityId: catalogId, data: { number: catalog.number, unsold: active.length } });
-  return { unsold: active.length };
-}

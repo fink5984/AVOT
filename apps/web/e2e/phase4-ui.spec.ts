@@ -84,15 +84,21 @@ test("book page: the same quick actions as the table; print is one click (no nav
   const bar = page.getByRole("group", { name: new RegExp(`פעולות לספר ${book.inventoryNumber}`) });
   for (const name of [/צילום/, /הדפסת תווית/, /שייך לקטלוג/, /שנה מיקום/, /עריכת פרטי הספר/, /פעולות נוספות/]) await expect(bar.getByRole("button", { name }).or(bar.getByRole("link", { name }))).toBeVisible();
 
-  // one click: a print job is queued, we stay on the page, a double click makes one job
+  // one click: a print job is queued, we stay on the page; every deliberate click is its own request (no lock on the button)
   const jobs: string[] = [];
   page.on("request", (r) => r.url().includes("/api/print/jobs") && r.method() === "POST" && jobs.push(r.url()));
   const url = page.url();
   const printBtn = bar.getByRole("button", { name: /הדפסת תווית/ });
-  await printBtn.dblclick();
+  await printBtn.click();
   await expect(page.getByText(/נשלחה להדפסה|מדפסת/).first()).toBeVisible();
   expect(page.url()).toBe(url);
   expect(jobs).toHaveLength(1);
+  // a second and a third click right after are two more labels, not blocked
+  await printBtn.click();
+  await printBtn.click();
+  await expect.poll(() => jobs.length).toBe(3);
+  // and no confirmation window appears for a single label
+  await expect(page.getByRole("dialog", { name: /אישור הדפסה/ })).toHaveCount(0);
 
   // relocation is a choice, not a code
   await bar.getByRole("button", { name: "שנה מיקום" }).click();

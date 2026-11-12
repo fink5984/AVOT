@@ -26,6 +26,7 @@ import { fmt, t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { LotPriceCell } from "@/components/lot-price";
+import { RecordSaleDialog } from "@/components/sales/record-sale-dialog";
 
 export interface LotRow {
   id: string;
@@ -123,6 +124,8 @@ export function LotsTable({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [aiLot, setAiLot] = useState<LotRow | null>(null);
+  /** "נמכר": the buyer and the hammer price are recorded together with the sale */
+  const [saleFor, setSaleFor] = useState<LotRow | null>(null);
   const quickRef = useRef<HTMLInputElement>(null);
 
   const visible = useMemo(() => {
@@ -220,7 +223,7 @@ export function LotsTable({
 
   async function setCommercial(lot: LotRow, status: CommercialStatus) {
     const ends = status === "SOLD" || status === "UNSOLD" || status === "WITHDRAWN";
-    if (ends && !window.confirm(`לסמן את פריט ${lot.lotNumber} כ"${t.commercialStatus[status]}"? השיוך לקטלוג יסתיים${status === "SOLD" ? " ותיווצר משימת ליקוט" : ""}.`)) return;
+    if (ends && !window.confirm(`לסמן את פריט ${lot.lotNumber} כ"${t.commercialStatus[status]}"? השיוך לקטלוג יסתיים.`)) return;
     try {
       await api(`/api/lots/${lot.id}/commercial`, { method: "POST", json: { status } });
       toast.success(`פריט ${lot.lotNumber}: ${t.commercialStatus[status]}`);
@@ -251,7 +254,7 @@ export function LotsTable({
     if (perms.commercial) {
       items.push("separator");
       if (l.assignmentStatus === "ACTIVE" && l.commercialStatus !== "OFFERED") items.push({ label: "הוצע למכירה", icon: <Gavel />, onSelect: () => setCommercial(l, "OFFERED") });
-      if (l.commercialStatus !== "SOLD") items.push({ label: "נמכר", icon: <CircleCheck />, onSelect: () => setCommercial(l, "SOLD") });
+      if (l.commercialStatus !== "SOLD") items.push({ label: l.commercialStatus === "UNSOLD" ? "נמכר לאחר המכרז" : "נמכר (קונה ומחיר)", icon: <CircleCheck />, onSelect: () => setSaleFor(l) });
       if (l.assignmentStatus === "ACTIVE") {
         items.push({ label: "לא נמכר", icon: <CircleDashed />, onSelect: () => setCommercial(l, "UNSOLD") });
         items.push({ label: "הוסר ממכירה", icon: <Ban />, onSelect: () => setCommercial(l, "WITHDRAWN") });
@@ -591,6 +594,7 @@ export function LotsTable({
           <Button onClick={() => setAiLot(null)}>סגירה</Button>
         </div>
       </Dialog>
+      {saleFor && <RecordSaleDialog open onClose={() => setSaleFor(null)} lotId={saleFor.id} lotLabel={`פריט ${saleFor.lotNumber} · ${saleFor.title}`} afterAuction={saleFor.commercialStatus === "UNSOLD"} />}
       <MergeLotsDialog
         open={mergeOpen}
         onClose={() => setMergeOpen(false)}

@@ -3,6 +3,7 @@ import { requirePageUser } from "@/server/auth/principal";
 import { can } from "@/server/auth/permissions";
 import { db } from "@/server/db";
 import { listLots } from "@/server/services/lots";
+import { listTemplates } from "@/server/services/sale-import";
 import { healLotNumbers } from "@/server/services/lot-members";
 import { canSeeHouse, catalogScope } from "@/server/auth/houses";
 import { HouseMark } from "@/components/house-mark";
@@ -63,6 +64,7 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
     review: l.review,
     bibliography: l.bibliography,
   }));
+  const templates = can(user.role, "sales.import") ? await listTemplates(user.organizationId) : [];
   const activeLots = lots.filter((l) => l.assignmentStatus === "ACTIVE").length;
   const sold = lots.filter((l) => l.commercialStatus === "SOLD").length;
   const done = lots.filter((l) => l.status === "COMPLETED").length;
@@ -92,7 +94,9 @@ export default async function CatalogPage({ params, searchParams }: { params: Pr
             canImport={can(user.role, "lot.create")}
             canExport={can(user.role, "export.create")}
             missingPrices={lots.filter((l) => l.assignmentStatus === "ACTIVE" && l.startingPrice === null).length}
-            canClose={can(user.role, "commercial.edit") && catalog.status !== "ARCHIVED"}
+            canClose={can(user.role, "sale.finish") && catalog.status !== "ARCHIVED"}
+            canImportSales={can(user.role, "sales.import")}
+            templates={templates}
             activeLots={activeLots}
           />
         }

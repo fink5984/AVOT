@@ -2,13 +2,15 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Archive, FileDown, FileUp, MoreHorizontal, Package, Printer } from "lucide-react";
+import { Flag, FileDown, FileUp, ReceiptText, MoreHorizontal, Package, Printer } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { Menu } from "@/components/ui/menu";
 import { useToast } from "@/components/ui/toast";
 import { api, errorMessage } from "@/lib/api";
 import { ExportDialog } from "@/components/export-dialog";
+import { SaleImportDialog } from "./sale-import-dialog";
+import { FinishSaleDialog } from "./finish-sale-dialog";
 
 interface Preview {
   rows: { line: number; lotNumber?: number; title: string; author?: string }[];
@@ -23,8 +25,10 @@ export function CatalogHeaderActions({
   canImport,
   canExport,
   canClose = false,
-  activeLots = 0,
+  activeLots: _activeLots = 0,
   missingPrices = 0,
+  canImportSales = false,
+  templates = [],
 }: {
   catalogId: string;
   catalogNumber: string;
@@ -35,26 +39,19 @@ export function CatalogHeaderActions({
   activeLots?: number;
   /** active lots without a starting price (the Excel export warns, never blocks) */
   missingPrices?: number;
+  canImportSales?: boolean;
+  templates?: { id: string; name: string }[];
 }) {
   const router = useRouter();
   const toast = useToast();
   const [importOpen, setImportOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [salesOpen, setSalesOpen] = useState(false);
+  const [finishOpen, setFinishOpen] = useState(false);
   const [csv, setCsv] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
-
-  async function closeCatalog() {
-    if (!window.confirm(`לסיים את קטלוג ${catalogNumber}?\n${activeLots} פריטים פעילים יסומנו "לא נמכר" (פריטים שסומנו "נמכר" נשארים). הקטלוג יעבור לארכיון והספרים יהיו זמינים לשיוך לקטלוג אחר.`)) return;
-    try {
-      const r = await api<{ unsold: number }>(`/api/catalogs/${catalogId}/close`, { method: "POST" });
-      toast.success(`הקטלוג הסתיים · ${r.unsold} פריטים סומנו "לא נמכר"`);
-      router.refresh();
-    } catch (err) {
-      toast.error(errorMessage(err));
-    }
-  }
 
   async function downloadXlsx() {
     if (missingPrices > 0 && !window.confirm(`ל-${missingPrices} לוטים עדיין אין מחיר פתיחה. הם ייוצאו עם תא ריק (לא 0). להוריד את הקובץ בכל זאת?`)) return;
@@ -116,9 +113,12 @@ export function CatalogHeaderActions({
           ...(canImport ? [{ label: "ייבוא פריטים מ-CSV", icon: <FileUp />, onSelect: () => setImportOpen(true) }] : []),
           ...(canExport ? [{ label: "ייצוא קטלוג ל-Excel", icon: <FileDown />, onSelect: () => void downloadXlsx() }] : []),
           { label: "ייצוא נתוני פריטים ל-CSV", icon: <FileDown />, onSelect: () => (window.location.href = `/api/catalogs/${catalogId}/lots-csv`) },
-          ...(canClose ? (["separator", { label: "סיום הקטלוג (לא נמכרו → זמינים)", icon: <Archive />, onSelect: () => void closeCatalog() }] as const) : []),
+          ...(canImportSales ? (["separator", { label: "ייבוא תוצאות מכירה", icon: <ReceiptText />, onSelect: () => setSalesOpen(true) }] as const) : []),
+          ...(canClose ? [{ label: "סיום מכירה", icon: <Flag />, onSelect: () => setFinishOpen(true) }] : []),
         ]}
       />
+      {canImportSales && <SaleImportDialog open={salesOpen} onClose={() => setSalesOpen(false)} catalogId={catalogId} templates={templates} />}
+      {canClose && <FinishSaleDialog open={finishOpen} onClose={() => setFinishOpen(false)} catalogId={catalogId} />}
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} request={{ scope: "catalog", catalogId }} title={`ייצוא קטלוג ${catalogNumber}`} />
       <Dialog
         open={importOpen}

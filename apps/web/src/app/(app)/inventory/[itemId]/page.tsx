@@ -19,6 +19,7 @@ import { PhotographerNotes } from "@/components/photographer-notes";
 import { locationLabel } from "@/server/services/location-label";
 import { getAiState } from "@/server/services/ai-analysis";
 import { ItemReviewPanel } from "@/components/ai/item-review-panel";
+import { SalePanel } from "@/components/sales/sale-panel";
 import { AiActivity } from "@/components/ai/ai-activity";
 import { AiResearchSection } from "@/components/ai/ai-research-section";
 import { serializeItemFormat } from "@/lib/rich-text";
@@ -229,6 +230,7 @@ export default async function ItemPage({ params, searchParams }: { params: Promi
         </div>
 
         <div className="space-y-4">
+          <SalePanel user={user} itemId={item.id} />
           <Panel title="שיוכים לקטלוגים">
             {lots.length === 0 ? (
               <p className="px-5 py-4 text-[13px] text-muted">הספר עדיין לא שויך לקטלוג.</p>

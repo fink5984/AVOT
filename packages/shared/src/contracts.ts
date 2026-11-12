@@ -182,6 +182,18 @@ export interface ScanResponse {
     commercialStatus: string;
     photoStatus: string;
     assignment: { house: string; catalogNumber: string; lotNumber: number } | null;
+    /** the sale of a sold book - only what the task needs (no customer id, amounts or contact details) */
+    sale?: {
+      customerName: string;
+      lot: number;
+      house: string;
+      catalogNumber: string;
+      financial: string;
+      released: boolean;
+      stage: string;
+      otherWaitingBooks: number;
+      otherPickableBooks: number;
+    } | null;
     allowed: string[];
   } | null;
   /** an earlier response for the same opId was replayed */

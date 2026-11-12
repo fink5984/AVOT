@@ -677,6 +677,26 @@ function Scanner({ user, perms }: { user: { id: string; name: string }; perms: {
         </section>
       )}
 
+      {mode !== "COUNT" && result?.item?.sale && (
+        <section className="mx-3 mt-1 rounded-xl bg-accent-soft/60 p-3 text-[13px] ring-1 ring-rule" data-testid="handheld-sale">
+          <div className="font-semibold">קונה: {result.item.sale.customerName}</div>
+          <div className="mt-0.5 text-ink-2">
+            {result.item.sale.house}, קטלוג {result.item.sale.catalogNumber}, פריט {result.item.sale.lot}
+          </div>
+          <div className="mt-0.5 text-muted">
+            {{ NONE: "טרם חושב חיוב", UNPAID: "ממתין לתשלום", PARTIAL: "שולם חלקית", PAID: "שולם" }[result.item.sale.financial] ?? ""}
+            {" · "}
+            {result.item.sale.released ? "משוחרר לליקוט" : "טרם שוחרר לליקוט"}
+          </div>
+          {result.item.sale.otherWaitingBooks > 0 && (
+            <div className="mt-1.5 font-medium text-warn">
+              לקוח זה ממתין לעוד {result.item.sale.otherWaitingBooks} ספרים מהמחסן
+              {result.item.sale.otherPickableBooks > 0 ? ` (${result.item.sale.otherPickableBooks} מוכנים לליקוט)` : ""}
+            </div>
+          )}
+        </section>
+      )}
+
       {mode === "COUNT" && (
         <div className="mx-3 mt-1 rounded-xl bg-paper px-3 py-2.5 text-[13px] shadow-card ring-1 ring-rule">
           {count ? (

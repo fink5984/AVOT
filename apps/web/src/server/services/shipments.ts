@@ -107,6 +107,15 @@ export async function customerBooks(tx: Tx | typeof db, orgId: string, customerI
   return out;
 }
 
+/** the books of a customer for a user: payment states are removed for people without access to financial data */
+export async function customerBooksFor(user: UserPrincipal): Promise<(customerId: string) => Promise<WaitingBook[]>> {
+  const seeMoney = canUser(user, "sales.view");
+  return async (customerId) => {
+    const books = await customerBooks(db, user.organizationId, customerId);
+    return seeMoney ? books : books.map((b) => ({ ...b, financial: "HIDDEN", blockedReason: b.blockedReason?.replace("טרם שולם ולא שוחרר לליקוט", "טרם שוחרר לליקוט") ?? null }));
+  };
+}
+
 /** the smart-shipping hint for one purchase/book: what else the same customer is waiting for */
 export async function shippingHint(user: UserPrincipal, opts: { purchaseId?: string; itemId?: string }) {
   let purchaseId = opts.purchaseId;
@@ -555,6 +564,8 @@ export async function shippingOverview(user: UserPrincipal, f: ShipmentFilters =
   const customers = await db.customer.findMany({ where: { id: { in: customerIds }, ...(f.q ? { OR: [{ name: { contains: f.q, mode: "insensitive" } }, { email: { contains: f.q, mode: "insensitive" } }] } : {}) }, orderBy: { name: "asc" }, take: 500 });
   const rows = [];
   const totals = { waitingBooks: 0, waitingLots: 0, customersOpen: 0, packedBooks: 0, shippedBooks: 0, completedShipments: 0, customersBlockedByPayment: 0, partialShipments: 0 };
+  // warehouse staff prepare shipments but do not see money: payment states are hidden from them
+  const seeMoney = canUser(user, "sales.view");
   for (const c of customers) {
     const books = await customerBooks(db, user.organizationId, c.id, { includeShipped: true });
     const waiting = books.filter((b) => b.stage !== "SHIPPED" && b.stage !== "DELIVERED");
@@ -584,7 +595,7 @@ export async function shippingOverview(user: UserPrincipal, f: ShipmentFilters =
       waitingBooks: waiting.length,
       readyBooks: waiting.filter((b) => b.available).length,
       shippedLots: lots(shipped),
-      financial: waiting.some((b) => b.financial === "UNPAID") ? "UNPAID" : waiting.some((b) => b.financial === "PARTIAL") ? "PARTIAL" : waiting.length ? "PAID" : "NONE",
+      financial: !seeMoney ? "HIDDEN" : waiting.some((b) => b.financial === "UNPAID") ? "UNPAID" : waiting.some((b) => b.financial === "PARTIAL") ? "PARTIAL" : waiting.length ? "PAID" : "NONE",
       catalogs: [...new Set(books.map((b) => `${b.house} ${b.catalogNumber}`))],
       openShipments: open,
     });

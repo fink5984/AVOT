@@ -14,6 +14,7 @@ import { locationInclude, locationLabel } from "./location-label";
 import { pickItemTx } from "./picking";
 import { removeFinallyTx, removeTemporarilyTx } from "./checkout";
 import { findLocationByCode, isRetiredLocationCode, moveItemTx } from "./warehouse";
+import { saleOfItem } from "./sales-views";
 
 /*
  * Handheld scans. Every scan carries a device-generated opId:
@@ -45,6 +46,14 @@ async function tempOutTx(tx: Tx, user: UserPrincipal, itemId: string, op: ScanOp
   return { ...base, result: r.kind === "ok" ? "OK" : r.kind === "noop" ? "NOOP" : "ERROR", message: r.message, item };
 }
 
+/** the buyer and the customer's other waiting books, reduced to what picking needs */
+async function handheldSale(user: UserPrincipal, itemId: string) {
+  const s = await saleOfItem(user, itemId, { forHandheld: true });
+  if (!s) return null;
+  const { purchaseId: _p, shipmentId: _s, ...rest } = s;
+  return rest;
+}
+
 async function itemView(tx: Tx, user: UserPrincipal, itemId: string): Promise<NonNullable<ScanResponse["item"]>> {
   const i = await tx.inventoryItem.findUniqueOrThrow({
     where: { id: itemId },
@@ -70,6 +79,7 @@ async function itemView(tx: Tx, user: UserPrincipal, itemId: string): Promise<No
     commercialStatus: i.commercialStatus,
     photoStatus: i.photoStatus,
     assignment: lot && canSeeHouse(user, lot.catalog.auctionHouseId) ? { house: lot.catalog.auctionHouse.name, catalogNumber: lot.catalog.number, lotNumber: lot.lotNumber } : null,
+    sale: await handheldSale(user, itemId),
     allowed,
   };
 }

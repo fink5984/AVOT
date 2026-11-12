@@ -85,18 +85,12 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
   const [edit, setEdit] = useState<ItemFormValue | null>(null);
   const [loadingEdit, setLoadingEdit] = useState(false);
   const [del, setDel] = useState(false);
-  const [printing, setPrinting] = useState(false);
   const size = context === "table" ? "sm" : "md";
   const sold = subject.commercialStatus === "SOLD" || subject.physicalStatus === "SHIPPED";
 
+  /** every deliberate click prints a label: no lock on the button (a retry of the SAME request is deduplicated by its key on the server) */
   async function printLabel() {
-    if (printing) return; // a double click never queues two labels
-    setPrinting(true);
-    try {
-      await print([{ type: "BOOK", id: subject.id }], { what: `תווית ${subject.inventoryNumber}` });
-    } finally {
-      setTimeout(() => setPrinting(false), 600);
-    }
+    await print([{ type: "BOOK", id: subject.id }], { what: `תווית ${subject.inventoryNumber}` });
   }
 
   /** the book page passes the details; a table row loads them on demand */
@@ -169,7 +163,7 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
           </IconButtonLink>
         )}
         {perms.label && (
-          <IconButton label={`הדפסת תווית ${subject.inventoryNumber}`} size={size} disabled={printing} onClick={() => void printLabel()}>
+          <IconButton label={`הדפסת תווית ${subject.inventoryNumber}`} size={size} onClick={() => void printLabel()}>
             <Printer />
           </IconButton>
         )}
