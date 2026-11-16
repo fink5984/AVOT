@@ -5,7 +5,8 @@ import { can } from "@/server/auth/permissions";
 import { createCatalog } from "@/server/services/catalogs";
 import { assignToCatalog } from "@/server/services/assignments";
 import { updateItem } from "@/server/services/inventory";
-import { requestAnalysis, runAnalysis } from "@/server/services/ai-analysis";
+import { AiDeferred, requestAnalysis, runAnalysis } from "@/server/services/ai-analysis";
+import { finishCapture } from "@/server/services/capture-finish";
 import { photoReadiness } from "@/server/services/photo-readiness";
 import { addReviewNote, listReviewNotes, noteStamp, openNoteCounts, updateReviewNote } from "@/server/services/review-notes";
 import { resolveCatalogDraft } from "@/server/services/lot-draft-actions";
@@ -140,6 +141,88 @@ describe.skipIf(!hasDb)("editor workspace: AI photography gate, review notes, bo
     expect(await db.inventoryAnalysis.findUnique({ where: { id: old.id } })).not.toBeNull();
     // manual editing of the existing text is never blocked by the photography state
     await expect(updateItem(ctx.editor, item.id, { catalogDescription: "תיאור שנערך ידנית" })).resolves.toBeTruthy();
+  });
+
+
+  /* ───────────── automatic first analysis after "סיום פריט" ───────────── */
+
+  const finish = (itemId: string, status: "COMPLETED" | "PENDING_REVIEW" | "NEEDS_RESHOOT" = "COMPLETED", opId: string = randomUUID(), user = ctx.photographer) => finishCapture(user, itemId, { status, opId });
+  const runsOf = (itemId: string) => db.inventoryAnalysis.findMany({ where: { inventoryItemId: itemId, kind: "catalog_ai" } });
+
+  it("finish with photos and no earlier analysis queues ONE background run, marked automatic, without calling the model; a double click or a second finish adds nothing", async () => {
+    const { item } = await createBook(ctx.editor, { title: "סיום אוטומטי" });
+    await addAsset(item.id);
+    const key = randomUUID();
+    const [a, b] = await Promise.all([finish(item.id, "COMPLETED", key), finish(item.id, "COMPLETED", key)]);
+    expect([a.ai.started, b.ai.started].filter(Boolean)).toHaveLength(1);
+    const runs = await runsOf(item.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "QUEUED", createdById: ctx.photographer.userId });
+    expect(runs[0]!.input).toMatchObject({ auto: true, trigger: "capture-finish" });
+    expect(await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({ aiStatus: "QUEUED", photoStatus: "COMPLETED" });
+    expect((await db.auditLog.findFirstOrThrow({ where: { inventoryItemId: item.id, action: "ai.requested" } })).data).toMatchObject({ auto: true });
+    // finishing again (another person, a new click) never adds a run while one is queued
+    const again = await finish(item.id, "COMPLETED", randomUUID(), ctx.editor);
+    expect(again.ai.started).toBe(false);
+    expect(await runsOf(item.id)).toHaveLength(1);
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it("no photos, or a finish that is not COMPLETED: no run, no job, nothing charged; the finish itself still works", async () => {
+    const { item } = await createBook(ctx.editor, { title: "ללא תמונות" });
+    const r = await finish(item.id);
+    expect(r).toMatchObject({ status: "COMPLETED", ai: { started: false, reason: "אין תמונות לספר" } });
+    expect(await runsOf(item.id)).toHaveLength(0);
+    const { item: other } = await createBook(ctx.editor, { title: "ממתין לבדיקה" });
+    await addAsset(other.id);
+    expect((await finish(other.id, "PENDING_REVIEW")).ai.started).toBe(false);
+    expect((await finish(other.id, "NEEDS_RESHOOT")).ai.started).toBe(false);
+    expect(await runsOf(other.id)).toHaveLength(0);
+    // photos added later and a proper finish: now the first analysis starts
+    expect((await finish(other.id, "COMPLETED")).ai.started).toBe(true);
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it("an analysed book never gets another automatic analysis - not after more photos and a new finish; a failed automatic run is not repeated by finishing again", async () => {
+    const { item } = await createBook(ctx.editor, { title: "כבר נותח" });
+    await addAsset(item.id);
+    await db.inventoryItem.update({ where: { id: item.id }, data: { aiStatus: "COMPLETED", aiCompletedAt: new Date() } });
+    await db.inventoryAnalysis.create({ data: { organizationId: ctx.org.id, inventoryItemId: item.id, kind: "catalog_ai", status: "COMPLETED", requestKey: randomUUID() } });
+    await addAsset(item.id); // two more photos later
+    await addAsset(item.id);
+    const r = await finish(item.id);
+    expect(r.ai.started).toBe(false);
+    expect(await runsOf(item.id)).toHaveLength(1);
+
+    // an automatic run that failed: finishing again does not start another (a person retries with the AI button)
+    const { item: failed } = await createBook(ctx.editor, { title: "נכשל אוטומטית" });
+    await addAsset(failed.id);
+    const first = await finish(failed.id);
+    expect(first.ai.started).toBe(true);
+    await db.inventoryAnalysis.updateMany({ where: { inventoryItemId: failed.id }, data: { status: "FAILED", error: "x" } });
+    await db.inventoryItem.update({ where: { id: failed.id }, data: { aiStatus: "FAILED" } });
+    for (let i = 0; i < 3; i++) expect((await finish(failed.id)).ai.started).toBe(false);
+    expect(await runsOf(failed.id)).toHaveLength(1);
+    // the manual button still works (new key) once photography is complete
+    await expect(requestAnalysis(ctx.editor, failed.id, { requestKey: randomUUID() })).resolves.toMatchObject({ existing: false });
+  });
+
+  it("photos still uploading or processing: the run waits in the queue (the model is not called); an open capture session does not hold it; after too long it is closed as failed", async () => {
+    const { item } = await createBook(ctx.editor, { title: "העלאה מאוחרת" });
+    const asset = await addAsset(item.id, { upload: "UPLOADING" });
+    await db.captureSession.create({ data: { organizationId: ctx.org.id, userId: ctx.photographer.userId, cameraKind: "SIMULATOR", inventoryItemId: item.id, activeCategory: "COVER" } });
+    expect((await finish(item.id)).ai.started).toBe(true);
+    const [run] = await runsOf(item.id);
+    await expect(runAnalysis(run!.id)).rejects.toBeInstanceOf(AiDeferred);
+    expect(await db.inventoryAnalysis.findUniqueOrThrow({ where: { id: run!.id } })).toMatchObject({ status: "QUEUED" });
+    expect(await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({ aiStatus: "QUEUED" });
+    expect(provider.requests).toHaveLength(0);
+    // processing finished meanwhile is not enough while an upload is open; the wait is bounded
+    await db.photoFile.updateMany({ where: { assetId: asset.id }, data: { uploadStatus: "FAILED" } });
+    await db.inventoryAnalysis.update({ where: { id: run!.id }, data: { createdAt: new Date(Date.now() - 30 * 60 * 1000) } });
+    await runAnalysis(run!.id).catch(() => undefined);
+    expect(await db.inventoryAnalysis.findUniqueOrThrow({ where: { id: run!.id } })).toMatchObject({ status: "FAILED" });
+    expect(provider.requests).toHaveLength(0);
   });
 
   /* ───────────── section 3: review notes ───────────── */

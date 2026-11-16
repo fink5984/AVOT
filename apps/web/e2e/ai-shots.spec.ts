@@ -14,8 +14,8 @@ for (const [name, viewport] of [["desktop", { width: 1500, height: 1100 }], ["ph
     const id = created.item.id as string;
     await markPhotoComplete(page, id);
     await page.goto(`/inventory/${id}`);
-    await page.locator("[data-ai-status]").click();
-    await expect(page.locator("[data-ai-status]")).toHaveAttribute("data-ai-status", "COMPLETED", { timeout: 120_000 });
+    await page.locator("button[data-ai-status]").click();
+    await expect(page.locator("button[data-ai-status]")).toHaveAttribute("data-ai-status", "COMPLETED", { timeout: 120_000 });
     await page.reload();
     await page.getByTestId("research-toggle").click();
     await expect(page.getByTestId("research-sources")).toBeVisible();

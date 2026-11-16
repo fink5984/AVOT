@@ -25,7 +25,7 @@ test("AI analysis from the book page, review with autosave, approval, filter and
   await expect(panel.getByText("טרם נותח", { exact: true })).toBeVisible();
 
   // not analysed yet: blue button, one click starts it, the spinner shows while it runs
-  const ai = page.locator("[data-ai-status]");
+  const ai = page.locator("button[data-ai-status]");
   await expect(ai).toHaveAttribute("data-ai-status", "NOT_RUN");
   await ai.click();
   await expect(page.getByText(/ניתוח AI התחיל/)).toBeVisible();
@@ -36,7 +36,7 @@ test("AI analysis from the book page, review with autosave, approval, filter and
 
   // survives a refresh: the state is the database's
   await page.reload();
-  await expect(page.locator("[data-ai-status]")).toHaveAttribute("data-ai-status", "COMPLETED");
+  await expect(page.locator("button[data-ai-status]")).toHaveAttribute("data-ai-status", "COMPLETED");
 
   // review: start, edit with autosave, leave and come back, approve
   await panel.getByRole("button", { name: "התחל בדיקה" }).click();
@@ -67,7 +67,7 @@ test("AI analysis from the book page, review with autosave, approval, filter and
 
   // re-analysis: the dialog asks for a manager; a wrong password is refused by the server and nothing starts
   await page.goto(`/inventory/${id}`);
-  await page.locator("[data-ai-status]").click();
+  await page.locator("button[data-ai-status]").click();
   const dlg = page.getByRole("dialog", { name: "ניתוח AI חוזר" });
   await expect(dlg.getByText(/הניתוח החדש יחליף/)).toBeVisible();
   await dlg.getByLabel("אימייל המנהל").fill(ADMIN.email);
@@ -75,7 +75,7 @@ test("AI analysis from the book page, review with autosave, approval, filter and
   await dlg.getByRole("button", { name: "אישור והתחלת ניתוח" }).click();
   await expect(dlg.getByText(/אימות המנהל נכשל/)).toBeVisible();
   await dlg.getByRole("button", { name: "ביטול" }).click();
-  await expect(page.locator("[data-ai-status]")).toHaveAttribute("data-ai-status", "COMPLETED");
+  await expect(page.locator("button[data-ai-status]")).toHaveAttribute("data-ai-status", "COMPLETED");
   // no session can skip the manager approval through the API
   const direct = await page.request.post(`/api/inventory/${id}/ai`, { data: { requestKey: crypto.randomUUID() }, headers: { origin } });
   expect(direct.status()).toBe(403);

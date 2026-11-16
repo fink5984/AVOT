@@ -250,3 +250,48 @@ test.describe("AI waits for the end of photography", () => {
     });
   });
 });
+
+test.describe("a combined lot", () => {
+  test("every book keeps its own notes and its own workspace; the shared description stays a separate entity", async ({ page }) => {
+    await login(page);
+    const origin = new URL(page.url()).origin;
+    const consignor = await apiConsignor(page, "מפקיד לוט משולב E2E");
+    const houses = (await (await page.request.get("/api/houses")).json()).houses as { id: string }[];
+    const made = await page.request.post("/api/catalogs", { data: { auctionHouseId: houses[0]!.id, number: `C${Date.now().toString().slice(-8)}`, name: "קטלוג משולב סביבת עבודה" }, headers: { origin } });
+    const catalogId = (await made.json()).catalog.id as string;
+    const add = async (title: string) => {
+      const r = await page.request.post(`/api/catalogs/${catalogId}/lots`, { data: { title, consignorId: consignor.id, opId: crypto.randomUUID() }, headers: { origin } });
+      return (await r.json()).lot as { id: string; inventoryItemId: string };
+    };
+    const a = await add("ספר ראשון בלוט");
+    const b = await add("ספר שני בלוט");
+    const merged = await page.request.post(`/api/catalogs/${catalogId}/lots/merge`, { data: { lotIds: [a.id, b.id], keepLotId: a.id, title: "שני ספרים משותפים" }, headers: { origin } });
+    expect(merged.ok()).toBeTruthy();
+    await page.request.post(`/api/inventory/${a.inventoryItemId}/review-notes`, { data: { text: "הערה רק לספר הראשון" }, headers: { origin } });
+    await page.request.post(`/api/inventory/${b.inventoryItemId}/review-notes`, { data: { text: "הערה רק לספר השני" }, headers: { origin } });
+
+    await page.goto(`/lots/${a.id}`);
+    const panels = page.getByTestId("combined-notes").getByTestId("review-notes");
+    await expect(panels).toHaveCount(2);
+    await expect(panels.nth(0)).toContainText("ספר ראשון בלוט");
+    await expect(panels.nth(0)).toContainText("הערה רק לספר הראשון");
+    await expect(panels.nth(0)).not.toContainText("הערה רק לספר השני");
+    await expect(panels.nth(1)).toContainText("ספר שני בלוט");
+    await expect(panels.nth(1)).toContainText("הערה רק לספר השני");
+
+    // the workspace of one book at a time (its own AI state, review and catalog text); the shared description is another panel
+    const picker = page.getByTestId("combined-book-picker");
+    await expect(picker).toBeVisible();
+    await expect(page.getByLabel("כותרת קטלוגית")).toHaveCount(1);
+    await picker.getByRole("link", { name: /ספר שני בלוט/ }).click();
+    await expect(page).toHaveURL(/book=/, { timeout: 60_000 });
+    await page.getByLabel("כותרת קטלוגית").fill("כותרת הספר השני בלבד");
+    await expect(page.getByText("נשמר", { exact: true }).first()).toBeVisible();
+    const bookB = await page.request.get(`/api/inventory/${b.inventoryItemId}`).then((r) => r.json());
+    const bookA = await page.request.get(`/api/inventory/${a.inventoryItemId}`).then((r) => r.json());
+    expect(bookB.item.catalogHeadline).toBe("כותרת הספר השני בלבד");
+    expect(bookA.item.catalogHeadline ?? null).not.toBe("כותרת הספר השני בלבד");
+    // the lot's own shared title is untouched by a book's edit
+    await expect(page.getByRole("heading", { level: 1, name: "שני ספרים משותפים" })).toBeVisible();
+  });
+});

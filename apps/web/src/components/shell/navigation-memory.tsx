@@ -22,7 +22,7 @@ export function NavigationMemory() {
   const router = useRouter();
   /** what the page that is on screen looks like now */
   const snap = useRef({ path: pathname, search: "", top: 0 });
-  const clicked = useRef<{ path: string; anchor: NavAnchor | null } | null>(null);
+  const clicked = useRef<{ path: string; anchor: NavAnchor | null; at: number } | null>(null);
   const popAt = useRef(0);
 
   // listeners for the lifetime of the shell
@@ -37,8 +37,20 @@ export function NavigationMemory() {
     };
     const onClick = (e: MouseEvent) => {
       if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-      const a = (e.target as Element | null)?.closest?.<HTMLAnchorElement>("a[href]");
-      if (!a || a.target === "_blank" || a.hasAttribute("download")) return;
+      const target = e.target as Element | null;
+      const a = target?.closest?.<HTMLAnchorElement>("a[href]");
+      if (!a) {
+        // a button inside a row (camera, assign, edit...) may navigate programmatically: remember the row it belongs to
+        const row = target?.closest?.<HTMLElement>("tr, li, article");
+        const link = row?.querySelector<HTMLAnchorElement>("a[href^='/']");
+        if (link && row && !target?.closest?.("#app-sidebar")) {
+          snap.current.top = getScroller().top();
+          snap.current.search = window.location.search;
+          clicked.current = { path: window.location.pathname, anchor: anchorFor(link), at: Date.now() };
+        }
+        return;
+      }
+      if (a.target === "_blank" || a.hasAttribute("download")) return;
       // the menu is a NEW entry: nothing of any list is applied on the way
       if (a.closest("#app-sidebar")) {
         markFresh();
@@ -53,7 +65,7 @@ export function NavigationMemory() {
       if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
       snap.current.top = getScroller().top();
       snap.current.search = window.location.search;
-      clicked.current = { path: window.location.pathname, anchor: anchorFor(a) };
+      clicked.current = { path: window.location.pathname, anchor: anchorFor(a), at: Date.now() };
     };
     const onPop = () => {
       popAt.current = Date.now();
@@ -88,7 +100,8 @@ export function NavigationMemory() {
   useEffect(() => {
     const left = snap.current;
     if (left.path !== pathname) {
-      const anchor = clicked.current && clicked.current.path === left.path ? clicked.current.anchor : null;
+      // the row last touched (a link, or a button of a row) just before the page was left; older than a few seconds is not the reason for leaving
+      const anchor = clicked.current && clicked.current.path === left.path && Date.now() - clicked.current.at < 8000 ? clicked.current.anchor : null;
       // opened: false after a sidebar click (a new entry); the record only keeps what was left
       patchRecord(left.path, (r) => ({ ...r, search: left.search, top: left.top, anchor, opened: !isFresh() }));
     }

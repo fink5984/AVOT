@@ -849,6 +849,7 @@ export function ItemReviewPanel({
                       {t.aiStatus[r.status]}
                       {r.pendingApply && <span className="text-info"> · שמור להשוואה, טרם הוחל</span>}
                       {r.isReanalysis && " · חוזר"}
+                      {r.auto && <span title="הופעל אוטומטית בסיום הצילום"> · אוטומטי (סיום צילום)</span>}
                       {r.restoredAt && " · שוחזר"}
                       {r.error && <div className="text-danger">{r.error}</div>}
                     </td>

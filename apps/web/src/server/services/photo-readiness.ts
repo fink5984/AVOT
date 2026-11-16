@@ -24,14 +24,19 @@ export interface PhotoReadiness {
 
 const ok: PhotoReadiness = { ready: true, reason: null, code: null };
 
-export async function photoReadiness(itemId: string, tx: Tx | typeof db = db): Promise<PhotoReadiness> {
+export interface ReadinessOptions {
+  /** the automatic analysis after "סיום פריט": the studio's capture session is still open on the book then, and that is expected */
+  ignoreSession?: boolean;
+}
+
+export async function photoReadiness(itemId: string, tx: Tx | typeof db = db, opts: ReadinessOptions = {}): Promise<PhotoReadiness> {
   const item = await tx.inventoryItem.findUnique({ where: { id: itemId }, select: { photoStatus: true } });
   if (!item) return { ready: false, reason: "הספר לא נמצא", code: "PHOTOGRAPHY_NOT_COMPLETE" };
   const status = photoGateBlock(item.photoStatus);
   if (status) return { ready: false, reason: status, code: "PHOTOGRAPHY_NOT_COMPLETE" };
 
   const [session, uploads, processing] = await Promise.all([
-    tx.captureSession.count({ where: { inventoryItemId: itemId, status: "ACTIVE", lastActivityAt: { gt: new Date(Date.now() - SESSION_ACTIVE_MS) } } }),
+    opts.ignoreSession ? Promise.resolve(0) : tx.captureSession.count({ where: { inventoryItemId: itemId, status: "ACTIVE", lastActivityAt: { gt: new Date(Date.now() - SESSION_ACTIVE_MS) } } }),
     // the displayable original of a live photo that is not verified in storage yet (uploading, waiting, failed)
     tx.photoAsset.count({ where: { inventoryItemId: itemId, deletedAt: null, files: { some: { role: "PRIMARY", uploadStatus: { not: "VERIFIED" } } } } }),
     // green-screen processing (rotation / background / crop) still queued or only at its fast preview
@@ -44,7 +49,7 @@ export async function photoReadiness(itemId: string, tx: Tx | typeof db = db): P
 }
 
 /** Throws the clear 409 the API returns (and the worker records on the run) when the photos are not final. */
-export async function assertPhotosReady(itemId: string, tx: Tx | typeof db = db) {
-  const r = await photoReadiness(itemId, tx);
+export async function assertPhotosReady(itemId: string, tx: Tx | typeof db = db, opts: ReadinessOptions = {}) {
+  const r = await photoReadiness(itemId, tx, opts);
   if (!r.ready) throw new AppError("CONFLICT", r.reason!, { code: r.code ?? "PHOTOGRAPHY_NOT_COMPLETE" });
 }

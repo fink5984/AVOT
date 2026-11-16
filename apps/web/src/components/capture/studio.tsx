@@ -770,7 +770,7 @@ export function CaptureStudio({
     const label = c.target === "item" ? c.item.inventoryNumber : `פריט ${c.lot.lotNumber}`;
     if (finishOp.current?.itemId !== c.item.id || finishOp.current.status !== status) finishOp.current = { itemId: c.item.id, status, opId: crypto.randomUUID() };
     const op = finishOp.current;
-    let r: { print: { jobId: string; status: string } | { error: string } } | null = null;
+    let r: { print: { jobId: string; status: string } | { error: string }; ai?: { started: boolean; reason?: string } } | null = null;
     for (let attempt = 0; !r; attempt++) {
       try {
         r = await api(`/api/lots/${c.lot.id}/finish-capture`, { method: "POST", json: { status, opId: op.opId } });
@@ -793,7 +793,7 @@ export function CaptureStudio({
     }
     finishOp.current = null;
     setPrintWatch({ jobId: r.print.jobId, itemId: c.item.id, label: `${c.item.inventoryNumber} · ${c.lot.title}` });
-    toast.success(`${label} סומן ${t.lotStatus[status]} · המדבקה נוספה לתור ההדפסה`);
+    toast.success(`${label} סומן ${t.lotStatus[status]} · המדבקה נוספה לתור ההדפסה`, r.ai?.started ? { detail: "ניתוח ה-AI של הספר התחיל אוטומטית ברקע. אפשר להמשיך לספר הבא." } : undefined);
   }
 
   // ── lot completion / continuous mode ───────────────────────────

@@ -8,7 +8,7 @@ import { processAssetDerivatives, enqueueFinalStage } from "../services/derivati
 import { finalizeProcessedAsset, markFinalFailed } from "../services/book-processing";
 import { purgeExpiredTrash } from "../services/assets";
 import { resumeStalledDeletions, runDeleteCatalogsJob, runDeleteItemsJob } from "../services/deletion";
-import { recoverOrphanRuns, runAiAnalysisJob } from "../services/ai-analysis";
+import { AiDeferred, recoverOrphanRuns, runAiAnalysisJob } from "../services/ai-analysis";
 import { runAiRewriteJob } from "../services/ai-rewrite";
 
 const POLL_MS = 2000;
@@ -48,6 +48,11 @@ async function runJob(job: Job) {
     }
     await db.job.update({ where: { id: job.id }, data: { status: "SUCCEEDED", finishedAt: new Date(), error: null } });
   } catch (err) {
+    if (err instanceof AiDeferred) {
+      // an automatic analysis waiting for its photos: the job goes back to the queue (not a failed attempt)
+      await db.job.update({ where: { id: job.id }, data: { status: "QUEUED", attempts: 0, runAfter: new Date(Date.now() + err.retryAfterMs), error: null } });
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     // an AI run retries provider errors itself and marks its own failure: re-running it would only spend money again
     const final = (err as { noRetry?: boolean } | null)?.noRetry === true;

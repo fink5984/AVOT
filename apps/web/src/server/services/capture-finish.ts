@@ -9,6 +9,7 @@ import { changeStatus } from "./item-status";
 import { resolveItemTarget } from "./inventory";
 import { getLotForUser } from "./lots";
 import { createPrintJobs } from "./printing";
+import { requestAutoAnalysis, type AutoAnalysisOutcome } from "./ai-analysis";
 
 /*
  * "סיום פריט" / "סיום ספר וצור חדש" in the capture studio: marks the book's photography done AND queues exactly one
@@ -34,6 +35,9 @@ export async function finishCapture(user: UserPrincipal, targetId: string, input
   const changed = await db.$transaction((tx) => changeStatus(tx, user, itemId, "PHOTO", input.status, { refType: "capture-finish", refId: input.opId }));
   if (changed) await audit(user, { action: "inventory.capture_finished", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, lotId: target.lot?.id ?? null, data: { status: input.status } });
 
+  // the first analysis of the book starts by itself, in the background (queue only: the model is never called in this request)
+  const ai: AutoAnalysisOutcome = input.status === "COMPLETED" ? await requestAutoAnalysis(user, itemId) : { started: false, reason: "הצילום לא סומן כהושלם" };
+
   let print: FinishPrint;
   try {
     const jobs = await createPrintJobs(user, { items: [{ type: "BOOK", id: itemId }], copies: 1, idemKey: `capture-finish:${itemId}:${input.opId}` }, { allowNoPrinter: true });
@@ -42,5 +46,5 @@ export async function finishCapture(user: UserPrincipal, targetId: string, input
     log.error("capture finish: label not queued", { itemId, err });
     print = { error: err instanceof AppError ? err.message : "המדבקה לא נוספה לתור ההדפסה" };
   }
-  return { itemId, status: input.status, changed, print };
+  return { itemId, status: input.status, changed, print, ai };
 }

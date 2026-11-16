@@ -21,7 +21,7 @@ test("analysis with research: short headline, bold, sources with links; an addit
   await markPhotoComplete(page, id);
 
   await page.goto(`/inventory/${id}`);
-  const ai = page.locator("[data-ai-status]");
+  const ai = page.locator("button[data-ai-status]");
   await expect(ai).toHaveAttribute("data-ai-status", "NOT_RUN");
   await ai.click();
   await expect(ai).toHaveAttribute("data-ai-status", "COMPLETED", { timeout: 120_000 });

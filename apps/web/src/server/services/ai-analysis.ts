@@ -15,7 +15,7 @@ import { he } from "@/i18n/he";
 import { changeStatus } from "./item-status";
 import { LOT_COPY_FIELDS } from "./inventory";
 import { reviewAfterHumanEdit } from "./item-review";
-import { assertPhotosReady } from "./photo-readiness";
+import { assertPhotosReady, photoReadiness } from "./photo-readiness";
 import { lotOpenForCatalogText } from "./lot-sync";
 import { activeProvider, aiConfig, type AiConfig } from "../ai/config";
 import { batchImages, photosFingerprint, prepareImages, type PreparedImage } from "../ai/images";
@@ -62,6 +62,20 @@ const PROVIDER_ATTEMPTS = 3;
 export class AiRunFailed extends Error {
   readonly noRetry = true;
 }
+
+/**
+ * An automatic run whose photos are still uploading / being processed is not failed and not sent: it goes back to the
+ * queue and is looked at again. The worker (and the inline runner) re-queue the job after `retryAfterMs`.
+ */
+export class AiDeferred extends Error {
+  constructor(readonly retryAfterMs: number) {
+    super("הניתוח ממתין לסיום העלאת ועיבוד התמונות");
+  }
+}
+/** an automatic run that waited this long for its photos is closed as failed (a person can start it by hand) */
+const AUTO_WAIT_MAX_MS = 20 * 60 * 1000;
+const AUTO_RETRY_MS = 20_000;
+const PENDING_CODES = ["UPLOADS_PENDING", "PROCESSING_PENDING"];
 
 /* ───────────────────────── values ───────────────────────── */
 
@@ -120,6 +134,7 @@ export interface AiRunSummary {
   requestedBy: string | null;
   approvedBy: string | null;
   settingsVersion: number | null;
+  auto: boolean;
   /** the run's result is on the item (a first analysis, or a result the reviewer applied) */
   applied: boolean;
   /** a completed re-analysis not applied (yet): kept for comparison, the item's fields are untouched */
@@ -153,6 +168,8 @@ function runSummary(r: InventoryAnalysis, names: Map<string, string>): AiRunSumm
     requestedBy: r.createdById ? (names.get(r.createdById) ?? null) : null,
     approvedBy: r.approvedById ? (names.get(r.approvedById) ?? null) : null,
     settingsVersion: r.settingsVersion,
+    /** started by the system after "סיום פריט" (not by a person clicking the AI button) */
+    auto: (r.input as { auto?: boolean } | null)?.auto === true,
     applied: r.applied !== null,
     pendingApply: r.status === "COMPLETED" && r.applied === null && r.restoredAt === null,
     research: r.research ? { status: (r.research as unknown as ResearchRecord).status, sources: (r.research as unknown as ResearchRecord).sources?.length ?? 0, costUsd: (r.research as unknown as ResearchRecord).costUsd ?? null } : null,
@@ -288,7 +305,8 @@ async function verifyApproval(user: UserPrincipal, itemId: string, approval: { e
   return approver;
 }
 
-export async function requestAnalysis(user: UserPrincipal, itemId: string, input: z.infer<typeof requestSchema>) {
+export async function requestAnalysis(user: UserPrincipal, itemId: string, input: z.infer<typeof requestSchema>, opts: { auto?: { trigger: string } } = {}) {
+  const auto = !!opts.auto;
   const prior = await db.inventoryAnalysis.findUnique({ where: { organizationId_requestKey: { organizationId: user.organizationId, requestKey: input.requestKey } } });
   if (prior) {
     if (prior.inventoryItemId !== itemId) throw new AppError("CONFLICT", "מפתח הבקשה כבר שימש לפריט אחר");
@@ -298,7 +316,9 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
   if (!item) throw notFound("הספר");
   if (item.deletionRequestedAt) throw new AppError("CONFLICT", "הספר ממתין למחיקה");
   // photography must be finished (checked before a manager is asked for a password, before anything is queued or charged)
-  await assertPhotosReady(itemId);
+  // (an automatic run may be queued while uploads / image processing finish: the worker waits for them before any model call)
+  const gate0 = await photoReadiness(itemId, db, { ignoreSession: auto });
+  if (!gate0.ready && !(auto && PENDING_CODES.includes(gate0.code ?? ""))) throw new AppError("CONFLICT", gate0.reason!, { code: gate0.code ?? "PHOTOGRAPHY_NOT_COMPLETE" });
   // the ONE active provider + model, from the "הגדרות AI" tab (the version is fixed on the run: a later change only affects later runs)
   const settings = await getAiSettings(user.organizationId);
   const provider = activeProvider(settings.cfg); // clear error when not configured, before anything is queued
@@ -319,7 +339,8 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
       if (now.aiStatus === "QUEUED" || now.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI כבר פעיל על הפריט");
       if ((now.aiCompletedAt !== null) !== isReanalysis) throw new AppError("CONFLICT", "מצב הניתוח של הפריט השתנה. רעננו ונסו שוב.");
       // again with the book row locked: photography re-opened between the first check and this queue entry is refused here
-      await assertPhotosReady(itemId, tx);
+      const gate1 = await photoReadiness(itemId, tx, { ignoreSession: auto });
+      if (!gate1.ready && !(auto && PENDING_CODES.includes(gate1.code ?? ""))) throw new AppError("CONFLICT", gate1.reason!, { code: gate1.code ?? "PHOTOGRAPHY_NOT_COMPLETE" });
       // the original data is fixed BEFORE the first analysis writes anything (a clean re-analysis is built from it)
       await ensureBaseline(itemId, tx);
       const created = await tx.inventoryAnalysis.create({
@@ -334,6 +355,7 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
           requestKey: input.requestKey,
           isReanalysis,
           ...(isReanalysis && input.compareOnly ? { input: asJson({ compareOnly: true }) } : {}),
+          ...(auto ? { input: asJson({ auto: true, trigger: opts.auto!.trigger }) } : {}),
           approvedById: approverId,
           createdById: user.userId,
         },
@@ -349,7 +371,7 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
       });
       await tx.inventoryAnalysis.update({ where: { id: created.id }, data: { jobId: job.id } });
       await tx.inventoryItem.update({ where: { id: itemId }, data: { aiStatus: "QUEUED", aiRunId: created.id, aiError: null } });
-      await audit(user, { action: "ai.requested", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: created.id, provider: provider.provider, model: provider.model, settingsVersion: settings.version, reanalysis: isReanalysis } }, tx);
+      await audit(user, { action: "ai.requested", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: created.id, provider: provider.provider, model: provider.model, settingsVersion: settings.version, reanalysis: isReanalysis, ...(auto ? { auto: true, trigger: opts.auto!.trigger } : {}) } }, tx);
       if (isReanalysis) await audit(user, { action: "ai.reanalysis_approved", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { runId: created.id, approvedById: approverId } }, tx);
       return { ...created, job };
     });
@@ -497,6 +519,10 @@ async function runInline(job: Job) {
   try {
     await runAiAnalysisJob(job);
   } catch (err) {
+    if (err instanceof AiDeferred) {
+      setTimeout(() => void runInline(job), err.retryAfterMs).unref();
+      return;
+    }
     error = err instanceof Error ? err.message : String(err);
     log.error("inline ai analysis failed", { jobId: job.id, err });
   }
@@ -524,13 +550,24 @@ export async function runAnalysis(analysisId: string, job: Job | null = null) {
   try {
     if (job && job.attempts > 3) throw new AppError("INTERNAL", "הניתוח הופסק שוב ושוב (הפעלה מחדש של השרת). נסו שוב.");
     // photography may have been re-opened while the run waited in the queue: no photo of an unfinished series reaches a model
-    await assertPhotosReady(run.inventoryItemId);
+    const autoRun = (run.input as { auto?: boolean } | null)?.auto === true;
+    const gate = await photoReadiness(run.inventoryItemId, db, { ignoreSession: autoRun });
+    if (!gate.ready) {
+      if (autoRun && PENDING_CODES.includes(gate.code ?? "") && Date.now() - run.createdAt.getTime() < AUTO_WAIT_MAX_MS) {
+        // photos still uploading / processing: back to the queue, nothing sent, nothing charged
+        await db.inventoryAnalysis.update({ where: { id: run.id }, data: { status: "QUEUED", startedAt: null } });
+        await db.inventoryItem.updateMany({ where: { id: run.inventoryItemId, aiRunId: run.id }, data: { aiStatus: "QUEUED" } });
+        throw new AiDeferred(AUTO_RETRY_MS);
+      }
+      throw new AppError("CONFLICT", gate.reason!, { code: gate.code ?? "PHOTOGRAPHY_NOT_COMPLETE" });
+    }
     // the model, reasoning and prompts the run STARTED with (its settings version), whatever the tab says now
     const settings = await getAiSettings(run.organizationId, run.settingsVersion ?? null);
     ctx = new RunContext(run, job, settings.cfg, providerForRun(settings.cfg));
     const result = await analyse(ctx, startedAt, settings);
     log.info("ai analysis completed", { runId: run.id, itemId: run.inventoryItemId, ms: Date.now() - startedAt.getTime(), written: Object.keys(result?.written ?? {}).length, applied: result !== null });
   } catch (err) {
+    if (err instanceof AiDeferred) throw err;
     const message = err instanceof AppError || err instanceof ProviderError || err instanceof InvalidAnswerError ? err.message : "שגיאה פנימית בניתוח";
     log.warn("ai analysis failed", { runId: run.id, itemId: run.inventoryItemId, err });
     await markFailed(run, message, startedAt, ctx);
@@ -600,7 +637,7 @@ async function analyse(ctx: RunContext, startedAt: Date, settings: ResolvedAiSet
   const pass = async (manuscript: boolean, prefix: string) => {
     const prepared = await prepareImages(run.organizationId, item.id, cfg, { manuscript });
     // preparing the photos takes time: photography re-opened meanwhile means this set is partial - nothing is sent
-    await assertPhotosReady(item.id);
+    await assertPhotosReady(item.id, db, { ignoreSession: (run.input as { auto?: boolean } | null)?.auto === true });
     const skipped = prepared.report.filter((r) => r.status === "skipped").map((r) => ({ label: `${he.category[r.category]} (תמונה ${r.sequence})`, reason: r.reason ?? "" }));
     const batches = batchImages(prepared.images, cfg.BOOK_AI_MAX_IMAGES_PER_REQUEST, cfg.BOOK_AI_MAX_REQUEST_MB * 1024 * 1024);
     const [finalImages, ...observationBatches] = batches.length ? batches : [[] as PreparedImage[]];
@@ -1302,3 +1339,46 @@ export async function getAiLite(user: UserPrincipal, itemId: string) {
   };
 }
 export type AiLite = Awaited<ReturnType<typeof getAiLite>>;
+
+/* ───────────────────────── automatic first analysis ───────────────────────── */
+
+/** a stable UUID for "the one automatic analysis of this book": the unique request key makes a second one impossible */
+const autoKey = (itemId: string) => {
+  const h = createHash("sha1").update(`auto-analysis:${itemId}`).digest("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+};
+
+export type AutoAnalysisOutcome = { started: true; runId: string } | { started: false; reason: string };
+
+/**
+ * After "סיום פריט": the FIRST analysis of a book starts by itself, in the background, through the ordinary request path
+ * (same gates, locks, queue, settings, cost records). Never more than once per book: the book must never have had a
+ * completed analysis, and the request key is fixed per book - so a double click, a retry, two people finishing the same
+ * book, and a later finish after added photos all end here without a second run. A failed automatic run is not repeated
+ * by finishing again: a person starts the next attempt with the AI button. Never throws (the finish already succeeded).
+ */
+export async function requestAutoAnalysis(user: UserPrincipal, itemId: string, trigger = "capture-finish"): Promise<AutoAnalysisOutcome> {
+  try {
+    const item = await db.inventoryItem.findFirst({ where: { id: itemId, organizationId: user.organizationId }, select: { photoStatus: true, aiStatus: true, aiCompletedAt: true, deletionRequestedAt: true } });
+    if (!item || item.deletionRequestedAt) return { started: false, reason: "הספר לא נמצא" };
+    if (item.photoStatus !== "COMPLETED") return { started: false, reason: "הצילום לא סומן כהושלם" };
+    if (item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING") return { started: false, reason: "ניתוח AI כבר פעיל על הספר" };
+    // the history decides, not a button colour: any completed analysis, or an earlier automatic attempt (even a failed one)
+    const history = await db.inventoryAnalysis.findFirst({ where: { inventoryItemId: itemId, kind: AI_KIND, OR: [{ status: "COMPLETED" }, { requestKey: autoKey(itemId) }] }, select: { id: true } });
+    if (item.aiCompletedAt !== null || history) return { started: false, reason: "הספר כבר נותח (או שניסיון אוטומטי כבר נעשה)" };
+    // at least one valid photo
+    const photos = await db.photoAsset.count({ where: { inventoryItemId: itemId, deletedAt: null, files: { some: { role: "PRIMARY" } } } });
+    if (photos === 0) return { started: false, reason: "אין תמונות לספר" };
+    const settings = await getAiSettings(user.organizationId);
+    try {
+      activeProvider(settings.cfg);
+    } catch {
+      return { started: false, reason: "ספק ה-AI אינו מוגדר" };
+    }
+    const r = await requestAnalysis(user, itemId, { requestKey: autoKey(itemId) }, { auto: { trigger } });
+    return r.existing ? { started: false, reason: "הניתוח האוטומטי כבר הופעל" } : { started: true, runId: r.runId };
+  } catch (err) {
+    log.warn("auto analysis not started", { itemId, err });
+    return { started: false, reason: err instanceof AppError ? err.message : "הפעלת הניתוח האוטומטי נכשלה" };
+  }
+}
