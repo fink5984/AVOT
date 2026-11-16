@@ -89,6 +89,16 @@ enum ItemReviewStatus {
   APPROVED
 }
 
+/// Handling state of an internal "note for checking" (ItemReviewNote).
+enum ReviewNoteStatus {
+  /// new, not handled yet
+  OPEN
+  /// somebody looked into it and confirmed the claim
+  VERIFIED
+  /// somebody looked into it and could not confirm the claim
+  NOT_VERIFIED
+}
+
 /// State of the item's AI analysis (the latest run). Also the state of one InventoryAnalysis run.
 enum AiAnalysisStatus {
   NOT_RUN
@@ -459,6 +469,7 @@ model InventoryItem {
   statusEvents    InventoryStatusEvent[]
   movements       InventoryLocationMovement[]
   analyses        InventoryAnalysis[]
+  reviewNotes     ItemReviewNote[]
   pickTasks       PickTask[]
   aliases         InventoryNumberAlias[]
   lotMemberships  LotMember[]
@@ -599,6 +610,31 @@ model InventoryAnalysis {
   @@unique([organizationId, requestKey])
   @@index([inventoryItemId, createdAt])
   @@index([organizationId, createdAt])
+}
+
+/// "הערות לבדיקה": an internal, UNVERIFIED remark a worker leaves on a physical book ("check whether the signature is X's").
+/// It belongs to the book (never to a lot), so inventory and every catalog show the same notes. It is NEVER part of any
+/// AI input (analysis, re-analysis, targeted addition, research, combined-lot description): not even once marked verified.
+/// Notes are never deleted; handling one records who and when, and the conclusion.
+model ItemReviewNote {
+  id              String           @id @default(uuid()) @db.Uuid
+  organizationId  String           @db.Uuid
+  inventoryItemId String           @db.Uuid
+  text            String
+  status          ReviewNoteStatus @default(OPEN)
+  createdById     String?          @db.Uuid
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  /// who set the current handled state, and when (null while OPEN)
+  resolvedById    String?          @db.Uuid
+  resolvedAt      DateTime?
+  /// the written conclusion of the check
+  conclusion      String?
+
+  item InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  @@index([inventoryItemId, createdAt])
+  @@index([organizationId, status])
 }
 
 model Session {

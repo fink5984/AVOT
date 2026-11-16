@@ -36,6 +36,10 @@ export const PERMISSIONS = {
   "inventory.import": ["ADMIN", "EDITOR"],
   /** the photographer's notes on a book: a focused permission, so a photographer can write them without being able to edit the book */
   "photographerNotes.edit": ["ADMIN", "EDITOR", "PHOTOGRAPHER"],
+  /** "הערות לבדיקה": add an internal, unverified remark to a book (anyone who works on books) */
+  "reviewNote.add": ["ADMIN", "EDITOR", "PHOTOGRAPHER"],
+  /** mark a remark as checked (verified / not verified), write its conclusion, reopen it */
+  "reviewNote.resolve": ["ADMIN", "EDITOR"],
   /** permanent deletion of books (database rows and every stored file) */
   "inventory.delete": ["ADMIN"],
   /** change a book's shelf from inventory / catalog screens (movement history is always written) */

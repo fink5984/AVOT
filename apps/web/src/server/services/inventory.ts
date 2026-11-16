@@ -12,6 +12,7 @@ import { changeStatus } from "./item-status";
 import { locationLabel, locationInclude } from "./location-label";
 import { requireConsignor } from "./consignors";
 import { changedMaterialFields, reviewAfterHumanEdit } from "./item-review";
+import { followBookDraft } from "./lot-sync";
 import { normalizeQuery, searchTokens } from "@/lib/search-text";
 import { ITEM_FORMAT_FIELDS, formatToStore, itemTextFormatSchema, readTextFormat, type TextFormat } from "@/lib/rich-text";
 
@@ -275,6 +276,8 @@ export async function updateItem(user: UserPrincipal, id: string, input: z.infer
       }
       if (Object.keys(lotPatch).length) await tx.lot.update({ where: { id: active.id }, data: lotPatch });
     }
+    // the catalog draft (headline / description / bold) follows into the ordinary lot under the same rule: only where the lot still holds the book's previous text
+    await followBookDraft(tx, id, item, u, user.userId, opts.source === "ai" ? "AI" : "MANUAL");
     return u;
   });
   const { consignorId: _consignorId, textFormat: _format, ...textFields } = input;

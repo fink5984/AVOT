@@ -24,6 +24,7 @@ import type { AiProvider, ProviderRequest, ProviderResponse } from "@/server/ai/
 import { hasForbiddenDash } from "@/server/ai/text";
 import { createCustomer } from "@/server/services/customers";
 import { recordSale, releasePurchase } from "@/server/services/sales";
+import { addReviewNote, updateReviewNote } from "@/server/services/review-notes";
 import { hasDb, makeOrg } from "./helpers";
 
 /* A fake provider: records every request, never touches the network. */
@@ -632,6 +633,20 @@ describe.skipIf(!hasDb)("combined lots (real database)", () => {
       expect((await db.lotDescriptionVersion.findFirstOrThrow({ where: { lotId: lots[0]!.lot.id }, orderBy: { version: "desc" } })).source).toBe("MANUAL");
       // the books' own analysis rows were not added to
       expect(await db.inventoryAnalysis.count({ where: { inventoryItemId: { in: lots.map((l) => l.item.id) } } })).toBe(1);
+    });
+
+    it("REVIEW NOTES never reach the shared description of a combined lot (not even a verified one)", async () => {
+      const { catalog, lots } = await setup(2);
+      await merge(catalog.id, lots);
+      await approveAll(lots);
+      await addReviewNote(ctx.editor, lots[0]!.item.id, { text: "SENTINEL-NOTE-LOT-OPEN" });
+      const v = await addReviewNote(ctx.editor, lots[1]!.item.id, { text: "SENTINEL-NOTE-LOT-VERIFIED" });
+      await updateReviewNote(ctx.editor, v.id, { status: "VERIFIED", conclusion: "SENTINEL-NOTE-LOT-CONCLUSION", expectedStatus: "OPEN" });
+      fake.requests = [];
+      fake.answer = () => lotAnswer();
+      const run = await generateLotDescription(ctx.editor, lots[0]!.lot.id);
+      expect(fake.requests).toHaveLength(1);
+      expect(JSON.stringify([fake.requests[0]!.instructions, fake.requests[0]!.userText, run.input, run.result])).not.toContain("SENTINEL-NOTE");
     });
 
     it("a composition change marks the description as needing an update, keeps it, and blocks applying an old proposal", async () => {

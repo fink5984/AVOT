@@ -12,7 +12,8 @@ import { setWebSearchOverride, type WebSearchRequest, type WebSearchResponse } f
 import { ProviderError, type AiProvider, type ProviderRequest, type ProviderResponse } from "@/server/ai/providers/types";
 import { AI_FIELD_NAMES, type AnalysisResult } from "@/server/ai/schema";
 import { readTextFormat, ITEM_FORMAT_FIELDS, plainText, applyStyle } from "@/lib/rich-text";
-import { createBook, hasDb, makeOrg } from "./helpers";
+import { addReviewNote, updateReviewNote } from "@/server/services/review-notes";
+import { createPhotographedBook as createBook, hasDb, makeOrg } from "./helpers";
 
 class FakeProvider implements AiProvider {
   readonly name = "openai" as const;
@@ -259,6 +260,23 @@ describe.skipIf(!hasDb)("AI research, bold, background rewrite (real database, f
     return item.id;
   }
   const signaturePatch = () => ({ ops: [{ field: "catalogDescription", op: "add", target: null, anchor: "מהדורה מאוחרת.", content: "בשער חתימת בעלים של רבי משה סופר.", boldPhrases: ["חתימת בעלים של רבי משה סופר"], reason: "חתימה" }] });
+
+  it("REVIEW NOTES never reach the research queries, the writing step or a targeted addition", async () => {
+    const SENT = "SENTINEL-NOTE-RESEARCH-ייתכן-שהמהדורה-נדירה";
+    const item = await newBook();
+    await addReviewNote(ctx.editor, item.id, { text: SENT });
+    route({ patch: signaturePatch });
+    await analyse(item.id);
+    const verified = await addReviewNote(ctx.editor, item.id, { text: SENT + "-V" });
+    await updateReviewNote(ctx.editor, verified.id, { status: "VERIFIED", conclusion: SENT + "-C", expectedStatus: "OPEN" });
+    const r = await requestRewrite(ctx.editor, item.id, { mode: "patch", additions: "בשער חתימת בעלים", requestKey: randomUUID() });
+    await runRewrite(r.runId);
+    expect(fake.requests.length).toBeGreaterThanOrEqual(2);
+    const wire = JSON.stringify([fake.requests.map((x) => [x.instructions, x.userText]), searches]);
+    expect(wire).not.toContain("SENTINEL-NOTE");
+    const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(JSON.stringify(after, (_k, v) => (typeof v === "bigint" ? v.toString() : v))).not.toContain("SENTINEL-NOTE");
+  });
 
   it("rewrite: the request only queues a job; the worker applies it on the server, keeps the existing bold, and every user sees the state", async () => {
     const id = await analysedBook();

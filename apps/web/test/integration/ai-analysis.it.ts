@@ -18,7 +18,8 @@ import { setWebSearchOverride } from "@/server/ai/research-providers";
 import { ProviderError, type AiProvider, type ProviderRequest, type ProviderResponse } from "@/server/ai/providers/types";
 import { AI_FIELD_NAMES, type AnalysisResult } from "@/server/ai/schema";
 import { hasForbiddenDash } from "@/server/ai/text";
-import { createBook, hasDb, makeOrg } from "./helpers";
+import { addReviewNote, updateReviewNote } from "@/server/services/review-notes";
+import { createPhotographedBook as createBook, hasDb, makeOrg } from "./helpers";
 
 /* A fake provider: records every request and answers with a scripted result. No network call is ever made. */
 class FakeProvider implements AiProvider {
@@ -185,6 +186,33 @@ describe.skipIf(!hasDb)("AI analysis (real database, fake provider)", () => {
     const state = await getAiState(ctx.viewer, item.id);
     expect(state).toMatchObject({ aiStatus: "COMPLETED", hasSuccessfulAnalysis: true, needsApproval: true, reviewStatus: "PENDING_REVIEW" });
     expect(state.latest?.applied?.review.some((r) => r.field === "printYear")).toBe(true);
+  });
+
+  it("REVIEW NOTES never reach the model: not in the first analysis, not in a re-analysis, not when verified, not copied into the details", async () => {
+    const OPEN = "SENTINEL-NOTE-OPEN-לבדוק-אם-החתימה-של-רבי-פלוני";
+    const DONE = "SENTINEL-NOTE-VERIFIED-נבדק-ואומת-מקור-חיצוני";
+    const { item } = await createBook(ctx.editor, { title: "ספר עם הערות לבדיקה" });
+    await addPhoto(item.id, "COVER", 1);
+    await addPhoto(item.id, "TITLE_PAGE", 2);
+    await addReviewNote(ctx.editor, item.id, { text: OPEN });
+    const done = await addReviewNote(ctx.editor, item.id, { text: DONE });
+    await updateReviewNote(ctx.editor, done.id, { status: "VERIFIED", conclusion: "CONCLUSION-SENTINEL", expectedStatus: "OPEN" });
+    await db.inventoryItem.update({ where: { id: item.id }, data: { photographerNotes: "PHOTOGRAPHER-NOTE-IS-A-SOURCE" } });
+
+    const first = await analyse(ctx.photographer, item.id);
+    const second = await analyse(ctx.editor, item.id, { email: ctx.admin.email, password: ADMIN_PASSWORD });
+    expect(first.status).toBe("COMPLETED");
+    expect(second.status).toBe("COMPLETED");
+    expect(fake.requests.length).toBeGreaterThanOrEqual(2);
+    const wire = JSON.stringify(fake.requests.map((r) => ({ i: r.instructions, u: r.userText, s: r.schemaName })));
+    for (const marker of [OPEN, DONE, "CONCLUSION-SENTINEL", "SENTINEL-NOTE"]) expect(wire).not.toContain(marker);
+    // the photographer's notes are a source and still go (the two kinds of note are different things)
+    expect(wire).toContain("PHOTOGRAPHER-NOTE-IS-A-SOURCE");
+    // nor in what the run recorded, nor copied into the book by itself
+    const stored = JSON.stringify([first.input, first.result, first.applied, second.input, second.result]);
+    expect(stored).not.toContain("SENTINEL-NOTE");
+    const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: item.id } });
+    expect(JSON.stringify([after.catalogDescription, after.catalogHeadline, after.bibliographicNotes, after.conditionNotes, after.internalNotes])).not.toContain("SENTINEL-NOTE");
   });
 
   it("no duplicates: same request key → same run; a second run while one is active is refused", async () => {

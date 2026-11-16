@@ -15,6 +15,8 @@ import { he } from "@/i18n/he";
 import { changeStatus } from "./item-status";
 import { LOT_COPY_FIELDS } from "./inventory";
 import { reviewAfterHumanEdit } from "./item-review";
+import { assertPhotosReady } from "./photo-readiness";
+import { lotOpenForCatalogText } from "./lot-sync";
 import { activeProvider, aiConfig, type AiConfig } from "../ai/config";
 import { batchImages, photosFingerprint, prepareImages, type PreparedImage } from "../ai/images";
 import { AI_MAX_LENGTH, AI_WRITABLE, mapResult, ensureParagraphs, reviewForApplied, stripImageIds, stripMeasurements, type AiValues, type AiWritable } from "../ai/mapper";
@@ -295,6 +297,8 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
   const item = await db.inventoryItem.findFirst({ where: { id: itemId, organizationId: user.organizationId } });
   if (!item) throw notFound("הספר");
   if (item.deletionRequestedAt) throw new AppError("CONFLICT", "הספר ממתין למחיקה");
+  // photography must be finished (checked before a manager is asked for a password, before anything is queued or charged)
+  await assertPhotosReady(itemId);
   // the ONE active provider + model, from the "הגדרות AI" tab (the version is fixed on the run: a later change only affects later runs)
   const settings = await getAiSettings(user.organizationId);
   const provider = activeProvider(settings.cfg); // clear error when not configured, before anything is queued
@@ -314,6 +318,8 @@ export async function requestAnalysis(user: UserPrincipal, itemId: string, input
       const now = await tx.inventoryItem.findUniqueOrThrow({ where: { id: itemId }, select: { aiStatus: true, aiCompletedAt: true } });
       if (now.aiStatus === "QUEUED" || now.aiStatus === "RUNNING") throw new AppError("CONFLICT", "ניתוח AI כבר פעיל על הפריט");
       if ((now.aiCompletedAt !== null) !== isReanalysis) throw new AppError("CONFLICT", "מצב הניתוח של הפריט השתנה. רעננו ונסו שוב.");
+      // again with the book row locked: photography re-opened between the first check and this queue entry is refused here
+      await assertPhotosReady(itemId, tx);
       // the original data is fixed BEFORE the first analysis writes anything (a clean re-analysis is built from it)
       await ensureBaseline(itemId, tx);
       const created = await tx.inventoryAnalysis.create({
@@ -517,6 +523,8 @@ export async function runAnalysis(analysisId: string, job: Job | null = null) {
   let ctx: RunContext | null = null;
   try {
     if (job && job.attempts > 3) throw new AppError("INTERNAL", "הניתוח הופסק שוב ושוב (הפעלה מחדש של השרת). נסו שוב.");
+    // photography may have been re-opened while the run waited in the queue: no photo of an unfinished series reaches a model
+    await assertPhotosReady(run.inventoryItemId);
     // the model, reasoning and prompts the run STARTED with (its settings version), whatever the tab says now
     const settings = await getAiSettings(run.organizationId, run.settingsVersion ?? null);
     ctx = new RunContext(run, job, settings.cfg, providerForRun(settings.cfg));
@@ -591,6 +599,8 @@ async function analyse(ctx: RunContext, startedAt: Date, settings: ResolvedAiSet
    */
   const pass = async (manuscript: boolean, prefix: string) => {
     const prepared = await prepareImages(run.organizationId, item.id, cfg, { manuscript });
+    // preparing the photos takes time: photography re-opened meanwhile means this set is partial - nothing is sent
+    await assertPhotosReady(item.id);
     const skipped = prepared.report.filter((r) => r.status === "skipped").map((r) => ({ label: `${he.category[r.category]} (תמונה ${r.sequence})`, reason: r.reason ?? "" }));
     const batches = batchImages(prepared.images, cfg.BOOK_AI_MAX_IMAGES_PER_REQUEST, cfg.BOOK_AI_MAX_REQUEST_MB * 1024 * 1024);
     const [finalImages, ...observationBatches] = batches.length ? batches : [[] as PreparedImage[]];
@@ -896,9 +906,7 @@ async function applyResult(
 }
 
 /** A lot whose presentation the AI may still update: assignment active, catalog not archived, not offered or sold yet. */
-function lotIsOpenForAi(lot: { assignmentStatus: string; commercialStatus: string; catalog: { status: string } }) {
-  return lot.assignmentStatus === "ACTIVE" && lot.catalog.status !== "ARCHIVED" && lot.commercialStatus === "ASSIGNED";
-}
+const lotIsOpenForAi = lotOpenForCatalogText;
 
 /**
  * The catalog side. Only the item's ACTIVE lot, and only while it is still in preparation for sale (catalog not
@@ -1275,7 +1283,7 @@ export async function compareRuns(user: UserPrincipal, itemId: string, aId: stri
 export async function getAiLite(user: UserPrincipal, itemId: string) {
   const item = await db.inventoryItem.findFirst({
     where: { id: itemId, organizationId: user.organizationId },
-    select: { aiStatus: true, aiRunId: true, aiError: true, aiCompletedAt: true, detailsVersion: true, reviewStatus: true },
+    select: { aiStatus: true, aiRunId: true, aiError: true, aiCompletedAt: true, detailsVersion: true, reviewStatus: true, photoStatus: true },
   });
   if (!item) throw notFound("הספר");
   const active = item.aiStatus === "QUEUED" || item.aiStatus === "RUNNING";
@@ -1287,6 +1295,7 @@ export async function getAiLite(user: UserPrincipal, itemId: string) {
     hasSuccessfulAnalysis: item.aiCompletedAt !== null,
     detailsVersion: item.detailsVersion,
     reviewStatus: item.reviewStatus,
+    photoStatus: item.photoStatus,
     activity: run
       ? { runId: run.id, kind: (run.kind === REWRITE_KIND ? "rewrite" : run.isReanalysis ? "reanalysis" : "analysis") as "rewrite" | "reanalysis" | "analysis", status: run.status, requestedBy: by?.name ?? null, requestedById: run.createdById, since: (run.startedAt ?? run.createdAt).toISOString() }
       : null,

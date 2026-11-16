@@ -41,3 +41,13 @@ export function consignorOf(p: UserPrincipal): Promise<string> {
 export async function createBook(p: UserPrincipal, input: ItemInput) {
   return createItem(p, { consignorId: await consignorOf(p), ...input });
 }
+
+/**
+ * A book whose photography is finished (photoStatus COMPLETED): the state an AI analysis requires. Specs that are about
+ * AI (not about the photography gate) use this; the gate has its own spec, photo-gate.it.ts.
+ */
+export async function createPhotographedBook(p: UserPrincipal, input: ItemInput) {
+  const r = await createBook(p, input);
+  await db.inventoryItem.update({ where: { id: r.item.id }, data: { photoStatus: "COMPLETED" } });
+  return { ...r, item: { ...r.item, photoStatus: "COMPLETED" as const } };
+}
