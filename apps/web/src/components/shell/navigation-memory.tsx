@@ -69,9 +69,8 @@ export function NavigationMemory() {
       for (const m of ["pushState", "replaceState"] as const) {
         const orig = window.history[m].bind(window.history);
         window.history[m] = (...args: Parameters<History["pushState"]>) => {
-          const samePage = window.location.pathname;
           const r = orig(...args);
-          if (window.location.pathname === samePage) snap.current.search = window.location.search;
+          if (window.location.pathname === snap.current.path) snap.current.search = window.location.search;
           return r;
         };
       }
@@ -94,32 +93,48 @@ export function NavigationMemory() {
       patchRecord(left.path, (r) => ({ ...r, search: left.search, top: left.top, anchor, opened: !isFresh() }));
     }
     clicked.current = null;
-    snap.current = { path: pathname, search: window.location.search, top: 0 };
+    // (the address bar is not updated yet when this effect runs: the new query string is read by the history wrapper / a scroll / a click)
+    snap.current = { path: pathname, search: "", top: 0 };
+    const sync = window.setTimeout(() => {
+      if (window.location.pathname === pathname) snap.current.search = window.location.search;
+    }, 150);
 
     const rec = restoreWanted(pathname);
     clearFresh();
     if (!rec) return;
-    const here = window.location.search;
     const viaPop = Date.now() - popAt.current < 2000;
-    let wait = 0;
-    if (!here && rec.search && !viaPop) {
-      // entered bare (a breadcrumb, a back button of the page): the page, size, search, filters and sort come back
-      router.replace(`${pathname}${rec.search}`, { scroll: false });
-      wait = 1200;
-    } else if (here !== rec.search) {
-      // a different view of the page on purpose: the old position does not apply
-      patchRecord(pathname, (r) => ({ ...r, opened: false }));
-      return;
-    }
+    const started = Date.now();
     let cancelled = false;
-    const t = window.setTimeout(() => {
-      void restoreScroll(rec).then(() => {
-        if (!cancelled) patchRecord(pathname, (r) => ({ ...r, opened: false }));
-      });
-    }, wait);
+    let timer = 0;
+    // the address bar is updated by the router a moment AFTER this effect: wait until it shows this page, then decide
+    const begin = () => {
+      if (cancelled) return;
+      if (window.location.pathname !== pathname && Date.now() - started < 1500) {
+        timer = window.setTimeout(begin, 30);
+        return;
+      }
+      const here = window.location.pathname === pathname ? window.location.search : "";
+      let wait = 0;
+      if (here === "" && rec.search && !viaPop) {
+        // entered bare (a breadcrumb, a back button of the page): the page, size, search, filters and sort come back
+        router.replace(`${pathname}${rec.search}`, { scroll: false });
+        wait = 1200;
+      } else if (here !== rec.search) {
+        // a different view of the page on purpose: the old position does not apply
+        patchRecord(pathname, (r) => ({ ...r, opened: false }));
+        return;
+      }
+      timer = window.setTimeout(() => {
+        void restoreScroll(rec).then(() => {
+          if (!cancelled) patchRecord(pathname, (r) => ({ ...r, opened: false }));
+        });
+      }, wait);
+    };
+    timer = window.setTimeout(begin, 0);
     return () => {
       cancelled = true;
-      window.clearTimeout(t);
+      window.clearTimeout(sync);
+      window.clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pathname]);

@@ -110,6 +110,9 @@ export function getScroller(): { el: HTMLElement | null; top: () => number; set:
   return { el: null, top: () => window.scrollY, set: (y) => window.scrollTo({ top: y }), by: (dy) => window.scrollBy({ top: dy }), box: () => 0 };
 }
 
+/** a link that is actually drawn (the phone layout and the table layout both exist in the page; one of them is display:none) */
+const shown = (a: Element) => a.getClientRects().length > 0;
+
 const pathOf = (a: HTMLAnchorElement) => {
   try {
     const u = new URL(a.href, window.location.href);
@@ -130,7 +133,7 @@ export function anchorFor(link: HTMLAnchorElement): NavAnchor | null {
   const hrefs: string[] = [];
   for (const a of main.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     const p = pathOf(a);
-    if (p && p.startsWith(prefix) && p !== prefix && !hrefs.includes(p)) hrefs.push(p);
+    if (p && shown(a) && p.startsWith(prefix) && p !== prefix && !hrefs.includes(p)) hrefs.push(p);
   }
   const i = hrefs.indexOf(href);
   const neighbors: string[] = [];
@@ -163,7 +166,7 @@ export function restoreScroll(rec: NavRecord): Promise<"anchor" | "neighbor" | "
     };
     const find = (href: string) => {
       const main = document.querySelector("[data-app-scroll]") ?? document.body;
-      for (const a of main.querySelectorAll<HTMLAnchorElement>("a[href]")) if (pathOf(a) === href) return a.closest<HTMLElement>("tr, li, article, [data-row-id]") ?? a;
+      for (const a of main.querySelectorAll<HTMLAnchorElement>("a[href]")) if (shown(a) && pathOf(a) === href) return a.closest<HTMLElement>("tr, li, article, [data-row-id]") ?? a;
       return null;
     };
     const listed = () => {
@@ -172,7 +175,7 @@ export function restoreScroll(rec: NavRecord): Promise<"anchor" | "neighbor" | "
       const main = document.querySelector("[data-app-scroll]") ?? document.body;
       for (const a of main.querySelectorAll<HTMLAnchorElement>("a[href]")) {
         const p = pathOf(a);
-        if (p && p.startsWith(prefix) && p !== prefix) return true;
+        if (p && shown(a) && p.startsWith(prefix) && p !== prefix) return true;
       }
       return false;
     };
