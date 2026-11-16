@@ -147,7 +147,6 @@ test.describe("the catalog lot page is the full editing environment", () => {
     await expect(page.getByRole("textbox", { name: "תיאור קטלוגי" })).toBeVisible();
     await expect(page.getByRole("button", { name: "הוספת המידע ב-AI" })).toBeVisible();
     await expect(page.getByTestId("review-summary")).toBeVisible();
-    await expect(page.getByTestId("catalog-draft-synced")).toBeVisible();
 
     // edit from the catalog (autosave) → the inventory shows it
     await page.getByLabel("כותרת קטלוגית").fill("כותרת מהקטלוג");
@@ -167,25 +166,8 @@ test.describe("the catalog lot page is the full editing environment", () => {
     const lotJson = await page.request.get(`/api/lots/${lotId}`).then((r) => r.json());
     expect(lotJson.lot.shortDescription).toBe("כותרת מהמלאי");
 
-    // a text written on purpose for the catalog: never overwritten; the page says so and offers explicit actions
-    const patched = await page.request.patch(`/api/lots/${lotId}`, { data: { description: "תיאור ייעודי לקטלוג" }, headers: { origin } });
-    expect(patched.ok()).toBeTruthy();
-    await page.goto(`/lots/${lotId}`);
-    const banner = page.getByTestId("catalog-draft-diverged");
-    await expect(banner).toContainText("כותרת או תיאור ייעודיים לקטלוג");
-    await expect(banner).toContainText("תיאור ייעודי לקטלוג");
-    await page.goto(`/inventory/${itemId}`);
-    await page.getByLabel("כותרת קטלוגית").fill("כותרת שנייה מהמלאי");
-    await expect(page.getByText("נשמר", { exact: true }).first()).toBeVisible();
-    const after = await page.request.get(`/api/lots/${lotId}`).then((r) => r.json());
-    expect(after.lot.description).toBe("תיאור ייעודי לקטלוג");
-    // explicit resolution: the lot takes the book's draft
-    await page.goto(`/lots/${lotId}`);
-    page.once("dialog", (d) => void d.accept());
-    await page.getByRole("button", { name: "החלת טיוטת הספר על הלוט" }).click();
-    await expect(page.getByTestId("catalog-draft-synced")).toBeVisible();
-    const resolved = await page.request.get(`/api/lots/${lotId}`).then((r) => r.json());
-    expect(resolved.lot.description).toContain("תיאור שנכתב בקטלוג");
+    // (a lot text written on purpose is never overwritten by the book: covered by the integration tests; the single-lot page shows no second title)
+    await expect(page.getByTestId("catalog-draft-diverged")).toHaveCount(0);
   });
 });
 
@@ -199,7 +181,7 @@ test.describe("AI waits for the end of photography", () => {
       const ai = page.locator("[data-ai-status]").first();
       await expect(ai).toBeDisabled();
       await expect(ai).toHaveAttribute("data-photo-blocked", "true");
-      await expect(page.getByTestId("ai-photo-gate")).toContainText("לא ניתן לבצע ניתוח AI לפני השלמת צילום הספר.");
+      await expect(ai).toHaveAttribute("title", /לא ניתן לבצע ניתוח AI לפני השלמת צילום הספר/);
     }
     // the table row: disabled with the reason in the tooltip (no extra text in a dense list)
     await page.goto(`/catalogs/${catalogId}`);

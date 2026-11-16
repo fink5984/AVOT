@@ -152,11 +152,6 @@ export function AiAnalyzeButton({
           <Sparkles className={cn(photoBlock ? "text-faint" : state.aiStatus === "FAILED" ? "text-danger" : state.hasAiResult ? "text-faint" : "text-info")} />
         )}
       </IconButton>
-      {photoBlock && showReason && (
-        <span className="text-[12.5px] text-muted" role="status" data-testid="ai-photo-gate">
-          {photoBlock}
-        </span>
-      )}
       {reanalyze && (
         <ReanalyzeDialog
           itemId={itemId}

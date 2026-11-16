@@ -207,19 +207,6 @@ export default async function LotPage({ params, searchParams }: { params: Promis
                 }}
               />
             }
-            beforePanel={
-              <CatalogDraftBanner
-                lotId={lot.id}
-                synced={draft.synced}
-                open={lotOpenForCatalogText(lot)}
-                canLot={canEdit}
-                canBook={can(user.role, "inventory.edit")}
-                itemVersion={lot.item.detailsVersion}
-                lotVersion={lastVersion._max.version ?? 0}
-                lot={{ headline: lot.shortDescription, description: segmentsFor(lot.description, readTextFormat(lot.textFormat).description) }}
-                book={{ headline: lot.item.catalogHeadline, description: segmentsFor(lot.item.catalogDescription, readTextFormat(lot.item.textFormat, ITEM_FORMAT_FIELDS).catalogDescription) }}
-              />
-            }
           />
         </div>
 
