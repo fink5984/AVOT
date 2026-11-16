@@ -27,6 +27,7 @@ export default defineConfig({
       STORAGE_DRIVER: "local",
       STORAGE_LOCAL_DIR: path.resolve(__dirname, ".data/it-storage"),
       LOG_LEVEL: "error",
+      BOOK_AI_LINK_CHECK: "off",
     },
   },
 });

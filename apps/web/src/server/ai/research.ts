@@ -24,6 +24,7 @@ import {
 import type { AnalysisResult } from "./schema";
 import { InvalidAnswerError, parseAnswer } from "./schema";
 import { cleanWebText } from "./research-core";
+import { verifyLinks } from "./research-links";
 
 /*
  * Stage C of the four-stage flow (identify -> queries -> research -> write): one web-search call with the provider's
@@ -136,7 +137,10 @@ export async function runResearch(args: { cfg: AiConfig; settings: ResearchSetti
     } catch (err) {
       throw new ProviderError("server", "תשובת המחקר לא הייתה במבנה הנדרש");
     }
-    const { sources, dropped } = vetSources(answer, res.citations, { maxSources: s.maxSources, hostOnly: res.hostOnly, accessedAt });
+    const vetted = vetSources(answer, res.citations, { maxSources: s.maxSources, hostOnly: res.hostOnly, accessedAt });
+    // the links are asked once, safely and in parallel (a picture behind a redirect, a missing page, a page that does not mention the item)
+    const sources = await verifyLinks(vetted.sources, res.citations);
+    const dropped = vetted.dropped;
     const totals: UsageTotals | null = res.usage ? { inputTokens: res.usage.inputTokens, cachedInputTokens: res.usage.cachedInputTokens, outputTokens: res.usage.outputTokens, extraReasoningTokens: res.usage.extraReasoningTokens } : null;
     const tokenCost = computeCost(res.model, totals, { usageReported: !!res.usage });
     const searchCostUsd = Number((res.searches * SEARCH_PRICE_USD[p.provider]).toFixed(4));

@@ -66,7 +66,7 @@ export function effectiveSearchLimit(s: ResearchSettings, provider: "openai" | "
 
 /* ───────────── URLs ───────────── */
 
-const TRACKING = /^(utm_|fbclid$|gclid$|mc_|igshid$|ref$|ref_src$)/i;
+const TRACKING = /^(utm_|fbclid$|gclid$|mc_|igshid$|ref_src$)/i;
 const INTERNAL_HOST = /(^|\.)(localhost|local|internal|intranet|lan|home|corp)$/i;
 
 function privateHost(host: string): boolean {
@@ -96,7 +96,8 @@ export function safeExternalUrl(raw: string | null | undefined): string | null {
   const host = u.hostname.toLowerCase();
   if (privateHost(host)) return null;
   if (u.port && u.port !== "80" && u.port !== "443") return null;
-  u.hash = "";
+  // a fragment that is part of the ADDRESS is kept: a PDF page (#page=12) and a single-page-app route (#/lot/72, #!/lot/72)
+  if (!/^#(page=\d+|!?\/)/i.test(u.hash)) u.hash = "";
   for (const k of [...u.searchParams.keys()]) if (TRACKING.test(k)) u.searchParams.delete(k);
   u.hostname = host;
   return u.toString();
@@ -117,6 +118,65 @@ export const hostOf = (url: string) => {
     return "";
   }
 };
+
+/* ───────────── what kind of address it is ───────────── */
+
+export type LinkKind = "image" | "home" | "search" | "pdf" | "page";
+const IMAGE_EXT = /\.(jpe?g|png|gif|webp|avif|bmp|tiff?|svg|ico|heic)$/i;
+const IMAGE_HOST = /(^|\.)(cloudinary\.com|imgix\.net|imagekit\.io|ytimg\.com|pinimg\.com|staticflickr\.com|googleusercontent\.com)$|^(img|images?|thumbs?|thumbnails?|photos?|media|static|cdn\d*)\./i;
+const IMAGE_PATH = /\/(thumbs?|thumbnails?|resize|cdn-cgi\/image)\//i;
+const SEARCH_KEYS = new Set(["q", "query", "s", "search", "keyword", "keywords", "term", "text", "searchtext"]);
+
+/**
+ * What a link points to, judged from the address alone (the server does not request it here): a picture file or an image
+ * CDN address, the home page of a site, a general search / listing page, a PDF, or an ordinary page. Pure.
+ */
+export function classifyUrl(raw: string): LinkKind {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return "page";
+  }
+  const path = u.pathname;
+  const host = u.hostname.toLowerCase().replace(/^www\./, "");
+  const fmt = (u.searchParams.get("format") ?? u.searchParams.get("fm") ?? u.searchParams.get("f") ?? "").toLowerCase();
+  // (a wiki "File:x.png" address is the HTML page about the picture, not the picture)
+  if ((!/\/wiki\//i.test(path) && IMAGE_EXT.test(path)) || /^(jpe?g|png|webp|gif|avif)$/.test(fmt) || IMAGE_PATH.test(path) || (IMAGE_HOST.test(host) && !/\.(html?|php|aspx?)$/i.test(path) && path.split("/").length > 2 && /\.[a-z0-9]{2,5}$|\/[0-9a-f]{16,}/i.test(path))) return "image";
+  if (/\.pdf$/i.test(path)) return "pdf";
+  const segs = path.split("/").filter(Boolean);
+  const keys = [...u.searchParams.keys()].map((k) => k.toLowerCase());
+  if (keys.some((k) => SEARCH_KEYS.has(k)) || /^(search|results|find|browse|catalog|catalogs|auctions)$/i.test(segs[segs.length - 1] ?? "")) return "search";
+  if (segs.length === 0 || (segs.length === 1 && /^[a-z]{2}(-[a-z]{2})?$/i.test(segs[0]!) && !u.search) || (segs.length === 1 && /^(index|home|default)(\.[a-z]+)?$/i.test(segs[0]!))) return "home";
+  return "page";
+}
+
+const wordsOf = (s: string) => new Set((s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((w) => !/^(www|http|https|html|com|org|net|the|and)$/.test(w)));
+
+/**
+ * The address returned for a source is a picture / the home page / a general listing: look among the pages the search tool
+ * itself returned for the real page of the SAME site that is about the same item (it shares words with the source's title
+ * or text). null = none (the original stays, marked as not an exact page). Never builds an address.
+ */
+export function betterPageFor(source: { title: string; learned: string; identifier?: string | null }, url: string, citations: Citation[]): string | null {
+  const host = hostOf(url);
+  const want = wordsOf(`${source.title} ${source.identifier ?? ""} ${source.learned.slice(0, 200)}`);
+  let best: { url: string; score: number } | null = null;
+  let sameHostPages = 0;
+  for (const c of citations) {
+    const safe = safeExternalUrl(c.url);
+    if (!safe || hostOf(safe) !== host) continue;
+    const kind = classifyUrl(safe);
+    if (kind !== "page" && kind !== "pdf") continue;
+    sameHostPages++;
+    const have = wordsOf(`${c.title ?? ""} ${decodeURIComponent(new URL(safe).pathname)}`);
+    let score = 0;
+    for (const w of have) if (want.has(w)) score++;
+    if (!best || score > best.score) best = { url: safe, score };
+  }
+  if (!best) return null;
+  return best.score >= 2 || (sameHostPages === 1 && best.score >= 1) ? best.url : null;
+}
 
 /* ───────────── what the research starts from ───────────── */
 
@@ -199,6 +259,8 @@ export const researchAnswerZ = z.object({
         contradicts: S(500).nullable(),
         /** details that need a person to check them */
         needsVerification: z.array(S(300)).max(6),
+        /** what identifies the item inside the source: sale name and lot number, record number, page */
+        identifier: S(200).nullable().optional(),
       }),
     )
     .max(30),
@@ -221,9 +283,10 @@ export const RESEARCH_JSON_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["url", "title", "siteName", "kind", "refersTo", "learned", "relevance", "contradicts", "needsVerification"],
+        required: ["url", "title", "siteName", "kind", "refersTo", "learned", "relevance", "contradicts", "needsVerification", "identifier"],
         properties: {
-          url: { type: "string", description: "the exact address of the page, as the search tool returned it" },
+          url: { type: "string", description: "the exact address of the PAGE that holds the information (the lot / item / record / article page), as the search tool returned it. Never the address of a picture file, never the home page of a site" },
+          identifier: { ...nullableStr, description: "what identifies the item in the source, e.g. sale name and lot number, a record number, a page; null when there is none" },
           title: { type: "string" },
           siteName: nullableStr,
           kind: { type: "string", enum: [...SOURCE_KINDS] },
@@ -261,6 +324,18 @@ export interface ResearchSource {
    * wrote: shown with an explicit "not verified" label and never presented as a checked source
    */
   urlCheck: "cited" | "host_only" | "unverified";
+  /** what the address points to (judged from the address, and from the content type when the link was checked) */
+  linkKind?: LinkKind;
+  /** direct = the page of the item / record; generic = a home or listing page (no exact page was found); image_only = only a picture address (shown without a link as a text source) */
+  linkQuality?: "direct" | "generic" | "image_only";
+  /** the address as the model / the search tool gave it, when a better page of the same site replaced it */
+  originalUrl?: string | null;
+  /** sale + lot number, record number, page: what identifies the item inside the source */
+  identifier?: string | null;
+  /** the automatic link check (the server asked the page, never from the browser): reachable / restricted (login, bot protection) / not_found / unchecked */
+  access?: "reachable" | "restricted" | "not_found" | "unchecked";
+  /** does the page text contain the source's identifying words: found / not_found (a readable page without them) / unchecked (script-rendered, blocked, pdf) */
+  support?: "found" | "not_found" | "unchecked";
   /** always false: the page content was read by the provider's search tool, not verified by the system or by a person */
   verified: false;
   accessedAt: string;
@@ -355,7 +430,16 @@ export function vetSources(answer: ResearchAnswer, citations: Citation[], opts: 
   const sources: ResearchSource[] = [];
   let dropped = 0;
   for (const s of answer.sources) {
-    const safe = safeExternalUrl(s.url);
+    let safe = safeExternalUrl(s.url);
+    let originalUrl: string | null = null;
+    // a picture / home page / listing was returned: prefer the real page of the same site that the search tool also returned
+    if (safe && classifyUrl(safe) !== "page" && classifyUrl(safe) !== "pdf") {
+      const better = betterPageFor({ title: s.title, learned: s.learned, identifier: s.identifier }, safe, citations);
+      if (better) {
+        originalUrl = safe;
+        safe = better;
+      }
+    }
     const key = safe ? urlKey(safe) : null;
     if (!safe || !key) {
       dropped++;
@@ -368,7 +452,7 @@ export function vetSources(answer: ResearchAnswer, citations: Citation[], opts: 
       if (seen.has(key)) continue;
       seen.add(key);
       if (sources.length >= opts.maxSources) continue;
-      sources.push(buildSource(s, safe, sources.length + 1, "unverified", opts.accessedAt));
+      sources.push(buildSource(s, safe, sources.length + 1, "unverified", opts.accessedAt, originalUrl));
       continue;
     }
     const hostMatch = !exact && !!opts.hostOnly && [...hosts].some((h) => host === h || host.endsWith(`.${h}`));
@@ -379,12 +463,13 @@ export function vetSources(answer: ResearchAnswer, citations: Citation[], opts: 
     if (seen.has(key)) continue;
     seen.add(key);
     if (sources.length >= opts.maxSources) continue;
-    sources.push(buildSource(s, safe, sources.length + 1, exact ? "cited" : "host_only", opts.accessedAt));
+    sources.push(buildSource(s, safe, sources.length + 1, exact ? "cited" : "host_only", opts.accessedAt, originalUrl));
   }
   return { sources, dropped };
 }
 
-function buildSource(s: ResearchAnswer["sources"][number], safe: string, n: number, urlCheck: ResearchSource["urlCheck"], accessedAt: string): ResearchSource {
+function buildSource(s: ResearchAnswer["sources"][number], safe: string, n: number, urlCheck: ResearchSource["urlCheck"], accessedAt: string, originalUrl: string | null = null): ResearchSource {
+  const linkKind = classifyUrl(safe);
   return {
     id: `s${n}`,
     url: safe,
@@ -398,6 +483,12 @@ function buildSource(s: ResearchAnswer["sources"][number], safe: string, n: numb
     contradicts: s.contradicts ? cleanWebText(s.contradicts, 500) : null,
     needsVerification: s.needsVerification.map((x) => cleanWebText(x, 300)).filter(Boolean),
     urlCheck,
+    linkKind,
+    linkQuality: linkKind === "image" ? "image_only" : linkKind === "home" || linkKind === "search" ? "generic" : "direct",
+    originalUrl,
+    identifier: s.identifier ? cleanWebText(s.identifier, 200) || null : null,
+    access: "unchecked",
+    support: "unchecked",
     verified: false,
     accessedAt,
   };
@@ -428,6 +519,7 @@ export function coerceResearchAnswer(raw: unknown): unknown {
       relevance: str(s.relevance),
       contradicts: s.contradicts ? str(s.contradicts) : null,
       needsVerification: list(s.needsVerification),
+      identifier: s.identifier ? str(s.identifier) : null,
     };
   });
   return { sources, summary: str(r.summary), contradictions: list(r.contradictions), requiresVerification: list(r.requiresVerification), inaccessible: list(r.inaccessible) };
@@ -499,7 +591,10 @@ export const RESEARCH_RULES = `אתה חוקר ביבליוגרפי לספרים
 # אמינות
 - אם מקור סותר את מה שזוהה בתמונות - ציין זאת ב-contradicts וב-contradictions. אל תחליף את הנתון שזוהה בתמונות.
 - מקור חיצוני אינו אימות מוחלט, במיוחד תיאור מכירה שנכתב בידי גורם אחר. פרטים שדורשים בדיקה אנושית - ב-needsVerification וב-requiresVerification.
-- אל תמציא מקורות או כתובות. ב-url כתוב רק כתובת של דף שכלי החיפוש החזיר בפועל, בדיוק כפי שהוחזרה. אם לא מצאת מקור רלוונטי - החזר sources ריק.
+- ב-url כתוב את כתובת העמוד שבו נמצא המידע: עמוד הלוט / הפריט / הרשומה הביבליוגרפית / המאמר. לעולם לא כתובת של קובץ תמונה (jpg, png, webp, תמונה ממוזערת או כתובת CDN של תמונות), ולא עמוד הבית של האתר או עמוד חיפוש כלליים כשקיים עמוד מדויק. אם נתקלת בתמונה של פריט, כתוב את כתובת העמוד שבו היא מוצגת. PDF מותר, ואם ידוע העמוד, אפשר #page=N.
+- סדר עדיפות: (1) עמוד הפריט המקורי בבית המכירות או בארכיון, (2) רשומה רשמית של ספרייה או קטלוג ביבליוגרפי, (3) מסמך מחקר או מאמר שמכיל את המידע, (4) מקור משני אמין שמפנה למקור המקורי. אל תבחר מקור רק משום שהתמונה שלו דומה. לטענה על חתימה, מחיר, נדירות או ייחוס בחר מקור שתומך בה בפועל.
+- ב-identifier כתוב מה מזהה את הפריט במקור (שם המכירה ומספר הלוט, מספר רשומה, עמוד), או null.
+- אל תמציא מקורות או כתובות, ואל תבנה כתובת לפי תבנית משוערת. ב-url כתוב רק כתובת של דף שכלי החיפוש החזיר בפועל, בדיוק כפי שהוחזרה. אם לא מצאת מקור רלוונטי - החזר sources ריק.
 - אם לא מצאת מידע על הפריט עצמו, אל תמלא את הסיכום ברקע כללי: כתוב זאת במפורש.
 
 # אבטחה

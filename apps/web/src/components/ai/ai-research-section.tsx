@@ -209,15 +209,30 @@ export function AiResearchSection({ ai }: { ai: AiState }) {
                         return (
                           <li key={s.id} className="rounded-md border border-rule px-3 py-2">
                             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <a href={s.url} target="_blank" rel="noopener noreferrer nofollow" className="inline-flex min-h-8 max-w-full items-center gap-1 break-all font-medium text-info underline" dir="auto">
-                                {s.title}
-                                <ExternalLink className="size-3.5 shrink-0" aria-hidden />
-                              </a>
+                              {s.linkQuality === "image_only" ? (
+                                <span className="font-medium text-ink-2" dir="auto" data-testid="source-no-link">
+                                  {s.title}
+                                </span>
+                              ) : (
+                                <a href={s.url} target="_blank" rel="noopener noreferrer nofollow" className="inline-flex min-h-8 max-w-full items-center gap-1 break-all font-medium text-info underline" dir="auto" aria-label={`פתיחת עמוד המקור: ${s.title}`}>
+                                  {s.title}
+                                  <ExternalLink className="size-3.5 shrink-0" aria-hidden />
+                                </a>
+                              )}
                               <span className="text-[12px] text-muted">{s.siteName ?? s.host}</span>
                               <span className="rounded bg-stone-2 px-1.5 text-[11.5px] text-ink-2">{SOURCE_KIND_LABEL[s.kind]}</span>
                               <span className={cn("rounded px-1.5 text-[11.5px]", s.refersTo === "other_copy" ? "bg-warn-soft text-warn" : "bg-stone-2 text-ink-2")}>{SOURCE_SCOPE_LABEL[s.refersTo]}</span>
                             </div>
+                            {s.identifier && <p className="text-[12.5px] text-ink-2">מזהה במקור: {s.identifier}</p>}
                             <p className="mt-1 text-ink-2">{s.learned}</p>
+                            {s.linkQuality === "image_only" && (
+                              <p className="mt-1 rounded bg-warn-soft px-2 py-1 text-[12.5px] text-warn" data-testid="source-image-only">
+                                נמצאה רק כתובת של תמונה, לא עמוד מקור שאפשר לקרוא בו את המידע. אין קישור: חפשו את הפריט באתר {s.siteName ?? s.host}.
+                              </p>
+                            )}
+                            {s.linkQuality === "generic" && <p className="mt-1 text-[12.5px] text-warn">הקישור הוא לעמוד כללי באתר ולא לפריט עצמו (לא נמצא עמוד מדויק).</p>}
+                            {s.access === "not_found" && <p className="mt-1 text-[12.5px] text-warn">בבדיקה האוטומטית העמוד לא נמצא (404): ייתכן שהקישור שבור.</p>}
+                            {s.support === "not_found" && <p className="mt-1 text-[12.5px] text-warn">העמוד נקרא אך אינו מזכיר את מזהי הפריט: אמתו ידנית שהוא תומך במידע.</p>}
                             {s.relevance && <p className="text-[12px] text-muted">למה מתאים: {s.relevance}</p>}
                             {s.contradicts && (
                               <p className="mt-1 rounded bg-warn-soft px-2 py-1 text-[12.5px] text-warn">
@@ -232,7 +247,7 @@ export function AiResearchSection({ ai }: { ai: AiState }) {
                               </p>
                             )}
                             <p className="mt-1 text-[11.5px] text-muted">
-                              לא אומת בידי אדם · {s.urlCheck === "cited" ? "הכתובת הוחזרה מכלי החיפוש" : s.urlCheck === "host_only" ? "אותר דרך האתר שדווח בחיפוש, הכתובת המדויקת לא אומתה" : "הכתובת לא אומתה: כלי החיפוש לא החזיר תוצאות, והיא נכתבה על ידי המודל. יש לפתוח ולבדוק לפני הסתמכות"} · {fmt.dateTime(new Date(s.accessedAt))}
+                              לא אומת בידי אדם · {s.access === "reachable" ? "העמוד נפתח בבדיקה אוטומטית" + (s.support === "found" ? " והוא מזכיר את מזהי הפריט" : "") : s.access === "restricted" ? "גישה אוטומטית מוגבלת (התחברות או הגנה): התוכן לא נבדק" : "העמוד לא נבדק אוטומטית"} · {s.urlCheck === "cited" ? "הכתובת הוחזרה מכלי החיפוש" : s.urlCheck === "host_only" ? "אותר דרך האתר שדווח בחיפוש, הכתובת המדויקת לא אומתה" : "הכתובת לא אומתה: כלי החיפוש לא החזיר תוצאות, והיא נכתבה על ידי המודל. יש לפתוח ולבדוק לפני הסתמכות"} · {fmt.dateTime(new Date(s.accessedAt))}
                             </p>
                           </li>
                         );
