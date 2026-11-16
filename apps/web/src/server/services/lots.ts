@@ -14,6 +14,7 @@ import { changeStatus } from "./item-status";
 import { assignToCatalog, syncItemCommercial } from "./assignments";
 import { createItemTx, findItemByOpId, itemProgress, setItemCategoryNote, type CategoryProgress } from "./inventory";
 import { locationInclude, locationLabel } from "./location-label";
+import { openNoteCounts } from "./review-notes";
 import { addFounderMember, compactLotNumbers, memberItemIds, moveCombinedLot } from "./lot-members";
 import { LOT_FORMAT_FIELDS, formatToStore, readTextFormat, textFormatSchema, type TextFormat } from "@/lib/rich-text";
 
@@ -372,7 +373,7 @@ export function summariseReview(
 export async function listLots(
   user: UserPrincipal,
   catalogId: string,
-  opts: { q?: string; status?: string; sort?: string; assignment?: "active" | "all" } = {},
+  opts: { q?: string; status?: string; sort?: string; assignment?: "active" | "all"; /** "הערות לבדיקה": lots with an open note on any of their books / none */ notes?: "open" | "none" } = {},
 ) {
   const q = opts.q?.trim();
   const asNumber = q && /^\d+$/.test(q) ? Number(q) : undefined;
@@ -385,6 +386,8 @@ export async function listLots(
       item: { deletionRequestedAt: null },
       ...(opts.status && opts.status !== "ALL" ? { status: opts.status as never } : {}),
       ...(opts.assignment === "active" ? { assignmentStatus: "ACTIVE" as const } : {}),
+      ...(opts.notes === "open" ? { members: { some: { removedAt: null, item: { reviewNotes: { some: { status: "OPEN" as const } } } } } } : {}),
+      ...(opts.notes === "none" ? { members: { none: { removedAt: null, item: { reviewNotes: { some: { status: "OPEN" as const } } } } } } : {}),
       ...(q
         ? {
             OR: [
@@ -409,7 +412,7 @@ export async function listLots(
       members: {
         where: { removedAt: null },
         orderBy: { sortOrder: "asc" },
-        select: { inventoryItemId: true, item: { select: { inventoryNumber: true, title: true, reviewStatus: true, reviewChangedAt: true, reviewChangedById: true, approvedAt: true, approvedById: true, author: true, printPlace: true, printYear: true, photoCount: true, primaryAssetId: true, physicalStatus: true, aiStatus: true, aiCompletedAt: true, aiError: true, consignor: { select: { id: true, name: true } }, currentLocation: { include: locationInclude } } } },
+        select: { inventoryItemId: true, item: { select: { inventoryNumber: true, title: true, photoStatus: true, reviewStatus: true, reviewChangedAt: true, reviewChangedById: true, approvedAt: true, approvedById: true, author: true, printPlace: true, printYear: true, photoCount: true, primaryAssetId: true, physicalStatus: true, aiStatus: true, aiCompletedAt: true, aiError: true, consignor: { select: { id: true, name: true } }, currentLocation: { include: locationInclude } } } },
       },
     },
     orderBy:
@@ -428,6 +431,7 @@ export async function listLots(
     where: { inventoryItemId: { in: itemIds }, deletedAt: null },
     _count: { _all: true },
   });
+  const openNotes = await openNoteCounts(user.organizationId, itemIds);
   const firstThumbs = await db.photoAsset.findMany({
     where: { inventoryItemId: { in: itemIds }, deletedAt: null, thumbKey: { not: null } },
     orderBy: [{ category: "asc" }, { sortOrder: "asc" }],
@@ -460,7 +464,8 @@ export async function listLots(
       physicalStatus: m.item.physicalStatus,
       locationLabel: m.item.currentLocation ? locationLabel(m.item.currentLocation) : null,
       consignorId: m.item.consignor?.id ?? null,
-      ai: { aiStatus: m.item.aiStatus, hasAiResult: m.item.aiCompletedAt !== null, aiError: m.item.aiError },
+      openNotes: openNotes.get(m.inventoryItemId) ?? 0,
+      ai: { aiStatus: m.item.aiStatus, hasAiResult: m.item.aiCompletedAt !== null, aiError: m.item.aiError, photoStatus: m.item.photoStatus },
       consignorName: m.item.consignor?.name ?? null,
     }));
     const firstWithPhoto = members.map((m) => m.item.primaryAssetId).find((x): x is string => !!x);
@@ -470,6 +475,8 @@ export async function listLots(
       startingPrice: l.startingPrice === null ? null : l.startingPrice.toFixed(2),
       bookCount: Math.max(1, members.length),
       books,
+      /** open "הערות לבדיקה" over all the lot's books (the table's compact badge) */
+      openNotes: books.reduce((n, b) => n + b.openNotes, 0),
       review,
       /** identification of the book (or of the first book of a combined lot), straight from the inventory */
       bibliography: { author: bookItems[0]!.it.author, printPlace: bookItems[0]!.it.printPlace, printYear: bookItems[0]!.it.printYear },

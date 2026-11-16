@@ -24,6 +24,13 @@ export async function resetCapturePrefs(page: Page) {
   await page.evaluate(() => localStorage.removeItem("avot.capturePrefs"));
 }
 
+/** A book can be analysed by the AI only when its photography is finished: tests that analyse a book mark it so first. */
+export async function markPhotoComplete(page: Page, itemId: string) {
+  const origin = new URL(page.url()).origin;
+  const r = await page.request.patch(`/api/inventory/${itemId}`, { data: { photoStatus: "COMPLETED" }, headers: { origin } });
+  expect(r.ok()).toBeTruthy();
+}
+
 export const uniqueNumber = () => `E${Date.now().toString().slice(-7)}`;
 
 /** Creates a catalog through the UI and lands on its lots page. */

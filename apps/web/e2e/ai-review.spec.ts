@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ADMIN, apiConsignor, login } from "./helpers";
+import { ADMIN, apiConsignor, login, markPhotoComplete } from "./helpers";
 
 /*
  * AI button + "תוכן לפרסום בקטלוג" end to end. It calls the REAL active provider (a few cents), so it only runs with
@@ -17,6 +17,7 @@ test("AI analysis from the book page, review with autosave, approval, filter and
     .post("/api/inventory", { data: { title, consignorId: consignor.id, author: "מחבר זמני", opId: crypto.randomUUID() }, headers: { origin } })
     .then((r) => r.json());
   const id = created.item.id as string;
+  await markPhotoComplete(page, id);
   await page.request.put(`/api/inventory/${id}/photographer-notes`, { data: { text: "ספר מוסר. השער לא צולם עדיין.", rev: Date.now() }, headers: { origin } });
 
   await page.goto(`/inventory/${id}`);

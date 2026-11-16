@@ -38,7 +38,7 @@ describe("review notes stay out of every AI path", () => {
       .map(rel)
       .sort();
     // pages / API routes / lists that show or count notes; a service (which could feed an AI request) never imports it
-    for (const f of importers) expect(f.startsWith("server/services/")).toBe(false);
+    for (const f of importers.filter((x) => x.startsWith("server/services/"))) expect(["server/services/inventory.ts", "server/services/lots.ts"]).toContain(f);
     expect(importers.some((f) => f.startsWith("server/ai/"))).toBe(false);
   });
 
@@ -47,7 +47,7 @@ describe("review notes stay out of every AI path", () => {
       .filter((f) => /itemReviewNote|reviewNotes/.test(read(f)))
       .map(rel)
       .sort();
-    for (const f of readers) expect(["server/services/review-notes.ts", "server/services/inventory.ts", "server/services/lots.ts", "server/services/deletion.ts"]).toContain(f);
+    for (const f of readers) expect(["server/services/review-notes.ts", "server/services/inventory.ts", "server/services/lots.ts", "server/services/deletion.ts", "server/services/item-review.ts"]).toContain(f);
   });
 
   it("the targeted addition sends no photos and the lot description sends no notes field: the request builders are fixed text + the book's own details", () => {

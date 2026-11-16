@@ -13,6 +13,8 @@ import { WAREHOUSE_VIEW_ROLES } from "@/lib/nav-roles";
 import { HouseSwitcher, type HouseOption } from "@/components/house-switcher";
 import { GlobalSearch } from "./global-search";
 import { OutboxIndicator } from "./outbox-indicator";
+import { NavigationMemory } from "./navigation-memory";
+import { restoreWanted } from "@/lib/nav-memory";
 
 interface NavItem {
   href: string;
@@ -118,7 +120,9 @@ export function AppShell({
   useEffect(() => setNavOpen(false), [pathname]);
   useEffect(() => setChosen(readOpen()), []);
   // a page change starts at the top of the content area (the content area, not the window, is what scrolls on a computer)
+  // (except on a return to a list: NavigationMemory brings the remembered row back instead)
   useEffect(() => {
+    if (restoreWanted(pathname)) return;
     mainRef.current?.scrollTo({ top: 0 });
   }, [pathname]);
 
@@ -271,6 +275,7 @@ export function AppShell({
           </div>
           {/* the one scrolling area on a computer (data-app-scroll); on a phone the window scrolls */}
           <main ref={mainRef} data-app-scroll className="min-w-0 max-w-full flex-1 overflow-x-clip lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain">
+            <NavigationMemory />
             {children}
           </main>
         </div>

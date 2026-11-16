@@ -187,7 +187,7 @@ export function InventoryItemActions({ subject, perms, context }: { subject: Ite
           </IconButton>
         )}
         {/* AI, then the book details it fills (pencil) as the last button */}
-        {perms.ai && subject.ai && <AiAnalyzeButton itemId={subject.id} inventoryNumber={subject.inventoryNumber} initial={subject.ai} size={size} defaultApproverEmail={subject.approverEmail} />}
+        {perms.ai && subject.ai && <AiAnalyzeButton itemId={subject.id} inventoryNumber={subject.inventoryNumber} initial={subject.ai} size={size} defaultApproverEmail={subject.approverEmail} showReason={context === "page"} />}
         {perms.edit && (
           <IconButton label={`עריכת פרטי הספר ${subject.inventoryNumber}`} size={size} disabled={loadingEdit} onClick={() => void openEdit()}>
             <Pencil />

@@ -1,7 +1,14 @@
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, Layers } from "lucide-react";
 import { requirePageUser } from "@/server/auth/principal";
-import { can } from "@/server/auth/permissions";
+import { can, canUser } from "@/server/auth/permissions";
+import { getItemDetail } from "@/server/services/inventory";
+import { getAiState } from "@/server/services/ai-analysis";
+import { listReviewNotes, noteStamp } from "@/server/services/review-notes";
+import { AiActivity } from "@/components/ai/ai-activity";
+import { ReviewNotesPanel } from "@/components/review-notes/review-notes-panel";
+import { BookWorkspace } from "@/components/inventory/book-workspace";
+import { BookHistory } from "@/components/inventory/book-history";
 import { db } from "@/server/db";
 import { listCombinedLotAssets } from "@/server/services/assets";
 import { toAssetDto } from "@/server/services/asset-dto";
@@ -35,7 +42,7 @@ export type CombinedLot = Lot;
  * where they fit; the new parts are "הספרים בלוט", the shared gallery, the shared description with its AI button and the
  * lot's composition history.
  */
-export async function CombinedLotView({ lot, user }: { lot: Lot; user: Awaited<ReturnType<typeof requirePageUser>> }) {
+export async function CombinedLotView({ lot, user, selectedBook }: { lot: Lot; user: Awaited<ReturnType<typeof requirePageUser>>; selectedBook?: string }) {
   const [composition, gallery, prev, next] = await Promise.all([
     getLotComposition(lot.id),
     listCombinedLotAssets(user.organizationId, lot),
@@ -62,9 +69,17 @@ export async function CombinedLotView({ lot, user }: { lot: Lot; user: Awaited<R
       physicalStatus: i.physicalStatus,
       locationLabel: i.currentLocation ? locationLabel(i.currentLocation) : null,
       photoCount: i.photoCount,
-      ai: { aiStatus: i.aiStatus, hasAiResult: i.aiCompletedAt !== null, aiError: i.aiError },
+      ai: { aiStatus: i.aiStatus, hasAiResult: i.aiCompletedAt !== null, aiError: i.aiError, photoStatus: i.photoStatus },
     };
   });
+  // every book keeps its own notes, AI state, history and review: the workspace below opens one book at a time (?book=)
+  const current = books.find((b) => b.itemId === selectedBook) ?? books[0]!;
+  const [notesByBook, stamps, detail, ai] = await Promise.all([
+    listReviewNotes(user.organizationId, books.map((b) => b.itemId)),
+    Promise.all(books.map((b) => noteStamp(user.organizationId, b.itemId))),
+    getItemDetail(user, current.itemId),
+    getAiState(user, current.itemId),
+  ]);
   const mainAssetId = lot.primaryAssetId ?? gallery.find((a) => a.isPrimary)?.id ?? gallery.find((a) => !a.hidden && a.thumbKey)?.id ?? null;
   const canAssign = can(user.role, "catalog.assign");
   const open = lot.assignmentStatus === "ACTIVE" && lot.commercialStatus === "ASSIGNED" && lot.catalog.status !== "ARCHIVED";
@@ -163,6 +178,40 @@ export async function CombinedLotView({ lot, user }: { lot: Lot; user: Awaited<R
             canEdit={canEdit}
             canDownload={can(user.role, "photo.download")}
           />
+          {/* "הערות לבדיקה" of EVERY book, each clearly titled with its book (a note belongs to the book, never to the lot) */}
+          <section className="space-y-3" aria-label="הערות לבדיקה לפי ספר" data-testid="combined-notes">
+            {books.map((b, i) => (
+              <div key={b.itemId} className="space-y-3">
+                {b.itemId !== current.itemId && (
+                  <AiActivity bookLabel={`${b.inventoryNumber}`} itemId={b.itemId} currentUserId={user.userId} initial={{ aiStatus: b.ai.aiStatus, aiError: b.ai.aiError, detailsVersion: items.find((x) => x.id === b.itemId)!.detailsVersion, photoStatus: b.ai.photoStatus, notes: stamps[i]!, activity: null }} />
+                )}
+                <ReviewNotesPanel itemId={b.itemId} initial={notesByBook.get(b.itemId) ?? []} canAdd={canUser(user, "reviewNote.add")} canResolve={canUser(user, "reviewNote.resolve")} bookLabel={`${b.inventoryNumber} · ${b.title}`} />
+              </div>
+            ))}
+          </section>
+
+          {/* the same editing + AI + review environment as the book's own page, for the book picked here */}
+          {detail && (
+            <>
+              <nav aria-label="בחירת ספר לעריכה" className="flex flex-wrap items-center gap-1.5" data-testid="combined-book-picker">
+                <span className="text-[13px] font-medium text-ink-2">פרטי הספר, ניתוח ובדיקה:</span>
+                {books.map((b, i) => (
+                  <Link
+                    key={b.itemId}
+                    href={`/lots/${lot.id}?book=${b.itemId}`}
+                    replace
+                    scroll={false}
+                    aria-current={b.itemId === current.itemId ? "true" : undefined}
+                    className={cn("inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-[13px]", b.itemId === current.itemId ? "border-ink bg-paper font-semibold text-ink shadow-card" : "border-rule-strong bg-stone-2 text-ink-2 hover:text-ink")}
+                  >
+                    <span className="num">{i + 1}</span>
+                    <span className="max-w-40 truncate">{b.title}</span>
+                  </Link>
+                ))}
+              </nav>
+              <BookWorkspace user={user} detail={detail} ai={ai} showNotes={false} bookLabel={`${current.inventoryNumber}`} />
+            </>
+          )}
           <LotAiPanel
             key={`ai-${lot.compositionVersion}-${lot.descriptionNeedsUpdate}-${lot.aiDescriptionRunId ?? ""}`}
             lotId={lot.id} canGenerate={can(user.role, "ai.analyze") && lot.assignmentStatus === "ACTIVE"} canApply={can(user.role, "ai.apply") && open} initialNeedsUpdate={lot.descriptionNeedsUpdate} />
@@ -215,6 +264,7 @@ export async function CombinedLotView({ lot, user }: { lot: Lot; user: Awaited<R
               </p>
             )}
           </Panel>
+          {detail && <BookHistory detail={detail} />}
           <p className="px-1 text-[12px] leading-relaxed text-faint">
             נוצר {fmt.dateTime(lot.createdAt)} · עודכן {fmt.dateTime(lot.updatedAt)}
           </p>

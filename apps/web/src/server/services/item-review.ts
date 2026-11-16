@@ -93,7 +93,9 @@ export async function approveReview(user: UserPrincipal, itemId: string, input: 
       outcome = { aiWritten: Object.keys(written).length, changed, kept };
       await tx.inventoryAnalysis.update({ where: { id: run.id }, data: { reviewOutcome: { ...outcome, approvedAt: new Date().toISOString(), approvedById: user.userId } } });
     }
-    await audit(user, { action: "item_review.approved", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { detailsVersion: item.detailsVersion, from: item.reviewStatus, runId: run?.id ?? null, changedAiFields: outcome?.changed ?? [] } }, tx);
+    // the approver was told about open "הערות לבדיקה" and decided: how many were still open is part of the record (never blocks the approval)
+    const openNotes = await tx.itemReviewNote.count({ where: { inventoryItemId: itemId, status: "OPEN" } });
+    await audit(user, { action: "item_review.approved", entityType: "inventory", entityId: itemId, inventoryItemId: itemId, data: { detailsVersion: item.detailsVersion, openNotes, from: item.reviewStatus, runId: run?.id ?? null, changedAiFields: outcome?.changed ?? [] } }, tx);
     return { reviewStatus: "APPROVED" as const };
   });
 }

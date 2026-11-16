@@ -146,6 +146,7 @@ export function describeData(action: string, data: unknown): string | null {
   if (action === "lot.assigned" && d.catalogNumber) return `קטלוג ${d.catalogNumber} · פריט ${d.lotNumber}`;
   if ((action === "ai.requested" || action === "ai.completed") && typeof d.model === "string") return `${d.provider ?? ""} · ${d.model}${typeof d.costUsd === "number" ? ` · ${d.costUsd.toFixed(4)}` : ""}`;
   if (action === "ai.failed" && typeof d.error === "string") return d.error;
+  if (action.startsWith("review_note.")) return [typeof d.text === "string" ? d.text : null, typeof d.conclusion === "string" && d.conclusion ? `מסקנה: ${d.conclusion}` : null].filter(Boolean).join(" · ") || null;
   if (action === "ai.reanalysis_denied" && typeof d.approverEmail === "string") return d.approverEmail;
   if ((action === "ai.restored" || action === "item_review.invalidated") && Array.isArray(d.fields)) return `${d.fields.length} שדות`;
   if (action === "inventory.updated") {

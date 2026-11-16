@@ -52,6 +52,7 @@ interface Search {
   noloc?: string;
   consignors?: string;
   photos?: string;
+  notes?: string;
   author?: string;
   place?: string;
   year?: string;
@@ -105,6 +106,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
     noLocation: sp.noloc === "1",
     consignorIds: canConsignors ? parseIdList(sp.consignors) : [],
     hasPhotos: sp.photos === "yes" ? true : sp.photos === "no" ? false : undefined,
+    reviewNotes: sp.notes === "open" ? "open" : sp.notes === "none" ? "none" : undefined,
     author: sp.author,
     printPlace: sp.place,
     printYear: sp.year,
@@ -146,6 +148,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: Pr
       : []),
     { kind: "flag", key: "noloc", label: "ללא מיקום במחסן", section: "מחסן" },
     ...(canConsignors ? ([{ kind: "multi", key: "consignors", label: "מפקיד", section: "נתונים נוספים", searchable: true, options: consignorRows.map((c) => ({ value: c.id, label: c.name })) }] satisfies FilterGroup[]) : []),
+    { kind: "choice", key: "notes", label: "הערות לבדיקה", section: "מצב הספר", options: [{ value: "open", label: "עם הערות פתוחות" }, { value: "none", label: "בלי הערות פתוחות" }] },
     { kind: "choice", key: "photos", label: "תמונות", section: "נתונים נוספים", options: [{ value: "yes", label: "עם תמונות" }, { value: "no", label: "בלי תמונות" }] },
     { kind: "range", key: "added", label: "תאריך הוספה", section: "נתונים נוספים", type: "date" },
     { kind: "range", key: "num", label: "טווח מספרי מלאי", section: "נתונים נוספים", type: "number" },

@@ -11,6 +11,8 @@ import { api } from "@/lib/api";
  * component only polls the small state (GET /api/inventory/:id/ai?lite=1) - every few seconds while an action is
  * running, more slowly while idle (so a page opened before somebody else started an action learns about it) - and
  * refreshes the page when an action finishes: new title, description and formatting appear without a manual reload.
+ * The same poll carries the stamp of the book's review notes and its photography status, so these also arrive without a
+ * reload (ONE shared mechanism per open book - no second poller).
  * Polling pauses while the tab is hidden. Polling was chosen over SSE / WebSocket: it works behind every proxy, survives
  * a server restart without any reconnect logic, and a few small queries per open page are cheap.
  */
@@ -20,6 +22,10 @@ export interface AiActivityState {
   aiStatus: "NOT_RUN" | "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
   aiError: string | null;
   detailsVersion: number;
+  /** the book's photography status: an AI action becomes available / unavailable when it changes */
+  photoStatus?: string;
+  /** stamp of the book's "הערות לבדיקה" (open count, total, newest change): a change by somebody else refreshes the page */
+  notes?: { open: number; total: number; rev: number };
   activity: { runId: string; kind: Kind; status: "QUEUED" | "RUNNING" | string; requestedBy: string | null; requestedById: string | null; since: string; instruction?: string | null } | null;
 }
 
@@ -32,7 +38,7 @@ const KIND_TEXT: Record<Kind, string> = {
 const ACTIVE_POLL_MS = 3000;
 const IDLE_POLL_MS = 6000;
 
-export function AiActivity({ itemId, initial, currentUserId }: { itemId: string; initial: AiActivityState; currentUserId: string }) {
+export function AiActivity({ itemId, initial, currentUserId, bookLabel }: { itemId: string; initial: AiActivityState; currentUserId: string; /** a combined lot: which book the banner is about */ bookLabel?: string }) {
   const router = useRouter();
   const toast = useToast();
   const [state, setState] = useState(initial);
@@ -45,7 +51,7 @@ export function AiActivity({ itemId, initial, currentUserId }: { itemId: string;
     setState(initial);
     last.current = initial;
     runId.current = initial.activity?.runId ?? null;
-  }, [initial.aiStatus, initial.detailsVersion, initial.activity?.runId, initial.activity?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initial.aiStatus, initial.detailsVersion, initial.activity?.runId, initial.activity?.status, initial.photoStatus, initial.notes?.rev, initial.notes?.open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let stop = false;
@@ -73,6 +79,11 @@ export function AiActivity({ itemId, initial, currentUserId }: { itemId: string;
             runId.current = s.activity?.runId ?? null;
             router.refresh();
           } else if (!nowActive && s.detailsVersion !== before.detailsVersion) {
+            router.refresh();
+          } else if (s.notes && before.notes && (s.notes.rev !== before.notes.rev || s.notes.open !== before.notes.open || s.notes.total !== before.notes.total)) {
+            // a review note was added / handled by somebody else (or in another tab)
+            router.refresh();
+          } else if (s.photoStatus && before.photoStatus && s.photoStatus !== before.photoStatus) {
             router.refresh();
           }
         } catch {
@@ -108,7 +119,7 @@ export function AiActivity({ itemId, initial, currentUserId }: { itemId: string;
       <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-info" aria-hidden />
       <div className="min-w-0">
         <div className="font-medium text-ink">
-          AI בעיבוד - {KIND_TEXT[a.kind]}
+          AI בעיבוד{bookLabel ? ` (${bookLabel})` : ""} - {KIND_TEXT[a.kind]}
           <span className="ms-2 text-[12px] font-normal text-ink-2">{a.status === "QUEUED" ? "ממתין בתור" : "בעיבוד"}</span>
         </div>
         <div className="text-[12.5px] text-ink-2">

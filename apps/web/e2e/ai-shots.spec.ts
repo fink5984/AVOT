@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiConsignor, login } from "./helpers";
+import { apiConsignor, login, markPhotoComplete } from "./helpers";
 
 /* Screenshots of the new sections (desktop + phone) for a visual check. Same prerequisites as ai-background.spec.ts. */
 test.skip(!process.env.E2E_FAKE_AI, "needs the fake AI server and an app started against it: set E2E_FAKE_AI=1");
@@ -12,6 +12,7 @@ for (const [name, viewport] of [["desktop", { width: 1500, height: 1100 }], ["ph
     const consignor = await apiConsignor(page);
     const created = await page.request.post("/api/inventory", { data: { title: `ספר צילום ${name} ${Date.now()}`, consignorId: consignor.id, opId: crypto.randomUUID() }, headers: { origin } }).then((r) => r.json());
     const id = created.item.id as string;
+    await markPhotoComplete(page, id);
     await page.goto(`/inventory/${id}`);
     await page.locator("[data-ai-status]").click();
     await expect(page.locator("[data-ai-status]")).toHaveAttribute("data-ai-status", "COMPLETED", { timeout: 120_000 });

@@ -24,7 +24,14 @@ import { LotDisplayPanel } from "./lot-display";
 import { LotPricePanel } from "@/components/lot-price-panel";
 import { SalePanel } from "@/components/sales/sale-panel";
 import { locationInclude, locationLabel } from "@/server/services/location-label";
-import { readTextFormat } from "@/lib/rich-text";
+import { ITEM_FORMAT_FIELDS, readTextFormat, segmentsFor } from "@/lib/rich-text";
+import { getItemDetail } from "@/server/services/inventory";
+import { getAiState } from "@/server/services/ai-analysis";
+import { draftComparison, lotOpenForCatalogText } from "@/server/services/lot-sync";
+import { BookWorkspace } from "@/components/inventory/book-workspace";
+import { BookHistory } from "@/components/inventory/book-history";
+import { CatalogDraftBanner } from "./catalog-draft-banner";
+import { AiAnalyzeButton } from "@/components/ai/ai-button";
 
 export async function generateMetadata({ params }: { params: Promise<{ lotId: string }> }) {
   const { lotId } = await params;
@@ -36,10 +43,10 @@ export async function generateMetadata({ params }: { params: Promise<{ lotId: st
  * One screen per book: status, photo requirements, the photos themselves
  * (organise, download, import) and the book's details — no separate gallery page.
  */
-export default async function LotPage({ params, searchParams }: { params: Promise<{ lotId: string }>; searchParams: Promise<{ category?: string }> }) {
+export default async function LotPage({ params, searchParams }: { params: Promise<{ lotId: string }>; searchParams: Promise<{ category?: string; book?: string }> }) {
   const user = await requirePageUser("catalog.view");
   const { lotId } = await params;
-  const { category } = await searchParams;
+  const { category, book } = await searchParams;
   if (!/^[0-9a-f-]{36}$/i.test(lotId)) notFound();
   const lot = await db.lot.findFirst({
     where: { id: lotId, organizationId: user.organizationId },
@@ -47,8 +54,12 @@ export default async function LotPage({ params, searchParams }: { params: Promis
   });
   if (!lot || !canSeeHouse(user, lot.catalog.auctionHouseId)) notFound();
   // several books sold as one lot: the combined view (books, shared gallery, shared description)
-  if ((await memberCounts([lot.id])).get(lot.id)! > 1) return <CombinedLotView lot={lot} user={user} />;
+  if ((await memberCounts([lot.id])).get(lot.id)! > 1) return <CombinedLotView lot={lot} user={user} selectedBook={book} />;
 
+  // the book behind this lot: the SAME editing environment as the book's page in the inventory (one source of truth: the book)
+  const [detail, ai, lastVersion] = await Promise.all([getItemDetail(user, lot.inventoryItemId), getAiState(user, lot.inventoryItemId), db.lotDescriptionVersion.aggregate({ where: { lotId: lot.id }, _max: { version: true } })]);
+  if (!detail) notFound();
+  const draft = draftComparison(lot.item, lot);
   const [progress, prev, next, assets, siblings] = await Promise.all([
     lotProgress(lot.id),
     db.lot.findFirst({ where: { catalogId: lot.catalogId, mergedIntoLotId: null, lotNumber: { lt: lot.lotNumber } }, orderBy: { lotNumber: "desc" }, select: { id: true, lotNumber: true } }),
@@ -142,6 +153,16 @@ export default async function LotPage({ params, searchParams }: { params: Promis
               </ButtonLink>
             </div>
             )}
+            {/* the same AI button as the book page / the catalog table: disabled, with the reason, until photography is complete */}
+            {can(user.role, "ai.analyze") && lot.assignmentStatus === "ACTIVE" && (
+              <AiAnalyzeButton
+                itemId={lot.inventoryItemId}
+                inventoryNumber={lot.item.inventoryNumber}
+                initial={{ aiStatus: lot.item.aiStatus, hasAiResult: lot.item.aiCompletedAt !== null, aiError: lot.item.aiError, photoStatus: lot.item.photoStatus }}
+                defaultApproverEmail={can(user.role, "ai.reanalyze.approve") ? user.email : undefined}
+                showReason
+              />
+            )}
             <LotMenu lot={formValue} catalogId={lot.catalogId} canEdit={canEdit} canAudit={can(user.role, "audit.view")} />
             {canCapture && (
               <ButtonLink href={`/capture/${lot.id}${initialCategory !== "ALL" ? `?category=${initialCategory}` : ""}`} variant="capture" icon={<Camera />}>
@@ -164,26 +185,48 @@ export default async function LotPage({ params, searchParams }: { params: Promis
       </PageHeader>
 
       <div className="grid items-start gap-6 px-4 pb-10 lg:px-8 xl:grid-cols-[minmax(0,1fr)_300px] 2xl:grid-cols-[minmax(0,1fr)_340px]">
-        <Gallery
-          lot={{ id: lot.id, lotNumber: lot.lotNumber, catalogId: lot.catalogId, catalogNumber: lot.catalog.number, title: lot.title }}
-          initialAssets={assets.map(toAssetDto)}
-          initialCategory={initialCategory}
-          progress={progress}
-          siblings={siblings}
-          userId={user.userId}
-          perms={{
-            organize: can(user.role, "photo.organize"),
-            remove: can(user.role, "photo.delete"),
-            download: can(user.role, "photo.download"),
-            capture: canCapture,
-            mark: can(user.role, "lot.status"),
-          }}
-        />
+        <div className="min-w-0 space-y-6">
+          <BookWorkspace
+            user={user}
+            detail={detail}
+            ai={ai}
+            gallery={
+              <Gallery
+                lot={{ id: lot.id, lotNumber: lot.lotNumber, catalogId: lot.catalogId, catalogNumber: lot.catalog.number, title: lot.title }}
+                initialAssets={assets.map(toAssetDto)}
+                initialCategory={initialCategory}
+                progress={progress}
+                siblings={siblings}
+                userId={user.userId}
+                perms={{
+                  organize: can(user.role, "photo.organize"),
+                  remove: can(user.role, "photo.delete"),
+                  download: can(user.role, "photo.download"),
+                  capture: canCapture,
+                  mark: can(user.role, "lot.status"),
+                }}
+              />
+            }
+            beforePanel={
+              <CatalogDraftBanner
+                lotId={lot.id}
+                synced={draft.synced}
+                open={lotOpenForCatalogText(lot)}
+                canLot={canEdit}
+                canBook={can(user.role, "inventory.edit")}
+                itemVersion={lot.item.detailsVersion}
+                lotVersion={lastVersion._max.version ?? 0}
+                lot={{ headline: lot.shortDescription, description: segmentsFor(lot.description, readTextFormat(lot.textFormat).description) }}
+                book={{ headline: lot.item.catalogHeadline, description: segmentsFor(lot.item.catalogDescription, readTextFormat(lot.item.textFormat, ITEM_FORMAT_FIELDS).catalogDescription) }}
+              />
+            }
+          />
+        </div>
 
         <div className="space-y-4">
           <LotPricePanel lotId={lot.id} price={lot.startingPrice?.toFixed(2) ?? null} version={lot.priceVersion} canEdit={can(user.role, "lot.price.edit")} ended={lot.assignmentStatus === "ENDED"} />
           <SalePanel user={user} itemId={lot.inventoryItemId} lotId={lot.id} lotNumber={lot.lotNumber} commercialStatus={lot.commercialStatus} lotEnded={lot.assignmentStatus === "ENDED"} />
-          <LotDetails lot={formValue} catalogId={lot.catalogId} canEdit={canEdit} />
+          <LotDetails lot={formValue} catalogId={lot.catalogId} canEdit={canEdit} hideCatalogText />
           <LotNotes lotId={lot.id} initial={lot.internalNotes ?? ""} canEdit={canEdit} />
           <PhotographerNotes
             key={lot.inventoryItemId}
@@ -192,6 +235,7 @@ export default async function LotPage({ params, searchParams }: { params: Promis
             initialRev={lot.item.photographerNotesRev === null ? null : Number(lot.item.photographerNotesRev)}
             canEdit={can(user.role, "photographerNotes.edit")}
             variant="panel"
+            collapsible
           />
           <p className="px-1 text-[12.5px] text-muted">
             מפקיד:{" "}
@@ -208,6 +252,7 @@ export default async function LotPage({ params, searchParams }: { params: Promis
             )}
           </p>
           {lot.photoCount > 0 && <LotDisplayPanel lotId={lot.id} canEdit={canEdit} />}
+          <BookHistory detail={detail} />
           <p className="px-1 text-[12px] leading-relaxed text-faint">
             נוצר {fmt.dateTime(lot.createdAt)} · עודכן {fmt.dateTime(lot.updatedAt)}
             {lot.completedAt && <> · הושלם {fmt.dateTime(lot.completedAt)}</>}

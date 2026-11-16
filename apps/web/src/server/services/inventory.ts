@@ -13,6 +13,7 @@ import { locationLabel, locationInclude } from "./location-label";
 import { requireConsignor } from "./consignors";
 import { changedMaterialFields, reviewAfterHumanEdit } from "./item-review";
 import { followBookDraft } from "./lot-sync";
+import { openNoteCounts } from "./review-notes";
 import { normalizeQuery, searchTokens } from "@/lib/search-text";
 import { ITEM_FORMAT_FIELDS, formatToStore, itemTextFormatSchema, readTextFormat, type TextFormat } from "@/lib/rich-text";
 
@@ -342,6 +343,8 @@ export interface InventoryFilters {
   consignorIds?: string[];
   /** true = has photos, false = none */
   hasPhotos?: boolean;
+  /** "הערות לבדיקה": books with at least one open note / none */
+  reviewNotes?: "open" | "none";
   author?: string;
   printPlace?: string;
   printYear?: string;
@@ -465,6 +468,8 @@ function filterClauses(f: InventoryFilters): Prisma.InventoryItemWhereInput[] {
   if (places.length) and.push({ OR: places });
   if (f.hasPhotos === true) and.push({ photoCount: { gt: 0 } });
   if (f.hasPhotos === false) and.push({ photoCount: 0 });
+  if (f.reviewNotes === "open") and.push({ reviewNotes: { some: { status: "OPEN" } } });
+  if (f.reviewNotes === "none") and.push({ reviewNotes: { none: { status: "OPEN" } } });
   for (const k of ["author", "printPlace", "printYear"] as const) {
     const v = normalizeQuery(f[k]);
     if (v) and.push({ [k]: { contains: v, mode: "insensitive" } });
@@ -505,6 +510,7 @@ export async function listInventory(user: UserPrincipal, o: InventoryListOptions
         select: { id: true, inventoryItemId: true },
       })
     : [];
+  const openNotes = await openNoteCounts(user.organizationId, rows.map((r) => r.id));
   return {
     total,
     page,
@@ -527,6 +533,8 @@ export async function listInventory(user: UserPrincipal, o: InventoryListOptions
         hasAiResult: r.aiCompletedAt !== null,
         aiError: r.aiError,
         photoCount: r.photoCount,
+        /** open "הערות לבדיקה" (internal, never sent to AI) */
+        openNotes: openNotes.get(r.id) ?? 0,
         consignor: r.consignor,
         thumbAssetId: r.primaryAssetId ?? firstThumbs.find((t) => t.inventoryItemId === r.id)?.id ?? null,
         location: r.currentLocation ? { id: r.currentLocation.id, code: r.currentLocation.code, label: locationLabel(r.currentLocation) } : null,

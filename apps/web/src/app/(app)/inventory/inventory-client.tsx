@@ -14,6 +14,7 @@ import { HouseMark } from "@/components/house-mark";
 import { AssignDialog } from "@/components/inventory/assign-dialog";
 import { ItemFormDialog } from "@/components/inventory/item-form-dialog";
 import { QuickBookDialog } from "@/components/consignors/quick-book-dialog";
+import { OpenNotesBadge } from "@/components/review-notes/open-notes-badge";
 import { fmt } from "@/i18n";
 import { ApiError, api, errorMessage } from "@/lib/api";
 import { usePrintLabels } from "@/lib/print";
@@ -36,6 +37,8 @@ export interface InventoryRowDto {
   hasAiResult: boolean;
   aiError: string | null;
   photoCount: number;
+  /** open "הערות לבדיקה" */
+  openNotes: number;
   consignor: { id: string; name: string } | null;
   thumbAssetId: string | null;
   location: { id: string; code: string; label: string } | null;
@@ -86,6 +89,7 @@ function rowFromCreated(item: { id: string; inventoryNumber: string; barcode: st
     hasAiResult: false,
     aiError: null,
     photoCount: 0,
+    openNotes: 0,
     consignor,
     thumbAssetId: null,
     location: null,
@@ -254,7 +258,7 @@ export function InventoryTable({
         commercialStatus: r.commercialStatus,
         hasLocation: !!r.location,
         assignment: r.assignment === null ? null : "hidden" in r.assignment ? "hidden" : "active",
-        ai: { aiStatus: r.aiStatus, hasAiResult: r.hasAiResult, aiError: r.aiError },
+        ai: { aiStatus: r.aiStatus, hasAiResult: r.hasAiResult, aiError: r.aiError, photoStatus: r.photoStatus },
       }}
       perms={perms}
     />
@@ -292,6 +296,7 @@ export function InventoryTable({
                       <PhotoStatusBadge status={r.photoStatus} />
                       <ReviewStatusBadge status={r.reviewStatus} />
                       {r.physicalStatus !== "IN_STORAGE" && r.physicalStatus !== "AWAITING_STORAGE" && <PhysicalStatusBadge status={r.physicalStatus} />}
+                      <OpenNotesBadge n={r.openNotes} />
                     </div>
                     <div className="text-[12px] text-muted">
                       {r.location ? r.location.label : "ללא מיקום"}
@@ -339,6 +344,7 @@ export function InventoryTable({
                       </Link>
                       <div className="flex items-center gap-2 truncate text-[12px] text-muted">
                         <span className="num font-mono">{r.inventoryNumber}</span>
+                        <OpenNotesBadge n={r.openNotes} className="shrink-0" />
                         {r.barcode !== r.inventoryNumber && <span className="num font-mono" title="ברקוד חיצוני">{r.barcode}</span>}
                         {r.author && <span className="truncate">{r.author}</span>}
                         {r.consignor ? (

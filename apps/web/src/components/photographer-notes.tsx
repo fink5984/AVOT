@@ -65,6 +65,7 @@ export function PhotographerNotes({
   canEdit,
   variant,
   autosize = true,
+  collapsible = false,
 }: {
   itemId: string;
   initialText: string;
@@ -73,6 +74,8 @@ export function PhotographerNotes({
   /** studio: dark capture panel · panel: the light cards of the book / catalog item pages */
   variant: "studio" | "panel";
   autosize?: boolean;
+  /** panel variant: a secondary area that opens and closes (open while it holds text). The photographer's notes are a SOURCE for the AI; the editor's task list is "הערות לבדיקה" */
+  collapsible?: boolean;
 }) {
   const [text, setText] = useState(initialText);
   const [status, setStatus] = useState<Status>("idle");
@@ -226,6 +229,17 @@ export function PhotographerNotes({
     />
   );
 
+  if (variant === "panel" && collapsible) {
+    return (
+      <details className="card overflow-hidden" open={initialText.trim().length > 0} data-testid="photographer-notes-secondary">
+        <summary className="flex min-h-11 cursor-pointer select-none items-center justify-between gap-3 px-5 py-2 text-[13px] font-medium text-ink-2 hover:text-ink">
+          <span>הערות המצלם</span>
+          {statusEl}
+        </summary>
+        <div className="border-t border-rule">{field}</div>
+      </details>
+    );
+  }
   if (variant === "panel") {
     return (
       <Panel title="הערות המצלם" actions={statusEl}>

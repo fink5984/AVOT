@@ -26,6 +26,8 @@ import { fmt, t } from "@/i18n";
 import { api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { matchesTokens } from "@/lib/search-text";
+import { useRememberedState } from "@/lib/nav-memory";
+import { OpenNotesBadge } from "@/components/review-notes/open-notes-badge";
 import { LotPriceCell } from "@/components/lot-price";
 import { RecordSaleDialog } from "@/components/sales/record-sale-dialog";
 
@@ -51,7 +53,9 @@ export interface LotRow {
   priceVersion: number;
   /** 1 for an ordinary lot, 2+ for a combined lot */
   bookCount: number;
-  books: { itemId: string; inventoryNumber: string; title: string; locationLabel: string | null; consignorId: string | null; ai: AiButtonState }[];
+  books: { itemId: string; inventoryNumber: string; title: string; locationLabel: string | null; consignorId: string | null; openNotes: number; ai: AiButtonState }[];
+  /** open "הערות לבדיקה" over all the lot's books (internal, never sent to AI) */
+  openNotes: number;
   consignorId: string | null;
   consignorName: string | null;
   /** the book's review state, from the inventory (never stored on the lot); aggregated for a combined lot */
@@ -106,12 +110,14 @@ export function LotsTable({
 }) {
   const router = useRouter();
   const toast = useToast();
-  const [q, setQ] = useState("");
-  const [status, setStatus] = useState(initialStatus);
-  const [sort, setSort] = useState<Sort>("number");
-  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("ALL");
+  // the screen state of this list is remembered for a return from a lot (see lib/nav-memory.ts); a new entry from the menu starts clean
+  const [q, setQ] = useRememberedState("q", "");
+  const [status, setStatus] = useRememberedState("status", initialStatus);
+  const [sort, setSort] = useRememberedState<Sort>("sort", "number");
+  const [reviewFilter, setReviewFilter] = useRememberedState<ReviewFilter>("review", "ALL");
+  const [notesFilter, setNotesFilter] = useRememberedState<"ALL" | "open" | "none">("notes", "ALL");
   /** show only the active lots that still have no starting price */
-  const [missingPrice, setMissingPrice] = useState(false);
+  const [missingPrice, setMissingPrice] = useRememberedState("missingPrice", false);
   /** phones: the status / review / sort controls live behind one button */
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -130,7 +136,7 @@ export function LotsTable({
   const quickRef = useRef<HTMLInputElement>(null);
 
   const visible = useMemo(() => {
-    let rows = lots.filter((l) => (status === "ALL" || l.status === status) && (reviewFilter === "ALL" || l.review.status === reviewFilter) && (!missingPrice || (l.assignmentStatus === "ACTIVE" && l.startingPrice === null)));
+    let rows = lots.filter((l) => (status === "ALL" || l.status === status) && (reviewFilter === "ALL" || l.review.status === reviewFilter) && (notesFilter === "ALL" || (notesFilter === "open" ? l.openNotes > 0 : l.openNotes === 0)) && (!missingPrice || (l.assignmentStatus === "ACTIVE" && l.startingPrice === null)));
     // every word has to match something in the lot (any order); the lot number and a book's inventory number count too
     if (q.trim()) {
       rows = rows.filter((l) => matchesTokens([l.lotNumber, l.title, l.subtitle, l.author, l.inventoryNumber, l.bibliography.author, l.bibliography.printPlace, l.bibliography.printYear, ...l.books.flatMap((b) => [b.inventoryNumber, b.title])], q));
@@ -142,7 +148,7 @@ export function LotsTable({
     if (sort === "review") sorted.sort((a, b) => REVIEW_ORDER.indexOf(a.review.status) - REVIEW_ORDER.indexOf(b.review.status) || a.lotNumber - b.lotNumber);
     if (sort === "status") sorted.sort((a, b) => LOT_STATUSES.indexOf(a.status) - LOT_STATUSES.indexOf(b.status) || a.lotNumber - b.lotNumber);
     return sorted;
-  }, [lots, q, status, sort, reviewFilter, missingPrice]);
+  }, [lots, q, status, sort, reviewFilter, notesFilter, missingPrice]);
 
   /** "200 לוטים · 180 עם מחיר · 20 ללא מחיר" (active lots only; a combined lot is one lot) */
   const priceSummary = useMemo(() => {
@@ -367,6 +373,11 @@ export function LotsTable({
               </option>
             ))}
           </Select>
+          <Select value={notesFilter} onChange={(e) => setNotesFilter(e.target.value as "ALL" | "open" | "none")} className="w-full sm:w-44" aria-label="סינון לפי הערות לבדיקה">
+            <option value="ALL">הערות לבדיקה: הכול</option>
+            <option value="open">עם הערות פתוחות</option>
+            <option value="none">בלי הערות פתוחות</option>
+          </Select>
           <Select value={sort} onChange={(e) => setSort(e.target.value as Sort)} className="w-full sm:w-44" aria-label="מיון">
             <option value="number">לפי מספר פריט</option>
             <option value="review">לפי מצב בדיקת פרטים (דורשים טיפול קודם)</option>
@@ -420,6 +431,7 @@ export function LotsTable({
                       </Link>
                     </div>
                     {identLine(l) && <div className="mt-0.5 text-[12.5px] text-muted">{identLine(l)}</div>}
+                    <OpenNotesBadge n={l.openNotes} className="mt-1" />
                     <div className="num mt-0.5 font-mono text-[11.5px] text-ink-2">
                       {l.bookCount > 1 ? `${l.bookCount} ספרים · ` : ""}
                       {l.bookCount > 1 ? l.books.map((b) => b.inventoryNumber).join(" · ") : l.inventoryNumber}
@@ -491,6 +503,7 @@ export function LotsTable({
                             {l.title}
                           </Link>
                           {identLine(l) && <div className="truncate text-[12.5px] text-muted">{identLine(l)}</div>}
+                          <OpenNotesBadge n={l.openNotes} className="mt-1" />
                           <div className="break-words text-[12px] text-muted [overflow-wrap:anywhere]">
                             {l.bookCount > 1 && (
                               <span className="me-2 inline-flex items-center gap-1 rounded-md bg-accent-soft px-1.5 py-0.5 text-[11.5px] font-semibold text-accent" title="לוט משולב: כמה ספרים נמכרים יחד">

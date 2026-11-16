@@ -154,6 +154,7 @@ export function ItemReviewPanel({
   canRestore,
   canRewrite = false,
   canApply = false,
+  openNotes = 0,
   inventoryNumber,
   consignor: serverConsignor,
   summary,
@@ -176,6 +177,8 @@ export function ItemReviewPanel({
   canRewrite?: boolean;
   /** apply a saved (re-analysis) result to the item, and compare runs */
   canApply?: boolean;
+  /** open "הערות לבדיקה" of this book: the approver is told before the final approval (never a block) */
+  openNotes?: number;
 }) {
   const router = useRouter();
   const toast = useToast();
@@ -389,6 +392,9 @@ export function ItemReviewPanel({
         return;
       }
     }
+    // open review notes are unfinished checks: the approver decides knowingly (the number is also recorded with the approval)
+    if (action === "approve" && openNotes > 0 && !window.confirm(`יש ${openNotes === 1 ? "הערה אחת לבדיקה שטרם טופלה" : `${openNotes} הערות לבדיקה שטרם טופלו`} בספר הזה. הבירורים לא הושלמו.
+לאשר את פרטי הספר בכל זאת?`)) return;
     setBusy(action);
     try {
       const r = await api<{ reviewStatus: ItemReviewStatus }>(`/api/inventory/${itemId}/review`, { method: "POST", json: action === "start" ? { action } : { action, detailsVersion: version.current } });
@@ -776,6 +782,11 @@ export function ItemReviewPanel({
               </Button>
             )}
           </div>
+          {canApprove && !approved && openNotes > 0 && (
+            <p className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px] text-warn" role="status" data-testid="approve-open-notes">
+              יש <span className="num">{openNotes}</span> הערות לבדיקה פתוחות על הספר. אפשר לאשר, אבל הבירורים טרם הושלמו.
+            </p>
+          )}
           {!canApprove && !approved && <p className="text-[12px] text-muted">האישור הסופי של הפרטים נעשה על ידי משתמש מורשה.</p>}
 
         {showRuns && applied && applied.warnings.length > 0 && (

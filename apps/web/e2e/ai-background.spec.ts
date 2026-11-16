@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiConsignor, login } from "./helpers";
+import { apiConsignor, login, markPhotoComplete } from "./helpers";
 
 /*
  * Research section, automatic bold and the background "הוספת מידע ב-AI" end to end, against the SCRIPTED fake OpenAI
@@ -18,6 +18,7 @@ test("analysis with research: short headline, bold, sources with links; an addit
   const consignor = await apiConsignor(page);
   const created = await page.request.post("/api/inventory", { data: { title: `ספר מחקר ${Date.now()}`, consignorId: consignor.id, opId: crypto.randomUUID() }, headers: { origin } }).then((r) => r.json());
   const id = created.item.id as string;
+  await markPhotoComplete(page, id);
 
   await page.goto(`/inventory/${id}`);
   const ai = page.locator("[data-ai-status]");

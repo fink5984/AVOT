@@ -10,6 +10,7 @@ import { Field, Input } from "@/components/ui/field";
 import { useToast } from "@/components/ui/toast";
 import { ApiError, api, errorMessage } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { photoGateBlock } from "@/lib/photo-gate";
 
 /*
  * The AI button of one item (inventory table row and book page, next to camera / printer). Its state is the
@@ -25,6 +26,8 @@ export interface AiButtonState {
   aiStatus: AiAnalysisStatus;
   hasAiResult: boolean;
   aiError: string | null;
+  /** the book's photography status: an analysis is available only when photography is COMPLETED (src/lib/photo-gate.ts; the server enforces it) */
+  photoStatus?: string;
 }
 
 const POLL_MS = 3000;
@@ -87,11 +90,14 @@ export function AiAnalyzeButton({
   initial,
   size = "md",
   defaultApproverEmail,
+  showReason = false,
 }: {
   itemId: string;
   inventoryNumber: string;
   initial: AiButtonState;
   size?: "sm" | "md";
+  /** write the reason next to a disabled button (book / lot pages); lists keep it in the tooltip */
+  showReason?: boolean;
   /** prefilled in the re-analysis dialog when the current user is a manager */
   defaultApproverEmail?: string;
 }) {
@@ -106,8 +112,11 @@ export function AiAnalyzeButton({
     router.refresh();
   });
 
+  /** photography not finished: the button stays visible but disabled, with the reason (never hidden) */
+  const photoBlock = photoGateBlock(initial.photoStatus);
+
   async function onClick() {
-    if (busy) return;
+    if (busy || photoBlock) return;
     if (active) {
       toast.info("הניתוח עדיין פעיל", { detail: "אפשר להמשיך לעבוד; הכפתור יתעדכן בסיומו." });
       return;
@@ -128,20 +137,26 @@ export function AiAnalyzeButton({
   }
 
   const label =
-    active ? `AI בעיבוד (${state.aiStatus === "QUEUED" ? "ממתין בתור" : "בעיבוד"})`
+    photoBlock ? photoBlock
+    : active ? `AI בעיבוד (${state.aiStatus === "QUEUED" ? "ממתין בתור" : "בעיבוד"})`
     : state.aiStatus === "FAILED" ? `ניתוח AI נכשל${state.aiError ? `: ${state.aiError}` : ""}${state.hasAiResult ? " - ניתוח חוזר באישור מנהל" : " - לחצו לניסיון חוזר"}`
     : state.hasAiResult ? "נותח ב-AI - ניתוח חוזר באישור מנהל"
     : `ניתוח AI ל-${inventoryNumber}`;
 
   return (
     <>
-      <IconButton label={label} size={size} disabled={busy} onClick={() => void onClick()} aria-busy={active || undefined} data-ai-status={state.aiStatus}>
+      <IconButton label={label} size={size} disabled={busy || !!photoBlock} onClick={() => void onClick()} aria-busy={active || undefined} data-ai-status={state.aiStatus} data-photo-blocked={photoBlock ? "true" : undefined}>
         {active || busy ? (
           <Loader2 className="animate-spin text-info" />
         ) : (
-          <Sparkles className={cn(state.aiStatus === "FAILED" ? "text-danger" : state.hasAiResult ? "text-faint" : "text-info")} />
+          <Sparkles className={cn(photoBlock ? "text-faint" : state.aiStatus === "FAILED" ? "text-danger" : state.hasAiResult ? "text-faint" : "text-info")} />
         )}
       </IconButton>
+      {photoBlock && showReason && (
+        <span className="text-[12.5px] text-muted" role="status" data-testid="ai-photo-gate">
+          {photoBlock}
+        </span>
+      )}
       {reanalyze && (
         <ReanalyzeDialog
           itemId={itemId}
